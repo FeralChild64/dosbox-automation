@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "dosbox.h"
@@ -36,6 +37,7 @@
 #include "gui/common.h"
 #include "gui/mapper.h"
 #include "gui/render/render.h"
+#include "gui/truetype_output.h"
 #include "hardware/audio/gus.h"
 #include "hardware/audio/imfc.h"
 #include "hardware/audio/innovation.h"
@@ -71,8 +73,8 @@
 #include "shell/autoexec.h"
 #include "shell/shell.h"
 #include "utils/math_utils.h"
-#include "webserver/webserver.h"
 #include "webserver/bridge.h"
+#include "webserver/webserver.h"
 
 MachineType machine   = MachineType::None;
 SvgaType    svga_type = SvgaType::None;
@@ -1167,6 +1169,7 @@ void DOSBOX_InitModules()
 	SPEAKER_Init();
 
 	REELMAGIC_Init();
+	TTF_Init();
 
 	BIOS_Init();
 	INT10_Init();
@@ -1220,6 +1223,7 @@ void DOSBOX_DestroyModules()
 
 	PCI_Destroy();
 	VGA_Destroy();
+	TTF_Destroy();
 	DMA_Destroy();
 	CPU_Destroy();
 

@@ -4,6 +4,8 @@ target_sources(dosboxcommon PRIVATE
   mapper.cpp
   sdl_gui.cpp
   titlebar.cpp
+  truetype_freetype.cpp
+  truetype_output.cpp
 
   osd/draw_context.cpp
   osd/gl_draw.cpp
@@ -34,7 +36,7 @@ if (OPT_DEBUGGER)
   target_link_libraries(dosboxcommon PRIVATE imgui::imgui)
 endif()
 
-target_link_libraries(dosboxcommon PRIVATE OpenGL::GL simpleini)
+target_link_libraries(dosboxcommon PRIVATE Freetype::Freetype OpenGL::GL simpleini)
 
 if (C_OPENGL)
   target_link_libraries(dosboxcommon PRIVATE glad)
