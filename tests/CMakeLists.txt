@@ -42,6 +42,7 @@ add_executable(dosbox_tests
     string_utils_tests.cpp
     # stubs.cpp
     support_tests.cpp
+    truetype_tests.cpp
     unicode_tests.cpp
     webserver_auth_tests.cpp
     webserver_tools_tests.cpp

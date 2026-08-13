@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef DOSBOX_VGA_H
@@ -209,7 +210,33 @@ struct VgaConfig {
 	uint32_t full_enable_and_set_reset = 0;
 };
 
-enum class DrawMode { Part, Scanline, ScanlineEga };
+struct VgaTtf {
+	// If true, the TTF engine takes over the screen rendering
+	bool override = false;
+
+	// If true, we need to periodically check if the EGA/VGA bitmap font
+	// used is the same as the ROM font, or the font loaded from the bundled
+	// CPI file - the check result might determine whether we want to switch
+	// off TTF rendering or switch ot on again
+	bool keep_checking_vram_font = false;
+
+	// Set to true each time the emulated VRAM is written in a way which might
+	// alter the screen font. If false, the font check is skipped.
+	bool vram_font_dirty_flag = true;
+
+	// Screen size in number of character blocks
+	uint32_t blocks_horizontal = 0;
+	uint32_t blocks_vertical   = 0;
+
+	// Size of a character block in pixels
+	uint32_t block_width  = 0;
+	uint32_t block_height = 0;
+
+	// Number of lines already rendered
+	uint32_t render_lines_done = 0;
+};
+
+enum class DrawMode { Part, TrueType, Scanline, ScanlineEga };
 
 enum class VgaRateMode { Default, Custom };
 
@@ -323,6 +350,8 @@ struct VgaDraw {
 	DrawMode mode       = {};
 	bool vret_triggered = false;
 	bool vga_override   = false;
+
+	VgaTtf ttf = {};
 };
 
 struct VGA_HWCURSOR {

@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2020-2025 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "dosbox.h"
@@ -41,7 +42,7 @@
 #define MEM_CHANGED( _MEM ) vga.changes.map[ (_MEM) >> VGA_CHANGE_SHIFT ] |= vga.changes.writeMask;
 //#define MEM_CHANGED( _MEM ) vga.changes.map[ (_MEM) >> VGA_CHANGE_SHIFT ] = 1;
 #else
-#define MEM_CHANGED( _MEM ) 
+#define MEM_CHANGED( _MEM )
 #endif
 
 #define TANDY_VIDBASE(_X_)  &MemBase[ 0x80000 + (_X_)]
@@ -66,18 +67,18 @@ inline static uint32_t ModeOperation(uint8_t val) {
 	uint32_t full;
 	switch (vga.config.write_mode) {
 	case 0x00:
-		// Write Mode 0: In this mode, the host data is first rotated as per the Rotate Count field, then the Enable Set/Reset mechanism selects data from this or the Set/Reset field. Then the selected Logical Operation is performed on the resulting data and the data in the latch register. Then the Bit Mask field is used to select which bits come from the resulting data and which come from the latch register. Finally, only the bit planes enabled by the Memory Plane Write Enable field are written to memory. 
+		// Write Mode 0: In this mode, the host data is first rotated as per the Rotate Count field, then the Enable Set/Reset mechanism selects data from this or the Set/Reset field. Then the selected Logical Operation is performed on the resulting data and the data in the latch register. Then the Bit Mask field is used to select which bits come from the resulting data and which come from the latch register. Finally, only the bit planes enabled by the Memory Plane Write Enable field are written to memory.
 		val=((val >> vga.config.data_rotate) | (val << (8-vga.config.data_rotate)));
 		full=ExpandTable[val];
-		full=(full & vga.config.full_not_enable_set_reset) | vga.config.full_enable_and_set_reset; 
+		full=(full & vga.config.full_not_enable_set_reset) | vga.config.full_enable_and_set_reset;
 		full=RasterOp(full,vga.config.full_bit_mask);
 		break;
 	case 0x01:
-		// Write Mode 1: In this mode, data is transferred directly from the 32 bit latch register to display memory, affected only by the Memory Plane Write Enable field. The host data is not used in this mode. 
+		// Write Mode 1: In this mode, data is transferred directly from the 32 bit latch register to display memory, affected only by the Memory Plane Write Enable field. The host data is not used in this mode.
 		full=vga.latch.d;
 		break;
 	case 0x02:
-		//Write Mode 2: In this mode, the bits 3-0 of the host data are replicated across all 8 bits of their respective planes. Then the selected Logical Operation is performed on the resulting data and the data in the latch register. Then the Bit Mask field is used to select which bits come from the resulting data and which come from the latch register. Finally, only the bit planes enabled by the Memory Plane Write Enable field are written to memory. 
+		//Write Mode 2: In this mode, the bits 3-0 of the host data are replicated across all 8 bits of their respective planes. Then the selected Logical Operation is performed on the resulting data and the data in the latch register. Then the Bit Mask field is used to select which bits come from the resulting data and which come from the latch register. Finally, only the bit planes enabled by the Memory Plane Write Enable field are written to memory.
 		full=RasterOp(FillTable[val&0xF],vga.config.full_bit_mask);
 		break;
 	case 0x03:
@@ -149,7 +150,7 @@ public:
 		addr = CHECKED2(addr);
 		return readHandler(addr);
 	}
-	
+
 	uint16_t readw(PhysPt addr) override
 	{
 		read_delay();
@@ -189,21 +190,21 @@ public:
 		uint32_t colors0_3, colors4_7;
 		VgaLatch temp;
 		temp.d=(pixels.d>>4) & 0x0f0f0f0f;
-		colors0_3 = 
+		colors0_3 =
 			Expand16Table[0][temp.b[0]] |
 			Expand16Table[1][temp.b[1]] |
 			Expand16Table[2][temp.b[2]] |
 			Expand16Table[3][temp.b[3]];
 		*(uint32_t *)write_pixels=colors0_3;
 		temp.d=pixels.d & 0x0f0f0f0f; //-V519
-		colors4_7 = 
+		colors4_7 =
 			Expand16Table[0][temp.b[0]] |
 			Expand16Table[1][temp.b[1]] |
 			Expand16Table[2][temp.b[2]] |
 			Expand16Table[3][temp.b[3]];
 		*(uint32_t *)(write_pixels+4)=colors4_7;
 	}
-public:	
+public:
 	VGA_ChainedEGA_Handler()  {
 		flags=PFLAG_NOCODE;
 	}
@@ -289,21 +290,21 @@ public:
 		uint32_t colors0_3, colors4_7;
 		VgaLatch temp;
 		temp.d=(pixels.d>>4) & 0x0f0f0f0f;
-			colors0_3 = 
+			colors0_3 =
 			Expand16Table[0][temp.b[0]] |
 			Expand16Table[1][temp.b[1]] |
 			Expand16Table[2][temp.b[2]] |
 			Expand16Table[3][temp.b[3]];
 		*(uint32_t *)write_pixels=colors0_3;
 		temp.d=pixels.d & 0x0f0f0f0f; //-V519
-		colors4_7 = 
+		colors4_7 =
 			Expand16Table[0][temp.b[0]] |
 			Expand16Table[1][temp.b[1]] |
 			Expand16Table[2][temp.b[2]] |
 			Expand16Table[3][temp.b[3]];
 		*(uint32_t *)(write_pixels+4)=colors4_7;
 	}
-public:	
+public:
 	VGA_UnchainedEGA_Handler()  {
 		flags=PFLAG_NOCODE;
 	}
@@ -358,12 +359,12 @@ public:
 	{
 		return host_readb(ToLinear(addr));
 	}
-	
+
 	static inline uint16_t readHandler_word(PhysPt addr)
 	{
 		return host_readw(ToLinear(addr));
 	}
-	
+
 	static inline uint32_t readHandler_dword(PhysPt addr)
 	{
 		return host_readd(ToLinear(addr));
@@ -378,17 +379,17 @@ public:
 			host_write(&vga.fastmem[addr + 64 * 1024], val);
 		}
 	}
-	
+
 	static inline void writeCache_byte(PhysPt addr, uint8_t val)
 	{
 		WriteCache_template(host_writeb, addr, val);
 	}
-	
+
 	static inline void writeCache_word(PhysPt addr, uint16_t val)
 	{
 		WriteCache_template(host_writew, addr, val);
 	}
-	
+
 	static inline void writeCache_dword(PhysPt addr, uint32_t val)
 	{
 		WriteCache_template(host_writed, addr, val);
@@ -400,12 +401,12 @@ public:
 	{
 		host_writeb(ToLinear(addr), val);
 	}
-	
+
 	static inline void writeHandler_word(PhysPt addr, uint16_t val)
 	{
 		host_writew(ToLinear(addr), val);
 	}
-	
+
 	static inline void writeHandler_dword(PhysPt addr, uint32_t val)
 	{
 		host_writed(ToLinear(addr), val);
@@ -511,7 +512,7 @@ public:
 		pixels.d|=(data & vga.config.full_map_mask);
 		((uint32_t*)vga.mem.linear)[addr]=pixels.d;
 //		if(vga.config.compatible_chain4)
-//			((uint32_t*)vga.mem.linear)[CHECKED2(addr+64*1024)]=pixels.d; 
+//			((uint32_t*)vga.mem.linear)[CHECKED2(addr+64*1024)]=pixels.d;
 	}
 public:
 	VGA_UnchainedVGA_Handler()  {
@@ -582,14 +583,19 @@ public:
 
 		if (vga.seq.map_mask == 0x4) {
 			vga.draw.font[addr] = val;
+			vga.draw.ttf.vram_font_dirty_flag = true;
 		} else {
-			if (vga.seq.map_mask & 0x4) // font map
+			if (vga.seq.map_mask & 0x4) { // font map
 				vga.draw.font[addr] = val;
-			if (vga.seq.map_mask & 0x2) // character attribute
+				vga.draw.ttf.vram_font_dirty_flag = true;
+			}
+			if (vga.seq.map_mask & 0x2) { // character attribute
 				vga.mem.linear[CHECKED3(vga.svga.bank_read_full +
 				                        addr + 1)] = val;
-			if (vga.seq.map_mask & 0x1) // character index
+			}
+			if (vga.seq.map_mask & 0x1) { // character index
 				vga.mem.linear[CHECKED3(vga.svga.bank_read_full + addr)] = val;
+			}
 		}
 	}
 };
@@ -870,9 +876,9 @@ public:
 	}
 	HostPt GetHostReadPt(Bitu phys_page) override {
 		// Odd banks are limited to 16kB and repeated
-		if (vga.tandy.mem_bank & 1) 
+		if (vga.tandy.mem_bank & 1)
 			phys_page&=0x03;
-		else 
+		else
 			phys_page&=0x07;
 		return vga.tandy.mem_base + (phys_page * 4096);
 	}
@@ -1023,7 +1029,7 @@ void VGA_SetupHandlers(void) {
 		return;
 	case M_LIN4:
 		newHandler = &vgaph.lin4;
-		break;	
+		break;
 	case M_LIN15:
 	case M_LIN16:
 	case M_LIN24:
@@ -1039,7 +1045,7 @@ void VGA_SetupHandlers(void) {
 		if (vga.config.chained) {
 			if(vga.config.compatible_chain4)
 				newHandler = &vgaph.cvga;
-			else 
+			else
 #ifdef VGA_LFB_MAPPED
 				newHandler = &vgaph.map;
 #else
@@ -1050,11 +1056,11 @@ void VGA_SetupHandlers(void) {
 		}
 		break;
 	case M_EGA:
-		if (vga.config.chained) 
+		if (vga.config.chained)
 			newHandler = &vgaph.cega;
 		else
 			newHandler = &vgaph.uega;
-		break;	
+		break;
 	case M_TEXT:
 		/* Check if we're not in odd/even mode */
 		if (vga.gfx.miscellaneous & 0x2) newHandler = &vgaph.map;
@@ -1225,7 +1231,7 @@ void VGA_SetupMemory()
 	if (is_machine_pcjr()) {
 		/* PCJr does not have dedicated graphics memory but uses
 		   conventional memory below 128k */
-		//TODO map?	
+		//TODO map?
 	}
 
 	vga.vmem_delay_ns = determine_vmem_delay_ns();
