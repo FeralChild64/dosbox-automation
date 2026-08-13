@@ -22,7 +22,15 @@ constexpr int ScalerWidthExtraPadding = 8 * 5;
 constexpr int ScalerMaxWidth  = 1600 + ScalerWidthExtraPadding;
 constexpr int ScalerMaxHeight = 1200;
 
-extern std::array<int, ScalerMaxHeight> scaler_changed_lines;
+// The limits above are not sufficient for the TrueType output - high
+// resolution text modes (like 132x50) or thin scalable fonts (like
+// Courier) produce bad results. As an exception, allow the TrueType
+// engine to render in up to 5K resolution
+
+constexpr int ScalerMaxWidthTtf  = 5120;
+constexpr int ScalerMaxHeightTtf = 2880;
+
+extern std::array<int, ScalerMaxHeightTtf> scaler_changed_lines;
 extern int scaler_changed_line_index;
 
 typedef void (*ScalerLineHandler)(const void* src);

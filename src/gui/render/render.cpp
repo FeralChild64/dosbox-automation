@@ -550,31 +550,41 @@ static void render_callback(GFX_CallbackFunctions_t function)
 void Render::Scale::SetSize(const size_t width, const size_t height)
 {
 	// We need the 'cache' and 'out_buf' to be memory aligned
-	constexpr size_t Alignemnt = sizeof(uint64_t);
+	constexpr size_t Alignment = sizeof(uint64_t);
 
-	const size_t new_size = width * height;
-	if (cache_size == new_size) {
+	const size_t new_cache_size = width * height;
+	if (cache_size == new_cache_size) {
 		return;
 	}
+	const size_t new_out_buf_size =
+		std::max(width, static_cast<size_t>(ScalerMaxWidth)) *
+		std::max(height, static_cast<size_t>(ScalerMaxHeight));
 
 	// Free the memory
 	free_aligned(cache);
 	free_aligned(out_buf);
 
-	if (new_size == 0) {
+	if (new_cache_size == 0) {
 		cache_size = 0;
 
 		cache   = nullptr;
 		out_buf = nullptr;
+
+		return;
 	}
 
 	// Allocate memory aligned
-	const auto new_size_bytes = new_size * sizeof(uint32_t);
+	const size_t new_cache_size_bytes   = new_cache_size * sizeof(uint32_t);
+	const size_t new_out_buf_size_bytes = new_out_buf_size * sizeof(uint32_t);
 
-	cache = static_cast<uint32_t*>(malloc_aligned(new_size_bytes, Alignemnt));
-	out_buf = static_cast<uint32_t*>(malloc_aligned(new_size_bytes, Alignemnt));
+	cache   = static_cast<uint32_t*>(malloc_aligned(new_cache_size_bytes, Alignment));
+	out_buf = static_cast<uint32_t*>(malloc_aligned(new_out_buf_size_bytes, Alignment));
 
-	cache_size = new_size;
+	if (cache == nullptr || out_buf == nullptr) {
+		E_Exit("Out of memory");
+	}
+
+	cache_size = new_cache_size_bytes;
 }
 
 Render::Scale::~Scale()
@@ -587,9 +597,11 @@ void RENDER_SetSize(const ImageInfo& image_info, const double frames_per_second)
 {
 	halt_render();
 
+	static_assert(ScalerMaxWidthTtf >= ScalerMaxWidth);
+	static_assert(ScalerMaxHeightTtf >= ScalerMaxHeight);
 	if (image_info.width == 0 || image_info.height == 0 ||
-	    image_info.width > ScalerMaxWidth ||
-	    image_info.height > ScalerMaxHeight) {
+	    image_info.width > ScalerMaxWidthTtf ||
+	    image_info.height > ScalerMaxHeightTtf) {
 		return;
 	}
 

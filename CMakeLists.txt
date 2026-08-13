@@ -730,6 +730,7 @@ endif()
 
 find_package(PNG REQUIRED)
 find_package(OpenGL REQUIRED)
+find_package(Freetype REQUIRED)
 
 # 2.5 baseline: upstream midi code uses fluid_synth_set_portamento_time_mode
 # FluidSynth's config declares SameMinorVersion, so a request for 2.5
