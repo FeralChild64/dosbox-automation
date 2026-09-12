@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "misc/support.h"
@@ -106,6 +107,27 @@ TEST_F(CreateDirTest, FailDueToFileExisting)
 	constexpr char path[] = "tests/files/paths/empty.txt";
 	ASSERT_TRUE(path_exists(path));
 	EXPECT_EQ(create_dir_if_not_exist(path), false);
+}
+
+TEST(GetFileNameFromPath, SuccessWithPath) // XXX more tests
+{
+	const std_fs::path input   = std_fs::path("foo") / std_fs::path("bar.txt");
+	const std::string expected = "bar.txt";
+	EXPECT_EQ(get_file_name_from_path(input), expected);
+}
+
+TEST(GetFileNameFromPath, SuccessWithoutPath)
+{
+	const std_fs::path input   = "foobar.txt";
+	const std::string expected = "foobar.txt";
+	EXPECT_EQ(get_file_name_from_path(input), expected);
+}
+
+TEST(GetFileNameFromPath, FailDueToEmptyPath)
+{
+	const std_fs::path input   = {};
+	const std::string expected = {};
+	EXPECT_EQ(get_file_name_from_path(input), expected);
 }
 
 } // namespace

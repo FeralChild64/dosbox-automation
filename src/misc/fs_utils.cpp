@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText:  2022-2026 The DOSBox Staging Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "utils/fs_utils.h"
@@ -67,6 +68,22 @@ bool is_hidden_by_host(const std_fs::path& pathname)
 
 	return extension.length() > DOS_EXTLENGTH ||
 	       std::any_of(filename.begin(), filename.end(), islower);
+}
+
+std::string get_file_name_from_path(const std_fs::path& path)
+{
+	auto count = std::distance(path.begin(), path.end());
+	if (count < 1 || !path.has_filename()) {
+		return {};
+	}
+
+	for (const auto &current : path) {
+		if ((--count) == 0) {
+			return current;
+		}
+	}
+
+	return {};
 }
 
 // return the lines from the given text file or an empty optional
