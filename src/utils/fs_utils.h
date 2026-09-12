@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef DOSBOX_FS_UTILS_H
@@ -88,6 +89,8 @@ std::optional<std::vector<std::string>> get_lines(const std_fs::path &text_file)
 bool is_dir(const std_fs::path& path);
 
 bool is_hidden_by_host(const std::filesystem::path& pathname);
+
+std::string get_file_name_from_path(const std_fs::path& path);
 
 /* Convert path (possibly in format used by different OS) to a path
  * native for host OS.
