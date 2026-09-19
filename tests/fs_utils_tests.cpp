@@ -108,4 +108,20 @@ TEST_F(CreateDirTest, FailDueToFileExisting)
 	EXPECT_EQ(create_dir_if_not_exist(path), false);
 }
 
+#if defined(WIN32)
+// Regression: open_native_file lacked FILE_FLAG_BACKUP_SEMANTICS,
+// so opening a directory handle failed and FindNext returned wrong
+// timestamps (00/06/1980 0:00a) for all directories.
+TEST(NativeFile, OpenDirectoryForTimestamp)
+{
+	const auto handle = open_native_file("tests/files/paths", false);
+	ASSERT_NE(handle, InvalidNativeFileHandle);
+
+	const auto date_time = get_dos_file_time(handle);
+	EXPECT_TRUE(date_time.date != 1 || date_time.time != 1);
+
+	close_native_file(handle);
+}
+#endif // WIN32
+
 } // namespace
