@@ -758,9 +758,11 @@ XMS::XMS(SectionProp& section) : callbackhandler{}
 	BIOS_ZeroExtendedSize(true);
 	DOS_AddMultiplexHandler(xms_multiplex);
 
-	// Place hookable callback in writable memory area
-	xms.callback = RealMake(static_cast<uint16_t>(DOS_GetMemory(0x1) - 1),
-	                        0x10);
+	// DOS_GetMemory is a bump allocator with no free; allocate
+	// once so the XMS entry point stays stable across reinits
+	static const auto callback_seg = static_cast<uint16_t>(
+	        DOS_GetMemory(0x1) - 1);
+	xms.callback = RealMake(callback_seg, 0x10);
 	callbackhandler.Install(&XMS_Handler,
 	                        CB_HOOKABLE,
 	                        RealToPhysical(xms.callback),

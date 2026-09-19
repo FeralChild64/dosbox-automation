@@ -1978,21 +1978,31 @@ void DOS_Destroy()
 }
 
 static void notify_dos_setting_updated(SectionProp& section,
-                                       [[maybe_unused]] const std::string& prop_name)
+                                       const std::string& prop_name)
 {
-	DOS_Locale_Destroy();
-	DOS_Locale_Init(section);
+	if (prop_name == "locale_period" || prop_name == "country") {
+		DOS_Locale_Destroy();
+		DOS_Locale_Init(section);
 
-	DOS_Files_Init(section);
+	} else if (prop_name == "file_locking") {
+		DOS_Files_Init(section);
 
-	EMS_Destroy();
-	EMS_Init(section);
+	} else if (prop_name == "ems") {
+		EMS_Destroy();
+		EMS_Init(section);
 
-	XMS_Destroy();
-	XMS_Init(section);
+		// UMB chain depends on EMS availability
+		XMS_Destroy();
+		XMS_Init(section);
 
-	// The MSCDEX, DRIVES, and CDROM_Image modules are only initalised
-	// once at startup.
+	} else if (prop_name == "xms" || prop_name == "umb") {
+		XMS_Destroy();
+		XMS_Init(section);
+	}
+
+	// 'ver' only takes effect at startup (the VER command handles
+	// runtime changes) and 'expand_shell_variable' is evaluated on
+	// command execution.
 }
 
 void DOS_NotifySettingUpdated(const std::string& prop_name)

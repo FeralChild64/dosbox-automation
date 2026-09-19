@@ -13,12 +13,15 @@ add_executable(dosbox_tests
     dos_files_tests.cpp
     dos_io_delay_tests.cpp
     dos_memory_struct_tests.cpp
+    dos_runtime_settings_tests.cpp
     dosbox_test_fixture.h
     drive_swap_tests.cpp
     drives_tests.cpp
     fraction_tests.cpp
     fs_utils_tests.cpp
+    fs_utf8_shortname_tests.cpp
     int10_modes_tests.cpp
+    joystick_reinit_tests.cpp
     language_territory_tests.cpp
     math_utils_tests.cpp
     messages_adjust_tests.cpp

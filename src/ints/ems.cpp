@@ -1446,16 +1446,20 @@ public:
 		}
 		BIOS_ZeroExtendedSize(true);
 
-		ems_baseseg = DOS_GetMemory(2); // We have 32 bytes
+		// DOS_GetMemory is a bump allocator with no free; allocate
+		// once and reuse across re-initialisations
+		static const uint16_t base_seg_alloc = DOS_GetMemory(2);
+		ems_baseseg = base_seg_alloc;
 
 		/* Add a little hack so it appears that there is an actual ems device installed */
 		MEM_BlockWrite(PhysicalMake(ems_baseseg, 0xa),
 		               EmsDeviceName.c_str(),
 		               EmsDeviceName.length() + 1);
 
-		call_int67=CALLBACK_Allocate();
-		CALLBACK_Setup(call_int67,&INT67_Handler,CB_IRET,PhysicalMake(ems_baseseg,4),"Int 67 ems");
-		RealSetVec(0x67,RealMake(ems_baseseg,4),old67_pointer);
+		call_int67 = CALLBACK_Allocate();
+		CALLBACK_Setup(call_int67, &INT67_Handler, CB_IRET,
+		               PhysicalMake(ems_baseseg, 4), "Int 67 ems");
+		RealSetVec(0x67, RealMake(ems_baseseg, 4), old67_pointer);
 
 		/* Register the ems device */
 		//TODO MAYBE put it in the class.
@@ -1550,6 +1554,8 @@ public:
 		char buf[32]= { 0 };
 		MEM_BlockWrite(PhysicalMake(ems_baseseg,0),buf,32);
 		RealSetVec(0x67,old67_pointer);
+		CALLBACK_DeAllocate(call_int67);
+		call_int67 = 0;
 
 		/* Release memory allocated to system handle */
 		if (emm_handles[EMM_SYSTEM_HANDLE].pages != NULL_HANDLE) {
