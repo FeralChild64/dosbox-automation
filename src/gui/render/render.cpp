@@ -132,7 +132,7 @@ static bool maybe_gfx_start_update()
 	if (is_deinterlacing()) {
 		// Write the scaled output to a temporary buffer first
 		render.scale.out_write = reinterpret_cast<uint8_t*>(
-		        render.scale.out_buf.data());
+		        render.scale.out_buf);
 
 		render.dest = pixel_data;
 
@@ -239,8 +239,7 @@ bool RENDER_StartUpdate()
 		check_palette();
 	}
 
-	render.scale.cache_read = reinterpret_cast<uint8_t*>(
-	        render.scale.cache.data());
+	render.scale.cache_read = reinterpret_cast<uint8_t*>(render.scale.cache);
 
 	render.scale.out_write = nullptr;
 	render.scale.out_pitch = 0;
@@ -319,7 +318,7 @@ static void handle_capture_frame()
 	image.params = render.src;
 	image.pitch  = render.scale.cache_pitch;
 
-	image.image_data = reinterpret_cast<uint8_t*>(render.scale.cache.data());
+	image.image_data = reinterpret_cast<uint8_t*>(render.scale.cache);
 
 	image.palette = render.palette.rgb;
 
@@ -353,7 +352,7 @@ static void deinterlace_rendered_output()
 	// Copy scaled & deinterlaced output into the render backend's
 	// texture buffer (always in 32-bit BGRX pixel format)
 	std::memcpy(render.dest,
-	            render.scale.out_buf.data(),
+	            render.scale.out_buf,
 	            render.scale.out_height * render.scale.out_pitch);
 
 	// Deinterlace the render's backend buffer and leave the scaler
@@ -391,7 +390,7 @@ void RENDER_EndUpdate([[maybe_unused]] bool abort)
 	{
 		RenderedImage image = {};
 		image.params     = render.src;
-		image.image_data = reinterpret_cast<uint8_t*>(render.scale.cache.data());
+		image.image_data = reinterpret_cast<uint8_t*>(render.scale.cache);
 		image.palette    = render.palette.rgb;
 		image.pitch      = render.scale.cache_pitch;
 
@@ -548,6 +547,42 @@ static void render_callback(GFX_CallbackFunctions_t function)
 	}
 }
 
+void Render::Scale::SetSize(const size_t width, const size_t height)
+{
+	// We need the 'cache' and 'out_buf' to be memory aligned
+	constexpr size_t Alignemnt = sizeof(uint64_t);
+
+	const size_t new_size = width * height;
+	if (cache_size == new_size) {
+		return;
+	}
+
+	// Free the memory
+	free_aligned(cache);
+	free_aligned(out_buf);
+
+	if (new_size == 0) {
+		cache_size = 0;
+
+		cache   = nullptr;
+		out_buf = nullptr;
+	}
+
+	// Allocate memory aligned
+	const auto new_size_bytes = new_size * sizeof(uint32_t);
+
+	cache = static_cast<uint32_t*>(malloc_aligned(new_size_bytes, Alignemnt));
+	out_buf = static_cast<uint32_t*>(malloc_aligned(new_size_bytes, Alignemnt));
+
+	cache_size = new_size;
+}
+
+Render::Scale::~Scale()
+{
+	free_aligned(cache);
+	free_aligned(out_buf);
+}
+
 void RENDER_SetSize(const ImageInfo& image_info, const double frames_per_second)
 {
 	halt_render();
@@ -557,6 +592,8 @@ void RENDER_SetSize(const ImageInfo& image_info, const double frames_per_second)
 	    image_info.height > ScalerMaxHeight) {
 		return;
 	}
+
+	render.scale.SetSize(image_info.width, image_info.height);
 
 	render.src = image_info;
 	render.fps = frames_per_second;

@@ -9,6 +9,7 @@
 #include "dosbox.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <deque>
 #include <string>
@@ -142,5 +143,27 @@ bool get_expanded_files(const std::string &path,
                         std::vector<std::string> &files,
                         bool files_only,
                         bool skip_native_path = false) noexcept;
+
+// Aligned memory allocate and free, supports Microsoft Vicual C
+inline void* malloc_aligned(const size_t size, const size_t alignment)
+{
+#ifdef _MSC_VER
+	// Microsoft Visual C does not support 'std::aligned_alloc'
+	return _aligned_malloc(size, alignment);
+#else
+	return std::aligned_alloc(alignment, size);
+#endif
+}
+
+inline void free_aligned(void* pointer)
+{
+#ifdef _MSC_VER
+	// Microsoft Visual C requires a special version of 'free' to be used
+	// to deallocate memory alocated with '_aligned_malloc'
+	_aligned_free(pointer);
+#else
+	std::free(pointer);
+#endif
+}
 
 #endif

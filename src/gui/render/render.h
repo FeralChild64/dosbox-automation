@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2019-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef DOSBOX_RENDER_H
@@ -84,7 +85,12 @@ struct Render {
 	// Frames per second
 	double fps = 0;
 
-	struct {
+	struct Scale {
+		~Scale();
+
+		// Set the size of 'cache' and 'out_buf', sets 'cache_size'
+		void SetSize(const size_t width, const size_t height);
+
 		bool clear_cache = false;
 
 		ScalerLineHandler line_handler         = nullptr;
@@ -93,16 +99,15 @@ struct Render {
 		int cache_pitch     = 0;
 		uint8_t* cache_read = nullptr;
 
-		alignas(uint64_t)
-		        std::array<uint32_t, ScalerMaxWidth * ScalerMaxHeight> cache = {};
+		uint32_t* cache   = nullptr;
+		size_t cache_size = 0;
 
 		int out_width      = 0;
 		int out_height     = 0;
 		int out_pitch      = 0;
 		uint8_t* out_write = nullptr;
 
-		alignas(uint64_t)
-		        std::array<uint32_t, ScalerMaxWidth * ScalerMaxHeight> out_buf = {};
+		uint32_t* out_buf = nullptr;
 
 		int y_scale = 0;
 	} scale = {};
