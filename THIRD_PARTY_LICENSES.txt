@@ -2627,6 +2627,23 @@ BUNDLED DOS UTILITIES (resources/drives/y/dos/)
                  Source: https://archive.org/details/infozip_msdos
                  Homepage: https://infozip.sourceforge.net/
 
+  FreeDOS FIND   Text search filter (v3.0b)
+                 Authors: Jim Hall, Eric Auer, Imre Leber
+                 Source: https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/1.4/base/find/20260218.6/find.zip
+                 License: GPL-2.0
+
+  FreeDOS SORT   Text sort filter (v1.5.1a)
+                 Authors: James Lynch (k4gvo), maintained by Eric Auer
+                 Source: https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/1.4/base/sort.zip
+                 License: GPL-2.0
+
+  MSEDIT         Text editor, MS-DOS EDIT replacement (v0.11)
+                 Author: Mateusz Viste
+                 Source: https://sourceforge.net/projects/msedit/
+                 License: GPL-2.0
+                 Bundled as: edit.exe
+
+
 
 END OF THIRD-PARTY LICENSES
 ================================================================================
