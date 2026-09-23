@@ -38,6 +38,7 @@ target_sources(dosboxcommon PRIVATE
   drives.cpp
   programs.cpp
 
+  programs/append.cpp
   programs/attrib.cpp
   programs/autotype.cpp
   programs/boot.cpp
@@ -46,6 +47,7 @@ target_sources(dosboxcommon PRIVATE
   programs/docs_location.cpp
   programs/guide.cpp
   programs/help.cpp
+  programs/join.cpp
   programs/keyb.cpp
   programs/loadfix.cpp
   programs/loadrom.cpp

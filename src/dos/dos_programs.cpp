@@ -4,6 +4,7 @@
 
 #include "dos/programs.h"
 
+#include "programs/append.h"
 #include "programs/attrib.h"
 #include "programs/autotype.h"
 #include "programs/boot.h"
@@ -11,6 +12,7 @@
 #include "programs/clip.h"
 #include "programs/guide.h"
 #include "programs/help.h"
+#include "programs/join.h"
 #include "programs/keyb.h"
 #include "programs/loadfix.h"
 #include "programs/loadrom.h"
@@ -59,6 +61,7 @@ void DOS_SetupPrograms()
 	VFILE_GetPathZDrive(path, dirname);
 	VFILE_RegisterZDrive(path);
 
+	PROGRAMS_MakeFile("APPEND.EXE", ProgramCreate<APPEND>);
 	PROGRAMS_MakeFile("ATTRIB.COM", ProgramCreate<ATTRIB>);
 	PROGRAMS_MakeFile("AUTOTYPE.COM", ProgramCreate<AUTOTYPE>);
 #if C_DEBUGGER
@@ -71,6 +74,7 @@ void DOS_SetupPrograms()
 	PROGRAMS_MakeFile("CONFIG.COM", CONFIG_ProgramCreate);
 	PROGRAMS_MakeFile("GUIDE.COM", ProgramCreate<GUIDE>);
 	PROGRAMS_MakeFile("HELP.COM", ProgramCreate<HELP>);
+	PROGRAMS_MakeFile("JOIN.EXE", ProgramCreate<JOIN>);
 	PROGRAMS_MakeFile("KEYB.COM", ProgramCreate<KEYB>);
 	PROGRAMS_MakeFile("LOADFIX.COM", ProgramCreate<LOADFIX>);
 	PROGRAMS_MakeFile("LOADROM.COM", ProgramCreate<LOADROM>);
