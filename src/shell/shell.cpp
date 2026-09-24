@@ -1177,6 +1177,7 @@ void SHELL_InitAndRun()
 	        "Examples:\n"
 	        "  [color=light-green]path[reset]\n"
 	        "  [color=light-green]path[reset] [color=light-cyan]Z:\\;C:\\DOS[reset]\n");
+	MSG_Add("SHELL_CMD_PATH_NO_PATH", "No Path\n");
 
 	MSG_Add("SHELL_CMD_WORKBENCH_HELP",
 	        "Open the Cheat Workbench in the default browser.\n");

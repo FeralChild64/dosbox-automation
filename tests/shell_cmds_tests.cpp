@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "shell/shell.h"
 
@@ -80,6 +81,16 @@ TEST_F(DOS_Shell_CMDSTest, DoCommand_Separating_Chars)
 		args += "ARG";
 		assert_DoCommand(input, name, args);
 	}
+}
+
+// COMMAND.COM also ends the command word at ';' and ',', so the MS-DOS 5.0
+// reference spellings "append;" and "path;" reach their commands.
+TEST_F(DOS_Shell_CMDSTest, DoCommand_Semicolon_And_Comma_Separate)
+{
+	assert_DoCommand("PATH;", "PATH", ";");
+	assert_DoCommand("APPEND;", "APPEND", ";");
+	assert_DoCommand("DIR,", "DIR", ",");
+	assert_DoCommand("ECHO,HI", "ECHO", ",HI");
 }
 
 TEST_F(DOS_Shell_CMDSTest, DoCommand_All_Cmds_Do_Valid_Execute)

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dos/dos_system.h"
 #include "shell/shell.h"
@@ -223,7 +224,8 @@ void DOS_Shell::DoCommand(char* line)
 	char* cmd_write = cmd_buffer;
 
 	auto is_cli_delimiter = [](const char c) {
-		constexpr std::array<char, 7> Delimiters = {'\0', ' ', '/', '\t', '=', '"'};
+		constexpr std::array<char, 8> Delimiters = {
+		        '\0', ' ', '/', '\t', '=', '"', ';', ','};
 		// Note: ':' is also a delimiter, but handling it here breaks
 		//       drive switching as that is handled at a later stage.
 		return contains(Delimiters, c);
@@ -1619,9 +1621,19 @@ void DOS_Shell::CMD_ATTRIB(char* args)
 	dos.dta(save_dta);
 }
 
+// COMMAND.COM's DELIM set (MS-DOS 4.0 TENV2.ASM). SET skips all of them
+// before its argument (GETARG), PATH all but ';' (PGETARG, TMISC2.ASM).
+static bool is_command_delimiter(const char c)
+{
+	return c == ' ' || c == '=' || c == ',' || c == ';' || c == '\t';
+}
+
 void DOS_Shell::CMD_SET(char* args)
 {
 	HELP("SET");
+	while (*args && is_command_delimiter(*args)) {
+		++args;
+	}
 	StripSpaces(args);
 	if (!*args) {
 		/* No command line show all environment lines */
@@ -2336,11 +2348,11 @@ void DOS_Shell::CMD_CHOICE(char* args)
 void DOS_Shell::CMD_PATH(char* args)
 {
 	HELP("PATH");
+	while (args && *args && *args != ';' && is_command_delimiter(*args)) {
+		args++;
+	}
 	if (args && strlen(args)) {
 		char set_path[DOS_PATHLENGTH + CROSS_LEN + 20] = {0};
-		while (args && *args && (*args == '=' || *args == ' ')) {
-			args++;
-		}
 		if (strlen(args) == 1 && *args == ';') {
 			*args = 0;
 		}
@@ -2348,10 +2360,13 @@ void DOS_Shell::CMD_PATH(char* args)
 		this->ParseLine(set_path);
 		return;
 	} else {
-		if (const auto envvar = psp->GetEnvironmentValue("PATH")) {
-			WriteOut("%s\n", envvar->c_str());
+		// MS-DOS 4.0 COMMAND.COM print_path (TCMD2A.ASM) shows the
+		// variable name with the value, and "No Path" when it is empty.
+		const auto envvar = psp->GetEnvironmentValue("PATH");
+		if (envvar && !envvar->empty()) {
+			WriteOut("PATH=%s\n", envvar->c_str());
 		} else {
-			WriteOut("PATH=(null)\n");
+			WriteOut(MSG_Get("SHELL_CMD_PATH_NO_PATH"));
 		}
 	}
 }
