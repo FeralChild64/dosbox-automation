@@ -157,16 +157,16 @@ void CPU_Core_Dynrec_Cache_Close();
 	}
 #endif
 
+#if C_DYNAMIC_X86 || C_DYNREC
 static bool is_dynamic_core_active()
 {
 #if C_DYNAMIC_X86
 	return (cpudecoder == &CPU_Core_Dyn_X86_Run);
-#elif C_DYNREC
-	return (cpudecoder == &CPU_Core_Dynrec_Run);
 #else
-	return false;
+	return (cpudecoder == &CPU_Core_Dynrec_Run);
 #endif
 }
+#endif
 
 static void maybe_display_max_cycles_warning()
 {
@@ -182,8 +182,9 @@ static void maybe_display_max_cycles_warning()
 	}
 }
 
-static bool maybe_display_switch_to_dynamic_core_warning(const int cycles)
+static bool maybe_display_switch_to_dynamic_core_warning([[maybe_unused]] const int cycles)
 {
+#if C_DYNAMIC_X86 || C_DYNREC
 	constexpr auto CyclesThreshold = 20000;
 
 	if (!is_dynamic_core_active() && cycles > CyclesThreshold) {
@@ -197,6 +198,9 @@ static bool maybe_display_switch_to_dynamic_core_warning(const int cycles)
 	} else {
 		return false;
 	}
+#else
+	return false;
+#endif
 }
 
 static void set_modern_cycles_config(const CpuMode mode)
@@ -3873,9 +3877,13 @@ void init_cpu_config_settings(SectionProp& secprop)
 	pstring->SetHelp(
 	        "Type of CPU emulation core to use ('auto' by default). Possible values:\n"
 	        "\n"
+#if C_DYNAMIC_X86 || C_DYNREC
 	        "  auto:     'normal' core for real mode programs, 'dynamic' core for protected\n"
 	        "            mode programs (default). Most programs will run correctly with this\n"
 	        "            setting.\n"
+#else
+	        "  auto:     the 'normal' core; this build has no dynamic core.\n"
+#endif
 	        "\n"
 	        "  normal:   The DOS program is interpreted instruction by instruction. This\n"
 	        "            yields the most accurate timings, but puts 3-5 times more load on\n"
@@ -3886,7 +3894,9 @@ void init_cpu_config_settings(SectionProp& secprop)
 	        "\n"
 	        "  simple:   The 'normal' core optimised for old real mode programs; it might\n"
 	        "            give you slightly better compatibility with older games. Auto-\n"
-	        "            switches to the 'normal' core in protected mode.\n"
+	        "            switches to the 'normal' core in protected mode."
+#if C_DYNAMIC_X86 || C_DYNREC
+	        "\n"
 	        "\n"
 	        "  dynamic:  The instructions of the DOS program are translated to host CPU\n"
 	        "            instructions in blocks and are then executed directly. This puts\n"
@@ -3894,7 +3904,9 @@ void init_cpu_config_settings(SectionProp& secprop)
 	        "            but the timings might be less accurate. The 'dynamic' core is a\n"
 	        "            necessity for demanding DOS programs (e.g., 3D SVGA games).\n"
 	        "            Programs that self-modify their code might misbehave or crash on\n"
-	        "            the 'dynamic' core; use the 'normal' core for such programs.");
+	        "            the 'dynamic' core; use the 'normal' core for such programs."
+#endif
+	);
 
 	pstring = secprop.AddString("cputype", Always, "auto");
 	pstring->SetValues(

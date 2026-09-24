@@ -37,6 +37,37 @@ Two strategies, picked by preset:
 
 A C++23 compiler is required on every platform.
 
+## CPUs and the dynamic core
+
+The emulator has a dynamic CPU core for x86-64 and for arm64, and an
+interpreter that runs everywhere the code compiles. Which one you get
+is decided at configure time by `OPT_DYNAREC`:
+
+- `KNOWN_CPU` (the default): the dynamic core is enabled when the
+  target CPU is in `DYNAREC_X86_CPUS` or `DYNAREC_ARM_CPUS` in the
+  top-level CMakeLists, the spellings each backend is known to build
+  for. On any other CPU you get the interpreter and a warning.
+- `NO`: interpreter only, on every CPU. Useful for debugging the core
+  or for a packager who wants one binary flavour everywhere.
+- `YES`: the dynamic core regardless of CPU. On a CPU without a backend
+  the build fails in `src/cpu/core_dynrec.cpp`, and the warning at
+  configure time says so first.
+
+Unlisted CPUs (ppc64le, riscv64, s390x and the like) are community
+supported: the build is offered as is, we cannot test it, and issues
+filed against it are closed with a pointer to the community. A new
+spelling of x86-64 or arm64 that your platform reports is a one-line
+pull request against those lists; a new architecture needs a backend
+in `src/cpu/core_dynrec/` before it can join. Build fixes that keep
+the interpreter building on an unlisted CPU are welcome on the same
+terms. Windows on ARM is not on the list: nobody has built the arm64
+backend with MSVC yet, so a native ARM64 host gets the interpreter.
+Cross-configuring with the Visual Studio generator's `-A` platform
+is not detected; our Windows presets do not use it.
+
+On macOS the target is `CMAKE_OSX_ARCHITECTURES`, one architecture
+per configure; universal builds are refused.
+
 ## Running the tests
 
 ```bash

@@ -336,36 +336,102 @@ set(C_TARGET_CPU_X86    OFF)
 
 option(OPT_FORCE_DYNREC "Force DYNREC dynamic recompiler (not x86-64 optimized)" OFF)
 
-if (CMAKE_SYSTEM_PROCESSOR  STREQUAL "AMD64"  OR
-    CMAKE_SYSTEM_PROCESSOR  STREQUAL "x86_64" OR
-    CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+# Spellings of the CPUs each dynamic-core backend is known to build for. A new
+# spelling is a one-line pull request; a new architecture needs a backend in
+# src/cpu/core_dynrec/ first.
+set(DYNAREC_X86_CPUS AMD64 amd64 x86_64)
+set(DYNAREC_ARM_CPUS arm64 aarch64)
 
-  set(C_TARGET_CPU_X86    ON)
+set(OPT_DYNAREC "KNOWN_CPU" CACHE STRING
+  "Dynamic CPU core: KNOWN_CPU (on for CPUs in DYNAREC_X86_CPUS and DYNAREC_ARM_CPUS), YES (force on, may not build), NO (interpreter only)"
+)
+set_property(CACHE OPT_DYNAREC PROPERTY STRINGS KNOWN_CPU YES NO)
+string(TOUPPER "${OPT_DYNAREC}" dynarec_mode)
+if (dynarec_mode STREQUAL "ON")
+  set(dynarec_mode "YES")
+elseif (dynarec_mode STREQUAL "OFF")
+  set(dynarec_mode "NO")
+endif()
+if (NOT dynarec_mode MATCHES "^(KNOWN_CPU|YES|NO)$")
+  message(FATAL_ERROR "OPT_DYNAREC must be KNOWN_CPU, YES or NO, got '${OPT_DYNAREC}'")
+endif()
 
-  if (OPT_FORCE_DYNREC)
-      set(C_DYNAMIC_X86  OFF)
-      set(C_DYNREC       ON)
-  else()
-      set(C_DYNAMIC_X86  ON)
-      set(C_DYNREC       OFF)
+# On macOS the target is what CMAKE_OSX_ARCHITECTURES says, not the host;
+# CMAKE_SYSTEM_PROCESSOR stays the host value there.
+if (CMAKE_OSX_ARCHITECTURES)
+  list(LENGTH CMAKE_OSX_ARCHITECTURES osx_arch_count)
+  if (osx_arch_count GREATER 1)
+    message(FATAL_ERROR "One architecture per configure; universal builds are not supported (CMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES})")
   endif()
-
-  set(C_FPU_X86          ON)
-  set(C_UNALIGNED_MEMORY ON)
-
-elseif (CMAKE_SYSTEM_PROCESSOR  STREQUAL "arm64"   OR
-        CMAKE_SYSTEM_PROCESSOR  STREQUAL "aarch64" OR
-        CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
-
-  set(C_TARGET_CPU_ARM    ON)
-
-  set(C_DYNAMIC_X86      OFF)
-  set(C_DYNREC           ON)
-  set(C_FPU_X86          OFF)
-  set(C_UNALIGNED_MEMORY OFF)
-
+  set(target_cpu "${CMAKE_OSX_ARCHITECTURES}")
+elseif (CMAKE_SYSTEM_PROCESSOR)
+  set(target_cpu "${CMAKE_SYSTEM_PROCESSOR}")
 else()
-  message(FATAL_ERROR "Unknown processor ${CMAKE_SYSTEM_PROCESSOR}")
+  set(target_cpu "(unset)")
+endif()
+
+if (target_cpu IN_LIST DYNAREC_X86_CPUS)
+  set(C_TARGET_CPU_X86 ON)
+elseif (target_cpu IN_LIST DYNAREC_ARM_CPUS)
+  set(C_TARGET_CPU_ARM ON)
+endif()
+if (C_TARGET_CPU_X86 OR C_TARGET_CPU_ARM)
+  set(cpu_is_known ON)
+else()
+  set(cpu_is_known OFF)
+endif()
+
+if (dynarec_mode STREQUAL "NO")
+  set(want_dynarec OFF)
+elseif (dynarec_mode STREQUAL "YES")
+  set(want_dynarec ON)
+else()
+  set(want_dynarec ${cpu_is_known})
+endif()
+
+# The x86 FPU core and unaligned access are properties of the CPU, not of
+# the dynamic core, so they stay on for an x86 interpreter-only build.
+set(C_FPU_X86          ${C_TARGET_CPU_X86})
+set(C_UNALIGNED_MEMORY ${C_TARGET_CPU_X86})
+set(C_DYNAMIC_X86      OFF)
+set(C_DYNREC           OFF)
+
+if (want_dynarec)
+  if (C_TARGET_CPU_X86 AND NOT OPT_FORCE_DYNREC)
+    set(C_DYNAMIC_X86 ON)
+    set(dynarec_name "x86-64 dynamic core")
+  else()
+    set(C_DYNREC ON)
+    set(dynarec_name "DYNREC recompiler")
+  endif()
+elseif (OPT_FORCE_DYNREC)
+  message(STATUS "OPT_FORCE_DYNREC has no effect: the dynamic core is off")
+endif()
+
+if (NOT cpu_is_known)
+  set(unlisted_hint "")
+  if (NOT dynarec_mode STREQUAL "YES")
+    set(unlisted_hint " Set OPT_DYNAREC=YES to try the recompiler anyway; it may not build.")
+  endif()
+  message(WARNING
+    "CPU '${target_cpu}' is not on the list of CPUs this project builds and "
+    "tests on. This configuration is community supported: it is built as is, "
+    "untested here, and issues filed against it are closed with a pointer to "
+    "the community.${unlisted_hint}"
+  )
+endif()
+if (want_dynarec)
+  if (cpu_is_known)
+    message(STATUS "CPU ${target_cpu}: ${dynarec_name} enabled")
+  else()
+    message(WARNING
+      "OPT_DYNAREC=YES on the unlisted CPU '${target_cpu}': the ${dynarec_name} "
+      "has no backend for it and the build will most likely fail in "
+      "src/cpu/core_dynrec.cpp. You asked for it."
+    )
+  endif()
+else()
+  message(STATUS "CPU ${target_cpu}: interpreter core only (OPT_DYNAREC=${dynarec_mode})")
 endif()
 
 check_include_file("libgen.h"     HAVE_LIBGEN_H)
