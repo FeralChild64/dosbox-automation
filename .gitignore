@@ -73,3 +73,6 @@ cmake_test_discovery_*.json
 __pycache__
 *.egg-info
 resources/soundfonts/FluidR3_GM.sf2
+
+# per-developer scratch, also used by scripts/tools/check-dynarec-option.sh
+.workspace/

@@ -68,6 +68,12 @@ is not detected; our Windows presets do not use it.
 On macOS the target is `CMAKE_OSX_ARCHITECTURES`, one architecture
 per configure; universal builds are refused.
 
+`scripts/tools/check-dynarec-option.sh` configures the tree in every
+state of the option, on the host and on a simulated ppc64le, and checks
+the flags that reach `dosbox_config.h`; `--full` also builds and runs
+the test suite for the default, `NO` and ppc64le states, and checks
+that the forced recompiler fails on ppc64le where the warning says.
+
 ## Running the tests
 
 ```bash
