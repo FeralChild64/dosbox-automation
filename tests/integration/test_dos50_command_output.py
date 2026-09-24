@@ -41,6 +41,20 @@ def test_path_cleared_prints_no_path(dosbox_e2e, tmp_path):
     assert output_of(screen, "path") == ["No Path"]
 
 
+def test_path_value_is_upper_cased_like_command_com(dosbox_e2e, tmp_path):
+    screen = screen_after(dosbox_e2e, tmp_path, ["path c:\\one;d:\\two", "path"])
+    assert output_of(screen, "path") == ["PATH=C:\\ONE;D:\\TWO"]
+
+
+def test_path_refuses_text_after_the_value(dosbox_e2e, tmp_path):
+    screen = screen_after(
+        dosbox_e2e, tmp_path, ["path C:\\KEEP", "path c:\\a b", "path c:\\dos,c:\\x", "path"]
+    )
+    assert output_of(screen, "path c:\\a b") == ["Too many parameters."]
+    assert output_of(screen, "path c:\\dos,c:\\x") == ["Too many parameters."]
+    assert output_of(screen, "path") == ["PATH=C:\\KEEP"]
+
+
 def test_append_texts(dosbox_e2e, tmp_path):
     screen = screen_after(
         dosbox_e2e,

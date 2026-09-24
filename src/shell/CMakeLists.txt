@@ -2,6 +2,7 @@ target_sources(dosboxcommon PRIVATE
   autoexec.cpp
   command_line.cpp
   file_reader.cpp
+  path_command.cpp
   shell.cpp
   shell_batch.cpp
   shell_history.cpp

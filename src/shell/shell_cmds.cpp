@@ -5,6 +5,7 @@
 
 #include "dos/dos_system.h"
 #include "shell/shell.h"
+#include "shell/path_command.h"
 #include "webserver/webserver.h"
 
 #include <algorithm>
@@ -2348,26 +2349,24 @@ void DOS_Shell::CMD_CHOICE(char* args)
 void DOS_Shell::CMD_PATH(char* args)
 {
 	HELP("PATH");
-	while (args && *args && *args != ';' && is_command_delimiter(*args)) {
-		args++;
-	}
-	if (args && strlen(args)) {
-		char set_path[DOS_PATHLENGTH + CROSS_LEN + 20] = {0};
-		if (strlen(args) == 1 && *args == ';') {
-			*args = 0;
-		}
-		safe_sprintf(set_path, "set PATH=%s", args);
-		this->ParseLine(set_path);
+	const auto parsed = PathCommand::ParseArguments(args ? args : "");
+	if (std::holds_alternative<PathCommand::TooManyParameters>(parsed)) {
+		WriteOut(MSG_Get("SHELL_TOO_MANY_PARAMETERS"));
 		return;
+	}
+	const auto& request = std::get<PathCommand::Request>(parsed);
+	if (request.action == PathCommand::Action::Set) {
+		auto set_path = "set PATH=" + request.value;
+		this->ParseLine(set_path.data());
+		return;
+	}
+	// MS-DOS 4.0 COMMAND.COM print_path (TCMD2A.ASM) shows the
+	// variable name with the value, and "No Path" when it is empty.
+	const auto envvar = psp->GetEnvironmentValue("PATH");
+	if (envvar && !envvar->empty()) {
+		WriteOut("PATH=%s\n", envvar->c_str());
 	} else {
-		// MS-DOS 4.0 COMMAND.COM print_path (TCMD2A.ASM) shows the
-		// variable name with the value, and "No Path" when it is empty.
-		const auto envvar = psp->GetEnvironmentValue("PATH");
-		if (envvar && !envvar->empty()) {
-			WriteOut("PATH=%s\n", envvar->c_str());
-		} else {
-			WriteOut(MSG_Get("SHELL_CMD_PATH_NO_PATH"));
-		}
+		WriteOut(MSG_Get("SHELL_CMD_PATH_NO_PATH"));
 	}
 }
 

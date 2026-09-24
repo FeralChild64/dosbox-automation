@@ -31,6 +31,7 @@ add_executable(dosbox_tests
     mode_symbolic_tests.cpp
     mount_tests.cpp
     ne2000_tests.cpp
+    path_command_tests.cpp
     port_containers_tests.cpp
     program_append_tests.cpp
     program_join_tests.cpp
