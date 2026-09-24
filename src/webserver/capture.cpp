@@ -8,7 +8,7 @@
 
 #include "capture/capture.h"
 
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 #include "dos/programs/mount_policy.h"
 #include "misc/std_filesystem.h"
 

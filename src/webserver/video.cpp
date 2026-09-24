@@ -16,7 +16,7 @@
 #include "ints/int10.h"
 #include "lua/lua_api.h"
 
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 #include <png.h>
 #include <jpeglib.h>

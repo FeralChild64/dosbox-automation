@@ -8,7 +8,7 @@
 
 #include "audio/mixer.h"
 
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 using json = nlohmann::json;
 

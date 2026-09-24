@@ -10,7 +10,7 @@
 #include "gui/titlebar.h"
 #include "shell/shell.h"
 
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 using json = nlohmann::json;
 

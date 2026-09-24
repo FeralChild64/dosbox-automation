@@ -9,7 +9,7 @@
 #include "dos/drive_swap.h"
 #include "dos/programs/mount_policy.h"
 
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 #include <cctype>
 #include <filesystem>

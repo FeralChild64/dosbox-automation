@@ -24,6 +24,6 @@ target_link_libraries(dosboxcommon PRIVATE
   simde
   base64
   httplib
-  json
   JPEG::JPEG
+  nlohmann_json::nlohmann_json
   PNG::PNG)

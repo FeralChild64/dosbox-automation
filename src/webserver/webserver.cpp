@@ -47,7 +47,7 @@
 #endif
 
 #include "http/http.h"
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 #include "augra/log.h"
 #include "config/config.h"

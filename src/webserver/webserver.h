@@ -13,7 +13,7 @@
 #include <string_view>
 
 #include "http/http.h"
-#include "json/json.h"
+#include "nlohmann/json_fwd.hpp"
 
 #include "config/config.h"
 

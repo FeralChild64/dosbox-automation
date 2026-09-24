@@ -8,7 +8,7 @@
 
 #include "base64/base64.h"
 #include "http/http.h"
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 #include "utils/string_utils.h"
 
 #include "cpu/registers.h"

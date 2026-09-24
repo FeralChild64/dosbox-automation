@@ -795,6 +795,7 @@ target_link_libraries(dosboxcommon PRIVATE
 )
 
 target_link_libraries(dosbox PRIVATE
+  nlohmann_json::nlohmann_json
   dosboxcommon
   SDL3::Headers
 )

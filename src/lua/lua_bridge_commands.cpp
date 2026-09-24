@@ -7,7 +7,7 @@
 #include "gui/osd/osd.h"
 #include "webserver/webserver.h"
 
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 #include "augra/log.h"
 #include "misc/cross.h"

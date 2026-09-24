@@ -20,7 +20,7 @@
 #include <algorithm>
 #include <chrono>
 
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 #include <mutex>
 #include <queue>

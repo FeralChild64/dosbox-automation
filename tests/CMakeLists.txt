@@ -84,6 +84,7 @@ target_link_libraries(dosbox_tests PRIVATE
     GTest::gmock_main
     dosboxcommon
     lua
+    nlohmann_json::nlohmann_json
     SDL3::Headers
     ${ZMBV_ZLIB_TARGET}
 )

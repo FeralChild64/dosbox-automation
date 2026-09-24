@@ -7,7 +7,7 @@
 
 #include "hardware/port.h"
 
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 using json = nlohmann::json;
 using httplib::Request, httplib::Response;
