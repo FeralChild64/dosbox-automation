@@ -52,10 +52,19 @@ FT_UInt FreeType::GetCharIndex(const FT_Face face, const FT_ULong char_code)
 bool FreeType::NewFace(const std_fs::path& file_path_name,
                        const FT_Long face_index, FT_Face* face)
 {
+	// A directory opens fine and reports a bogus size on some file systems
+	std::error_code error_code = {};
+	if (!std_fs::is_regular_file(file_path_name, error_code) || error_code) {
+		augra::log_warn("ttf",
+		                "Could not open font file '%s'",
+		                file_path_name.string().c_str());
+		return false;
+	}
+
 	// Open the file
 	std::ifstream file_stream = {};
 	file_stream.open(file_path_name.string(), std::ios::binary);
-	if (file_stream.bad()) {
+	if (!file_stream.is_open()) {
 		augra::log_warn("ttf",
 		                "Could not open font file '%s'",
 		                file_path_name.string().c_str());
@@ -64,8 +73,16 @@ bool FreeType::NewFace(const std_fs::path& file_path_name,
 
 	// Check file size
 	file_stream.seekg(0, std::ios::end);
-	const auto file_size = static_cast<size_t>(file_stream.tellg());
+	const auto end_position = file_stream.tellg();
 	file_stream.seekg(0, std::ios::beg);
+	// tellg() is -1 on failure, which as a size_t would pass for a huge file
+	if (!file_stream || end_position < 0) {
+		augra::log_warn("ttf",
+		                "Error reading font file '%s'",
+		                file_path_name.string().c_str());
+		return false;
+	}
+	const auto file_size = static_cast<size_t>(end_position);
 	if (file_size > MaxFileSizeBytes) {
 		augra::log_warn("ttf",
 		                "Font file '%s' too large",
@@ -77,7 +94,7 @@ bool FreeType::NewFace(const std_fs::path& file_path_name,
 	font_file_content.resize(file_size);
 	font_file_content.shrink_to_fit();
 	file_stream.read(reinterpret_cast<char*>(font_file_content.data()), file_size);
-	if (file_stream.bad()) {
+	if (file_stream.gcount() != static_cast<std::streamsize>(file_size)) {
 		augra::log_warn("ttf",
 		                "Error reading font file '%s'",
 		                file_path_name.string().c_str());

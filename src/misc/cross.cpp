@@ -235,7 +235,7 @@ std_fs::path resolve_home(const std::string &str) noexcept
 std::deque<std_fs::path> get_standard_font_dirs()
 {
 #if defined(WIN32)
-	const std::string windows_directory = getenv("WINDIR");
+	const std::string windows_directory = get_env_var("WINDIR");
 	if (windows_directory.empty()) {
 		return {};
 	}

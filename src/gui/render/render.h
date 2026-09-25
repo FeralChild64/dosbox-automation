@@ -107,7 +107,8 @@ struct Render {
 		int out_pitch      = 0;
 		uint8_t* out_write = nullptr;
 
-		uint32_t* out_buf = nullptr;
+		uint32_t* out_buf   = nullptr;
+		size_t out_buf_size = 0;
 
 		int y_scale = 0;
 	} scale = {};

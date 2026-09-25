@@ -3438,58 +3438,58 @@ static bool is_font_file_ok(const std_fs::path& candidate)
 	return false;
 }
 
-static std_fs::path find_font_file(const std_fs::path& root_path,
-                                   const std::string& file_name,
-                                   const uint8_t max_depth = 3)
+std_fs::path TTF_FindFontFile(const std_fs::path& root_path,
+                              const std::string& file_name, const uint8_t max_depth)
 {
-	if (!std_fs::is_directory(root_path)) {
+	// error_code overloads only: status() throws on a symlink loop or a
+	// vanished mount, and a range-for has no non-throwing increment
+	std::error_code error_code = {};
+	if (!std_fs::is_directory(root_path, error_code) || error_code) {
 		return {};
 	}
 
-	std_fs::path result        = {};
-	std::error_code error_code = {};
-
 	constexpr auto IteratorOption = std_fs::directory_options::skip_permission_denied;
+	const auto end = std_fs::directory_iterator();
 
-	// Look for files in the current directory
-	for (const auto& dir_entry : std_fs::directory_iterator(root_path, IteratorOption, error_code)) {
-		if (!dir_entry.is_regular_file() || error_code) {
-			error_code.clear();
+	auto file_it = std_fs::directory_iterator(root_path, IteratorOption, error_code);
+	for (; !error_code && file_it != end; file_it.increment(error_code)) {
+		std::error_code entry_error = {};
+		if (!file_it->is_regular_file(entry_error) || entry_error) {
 			continue;
 		}
 
 #if defined(WIN32) || defined(MACOSX)
 		// Windows, MacOS - case insensitive file name compare
-		if (iequals(get_file_name_from_path(dir_entry.path()), file_name)) {
+		if (iequals(get_file_name_from_path(file_it->path()), file_name)) {
 #else
 		// Linux - sensitive file name compare
-		if (get_file_name_from_path(dir_entry.path()) == file_name) {
+		if (get_file_name_from_path(file_it->path()) == file_name) {
 #endif
-			return dir_entry.path();
+			return file_it->path();
 		}
 	}
 
 	if (max_depth == 0) {
-		return result;
+		return {};
 	}
 
-	// Look in subdirectories
-	for (const auto& dir_entry : std_fs::directory_iterator(root_path, IteratorOption, error_code)) {
-		if (!dir_entry.is_directory() || error_code) {
-			error_code.clear();
+	error_code.clear();
+	auto dir_it = std_fs::directory_iterator(root_path, IteratorOption, error_code);
+	for (; !error_code && dir_it != end; dir_it.increment(error_code)) {
+		std::error_code entry_error = {};
+		if (!dir_it->is_directory(entry_error) || entry_error) {
 			continue;
 		}
 
-		const auto result = find_font_file(dir_entry.path(),
-		                                   file_name,
-		                                   max_depth - 1);
+		const auto result = TTF_FindFontFile(dir_it->path(),
+		                                     file_name,
+		                                     max_depth - 1);
 		if (!result.empty() && is_font_file_ok(result)) {
-			// Found the file in one of the subdirectories
 			return result;
 		}
 	}
 
-	return result;
+	return {};
 }
 
 static std_fs::path find_default_font_file()
@@ -3540,7 +3540,8 @@ static std_fs::path find_custom_font_file(const std::string& font_name)
 
 		const auto directories = get_standard_font_dirs();
 		for (const auto& directory : directories) {
-			const auto result = find_font_file(directory, font_file_name.string());
+			const auto result = TTF_FindFontFile(directory,
+			                                     font_file_name.string());
 			if (!result.empty()) {
 				return result;
 			}
@@ -3552,8 +3553,9 @@ static std_fs::path find_custom_font_file(const std::string& font_name)
 			const auto font_file_name_extension = get_path_with_extension(
 			        font_file_name);
 			for (const auto& directory : directories) {
-				const auto result = find_font_file(
-				        directory, font_file_name_extension.string());
+				const auto result = TTF_FindFontFile(
+				        directory,
+				        font_file_name_extension.string());
 				if (!result.empty()) {
 					return result;
 				}

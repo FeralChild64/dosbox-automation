@@ -69,6 +69,9 @@ add_executable(dosbox_tests
     webserver_frame_tap_tests.cpp
     multi_prefix_tests.cpp
     zmbv_tests.cpp
+    render_scale_tests.cpp
+    truetype_freetype_tests.cpp
+    cross_tests.cpp
 )
 
 # Disable some warnings for deliberately flawed test cases
@@ -91,6 +94,7 @@ target_link_libraries(dosbox_tests PRIVATE
     lua
     nlohmann_json::nlohmann_json
     SDL3::Headers
+    Freetype::Freetype
     ${ZMBV_ZLIB_TARGET}
 )
 

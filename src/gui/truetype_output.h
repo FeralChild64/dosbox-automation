@@ -9,6 +9,7 @@
 #include <string>
 
 #include "config/config.h"
+#include "misc/std_filesystem.h"
 #include "utils/fraction.h"
 #include "utils/rgb888.h"
 
@@ -86,6 +87,12 @@ std::string TTF_GetLoadedScreenFont();
 // Tries to shorten the font name to the given length; might be unable to
 // shorten it below 10 characters.
 std::string TTF_ShortenFontName(const std::string& font_name, const size_t max_length);
+
+// Searches root_path and up to max_depth directory levels below it for a
+// font file of the given name. Returns an empty path if not found.
+std_fs::path TTF_FindFontFile(const std_fs::path& root_path,
+                              const std::string& file_name,
+                              const uint8_t max_depth = 3);
 
 // ***************************************************************************
 // Lifecycle

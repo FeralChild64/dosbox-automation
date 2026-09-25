@@ -553,19 +553,22 @@ void Render::Scale::SetSize(const size_t width, const size_t height)
 	constexpr size_t Alignment = sizeof(uint64_t);
 
 	const size_t new_cache_size = width * height;
-	if (cache_size == new_cache_size) {
-		return;
-	}
 	const size_t new_out_buf_size =
 		std::max(width, static_cast<size_t>(ScalerMaxWidth)) *
 		std::max(height, static_cast<size_t>(ScalerMaxHeight));
+
+	// out_buf depends on each dimension, so equal pixel counts are not enough
+	if (cache_size == new_cache_size && out_buf_size == new_out_buf_size) {
+		return;
+	}
 
 	// Free the memory
 	free_aligned(cache);
 	free_aligned(out_buf);
 
 	if (new_cache_size == 0) {
-		cache_size = 0;
+		cache_size   = 0;
+		out_buf_size = 0;
 
 		cache   = nullptr;
 		out_buf = nullptr;
@@ -584,7 +587,8 @@ void Render::Scale::SetSize(const size_t width, const size_t height)
 		E_Exit("Out of memory");
 	}
 
-	cache_size = new_cache_size_bytes;
+	cache_size   = new_cache_size;
+	out_buf_size = new_out_buf_size;
 }
 
 Render::Scale::~Scale()

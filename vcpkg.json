@@ -13,6 +13,14 @@
     "opusfile",
     "fluidsynth",
     {
+      "name": "freetype",
+      "default-features": false,
+      "features": [
+        "png",
+        "zlib"
+      ]
+    },
+    {
       "name": "sdl3",
       "platform": "linux",
       "default-features": false,
