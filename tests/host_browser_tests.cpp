@@ -6,10 +6,16 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#if !defined(WIN32)
+#include <unistd.h>
+#endif
 
 #include "augra/log.h"
 
@@ -222,13 +228,80 @@ TEST(HostBrowser, XdgDataDirsRemovedWhenNothingIsLeft)
 }
 
 #if !defined(WIN32)
+// Restores the variable on every exit, a failed ASSERT included.
+class ScopedEnvironmentVariable {
+public:
+	ScopedEnvironmentVariable(const char* name, const std::string& value)
+	        : name(name)
+	{
+		if (const char* previous = std::getenv(name)) {
+			saved = previous;
+		}
+		setenv(name, value.c_str(), 1);
+	}
+
+	~ScopedEnvironmentVariable()
+	{
+		if (saved) {
+			setenv(name, saved->c_str(), 1);
+		} else {
+			unsetenv(name);
+		}
+	}
+
+	ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+	ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) = delete;
+
+private:
+	const char* name                 = nullptr;
+	std::optional<std::string> saved = {};
+};
+
+TEST(ScopedEnvironmentVariable, RestoresThePreviousValue)
+{
+	setenv("DOSBOX_TEST_ENV_GUARD", "before", 1);
+	{
+		const ScopedEnvironmentVariable guard("DOSBOX_TEST_ENV_GUARD",
+		                                      "during");
+		EXPECT_STREQ(std::getenv("DOSBOX_TEST_ENV_GUARD"), "during");
+	}
+	EXPECT_STREQ(std::getenv("DOSBOX_TEST_ENV_GUARD"), "before");
+	unsetenv("DOSBOX_TEST_ENV_GUARD");
+}
+
+TEST(ScopedEnvironmentVariable, RemovesAVariableThatWasUnset)
+{
+	unsetenv("DOSBOX_TEST_ENV_GUARD");
+	{
+		const ScopedEnvironmentVariable guard("DOSBOX_TEST_ENV_GUARD",
+		                                      "during");
+		EXPECT_STREQ(std::getenv("DOSBOX_TEST_ENV_GUARD"), "during");
+	}
+	EXPECT_EQ(std::getenv("DOSBOX_TEST_ENV_GUARD"), nullptr);
+}
+
+// /bin/true is Linux-only; FreeBSD and macOS keep it in /usr/bin.
+std::optional<std::string> FindTrueExecutable()
+{
+	constexpr std::array<const char*, 2> candidates = {"/usr/bin/true",
+	                                                   "/bin/true"};
+	for (const auto* candidate : candidates) {
+		if (access(candidate, X_OK) == 0) {
+			return candidate;
+		}
+	}
+	return std::nullopt;
+}
+
 // Never let this reach SDL_OpenURL: on a desktop it starts the real
 // browser. A BROWSER entry that exits at once proves the spawn path.
 TEST(HostBrowser, OpenUrlSpawnsTheBrowserNamedInTheEnvironment)
 {
-	const char* previous    = std::getenv("BROWSER");
-	const std::string saved = previous ? previous : "";
-	setenv("BROWSER", "/bin/true", 1);
+	const auto true_path = FindTrueExecutable();
+	if (!true_path) {
+		GTEST_SKIP() << "no executable true in /usr/bin or /bin";
+	}
+	const ScopedEnvironmentVariable browser("BROWSER", *true_path);
 
 	std::vector<std::string> opened = {};
 	augra::Logger::instance().add_sink([&](augra::LogLevel,
@@ -243,13 +316,7 @@ TEST(HostBrowser, OpenUrlSpawnsTheBrowserNamedInTheEnvironment)
 	augra::Logger::instance().clear_sinks();
 
 	ASSERT_EQ(opened.size(), 1u);
-	EXPECT_EQ(opened[0], "opened http://127.0.0.1:1/ with /bin/true");
-
-	if (previous) {
-		setenv("BROWSER", saved.c_str(), 1);
-	} else {
-		unsetenv("BROWSER");
-	}
+	EXPECT_EQ(opened[0], "opened http://127.0.0.1:1/ with " + *true_path);
 }
 #endif
 

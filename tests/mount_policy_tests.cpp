@@ -867,12 +867,13 @@ TEST_F(MountPolicyTest, ImagePathRefusesSymlinkToCharacterDevice)
 #if !defined(WIN32)
 TEST_F(MountPolicyTest, ImagePathUnderSystemDir)
 {
-	// /etc/hostname is a regular file on most Linux systems
-	if (!fs::exists("/etc/hostname")) {
-		GTEST_SKIP() << "/etc/hostname not available";
+	// /etc/passwd, not /etc/hostname: FreeBSD has no /etc/hostname
+	if (!fs::is_regular_file("/etc/passwd") ||
+	    MountPolicy::HasSymlinkComponent("/etc/passwd")) {
+		GTEST_SKIP() << "/etc/passwd missing or reached through a symlink";
 	}
 	const auto verdict = MountPolicy::ValidateImagePath(
-	        fs::path("/etc/hostname"), MountOrigin::GuestCommand, {});
+	        fs::path("/etc/passwd"), MountOrigin::GuestCommand, {});
 
 	EXPECT_FALSE(verdict.allowed);
 	EXPECT_EQ(verdict.reason, DenyReason::SystemPath);
@@ -1102,13 +1103,12 @@ TEST_F(MountPolicyTest, ImagePathApiAnchorDoesNotUnblockSystemPath)
 {
 	// The anchor widens the whitelist. It must not reach past the
 	// system-path denylist, which is checked first.
-	if (!fs::exists("/etc/hostname")) {
-		GTEST_SKIP() << "/etc/hostname not available";
+	if (!fs::is_regular_file("/etc/passwd") ||
+	    MountPolicy::HasSymlinkComponent("/etc/passwd")) {
+		GTEST_SKIP() << "/etc/passwd missing or reached through a symlink";
 	}
-	const auto verdict = MountPolicy::ValidateImagePath(fs::path("/etc/hostname"),
-	                                                    MountOrigin::Api,
-	                                                    {},
-	                                                    fs::path("/etc"));
+	const auto verdict = MountPolicy::ValidateImagePath(
+	        fs::path("/etc/passwd"), MountOrigin::Api, {}, fs::path("/etc"));
 
 	EXPECT_FALSE(verdict.allowed);
 	EXPECT_EQ(verdict.reason, DenyReason::SystemPath);
