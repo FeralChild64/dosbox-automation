@@ -37,6 +37,7 @@
 #include "gui/render/sdl_renderer.h"
 #include "gui/desktop_integration.h"
 #include "gui/titlebar.h"
+#include "gui/truetype_output.h"
 #include "hardware/input/keyboard.h"
 #include "hardware/input/mouse.h"
 #include "hardware/timer.h"
@@ -503,11 +504,13 @@ static void maybe_log_display_properties()
 		    last_pixel_aspect_ratio != sdl.draw.render_pixel_aspect_ratio) {
 
 			const auto& par = video_mode.pixel_aspect_ratio;
+			const auto& ttf = video_mode.ttf_override;
 
-			LOG_MSG("DISPLAY: %s at %2.5g Hz, scaled to %dx%d pixels "
+			LOG_MSG("DISPLAY: %s at %2.5g Hz%s, scaled to %dx%d pixels "
 			        "with 1:%1.6g (%d:%d) pixel aspect ratio",
 			        to_string(video_mode).c_str(),
 			        refresh_rate,
+			        ttf ? ", overridden with TTF font" : "",
 			        iroundf(draw_size_px.w),
 			        iroundf(draw_size_px.h),
 			        par.Inverse().ToDouble(),
@@ -2190,6 +2193,15 @@ static void notify_sdl_setting_updated(SectionProp& section,
 			set_window_transparency();
 		}
 
+	} else if (prop_name == "ttf_output") {
+		TTF_ReadConfigOutput(section);
+
+	} else if (prop_name == "ttf_aspect") {
+		TTF_ReadConfigAspect(section);
+
+	} else if (prop_name == "ttf_font") {
+		TTF_ReadConfigFont(section);
+
 	} else {
 		LOG_WARNING("SDL: Runtime change unhandled for property: '%s'",
 		            prop_name.c_str());
@@ -2683,7 +2695,7 @@ bool GFX_PollAndHandleEvents()
 	}
 
 	while (SDL_PollEvent(&event)) {
-		
+
 #if C_DEBUGGER
 		if (is_debugger_event(event)) {
 			if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
@@ -2712,7 +2724,7 @@ bool GFX_PollAndHandleEvents()
 			}
 			if (sdl.pause_when_inactive) {
 				handle_pause_when_inactive(event);
-			}			
+			}
 		}
 
 		switch(event.type) {
@@ -2979,6 +2991,9 @@ static void init_sdl_config_settings(SectionProp& section)
 	        "              enforce blocking vsync at the OS level (e.g., forced 60 Hz vsync\n"
 	        "              could cause problems with VGA games presenting frames at 70 Hz).");
 	pstring->SetValues({"auto", "dos-rate", "host-rate"});
+
+	// Add TrueType config options
+	TTF_AddConfigOptions(section);
 
 	auto pmulti = section.AddMultiVal("capture_mouse", Deprecated, ",");
 	pmulti->SetHelp(

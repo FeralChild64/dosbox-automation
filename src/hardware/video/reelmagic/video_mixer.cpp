@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2022-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2022-2022 Jon Dennis
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 //
@@ -17,6 +18,7 @@
 
 #include "config/setup.h"
 #include "gui/render/scaler/scalers.h"
+#include "gui/truetype_output.h"
 #include "misc/video.h"
 #include "utils/checks.h"
 #include "utils/rgb565.h"
@@ -645,6 +647,8 @@ void ReelMagic_SetVideoMixerEnabled(const bool enabled)
 		return;
 	_videoMixerEnabled = enabled;
 	LOG(LOG_REELMAGIC, LOG_NORMAL)("%s Video Mixer", enabled ? "Enabling" : "Disabling");
+
+	TTF_NotifyNewVideoMixerState();
 
 	constexpr auto update_render_mode = true;
 	setup_video_mixer(update_render_mode);

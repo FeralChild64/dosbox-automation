@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2021-2025 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef DOSBOX_CROSS_H
@@ -8,7 +9,9 @@
 #include "dosbox.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
+#include <deque>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -30,7 +33,7 @@
 
 
 #if defined (WIN32)
-#define CROSS_FILENAME(blah) 
+#define CROSS_FILENAME(blah)
 #define CROSS_FILESPLIT '\\'
 #else
 #define	CROSS_FILENAME(blah) strreplace(blah,'\\','/')
@@ -99,6 +102,9 @@ std_fs::path get_primary_config_path();
 
 std_fs::path resolve_home(const std::string &str) noexcept;
 
+// Get the list of standard directories with fonts
+std::deque<std_fs::path> get_standard_font_dirs();
+
 #if defined (WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -116,7 +122,7 @@ typedef struct dir_struct {
 //#include <sys/types.h> //Included above
 #include <dirent.h>
 
-typedef struct dir_struct { 
+typedef struct dir_struct {
 	DIR*  dir;
 	char base_path[CROSS_LEN];
 } DirInformation;
@@ -137,5 +143,27 @@ bool get_expanded_files(const std::string &path,
                         std::vector<std::string> &files,
                         bool files_only,
                         bool skip_native_path = false) noexcept;
+
+// Aligned memory allocate and free, supports Microsoft Vicual C
+inline void* malloc_aligned(const size_t size, const size_t alignment)
+{
+#ifdef _MSC_VER
+	// Microsoft Visual C does not support 'std::aligned_alloc'
+	return _aligned_malloc(size, alignment);
+#else
+	return std::aligned_alloc(alignment, size);
+#endif
+}
+
+inline void free_aligned(void* pointer)
+{
+#ifdef _MSC_VER
+	// Microsoft Visual C requires a special version of 'free' to be used
+	// to deallocate memory alocated with '_aligned_malloc'
+	_aligned_free(pointer);
+#else
+	std::free(pointer);
+#endif
+}
 
 #endif

@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "dosbox.h"
@@ -1410,6 +1411,7 @@ void VGA_SetupOther()
 	vga.tandy.line_mask = 3;
 	vga.tandy.line_shift = 13;
 
+	vga.draw.ttf.vram_font_dirty_flag = true;
 	if (is_machine_cga() || is_machine_pcjr_or_tandy()) {
 		extern uint8_t int10_font_08[256 * 8];
 		for (int i = 0; i < 256; ++i) {

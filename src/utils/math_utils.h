@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef DOSBOX_MATH_UTILS_H
@@ -345,6 +346,45 @@ inline int round_to_multiple_of(int m, int x)
 	const auto i     = (x >= 0) ? ceil(fract) : floor(fract);
 
 	return static_cast<int>(i * m);
+}
+
+// Rounds a floating point value to an integer,
+// clamps the result to the targeet type
+
+inline uint8_t round_to_uint8(const float value)
+{
+	assert(std::isfinite(value));
+	return clamp_to_uint8(std::lround(value));
+}
+
+inline uint16_t round_to_uint16(const float value)
+{
+	assert(std::isfinite(value));
+	return clamp_to_uint16(std::lround(value));
+}
+
+inline uint32_t round_to_uint32(const float value)
+{
+	assert(std::isfinite(value));
+	return clamp_to_uint32(std::lround(value));
+}
+
+inline int8_t round_to_int8(const float value)
+{
+	assert(std::isfinite(value));
+	return clamp_to_int8(std::lround(value));
+}
+
+inline int16_t round_to_int16(const float value)
+{
+	assert(std::isfinite(value));
+	return clamp_to_int16(std::lround(value));
+}
+
+inline int32_t round_to_int32(const float value)
+{
+	assert(std::isfinite(value));
+	return clamp_to_int32(std::lround(value));
 }
 
 #endif

@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
+// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "dosbox.h"
@@ -72,17 +73,29 @@ void write_p3c5(io_port_t, io_val_t value, io_width_t)
 		break;
 	case 3:		/* Character Map Select */
 		{
-			seq(character_map_select)=val;
+			seq(character_map_select) = val;
+
 		        auto font1 = static_cast<uint8_t>((val & 0x3) << 1);
 		        if (is_machine_vga_or_better()) {
 			        font1 |= (val & 0x10) >> 4;
 		        }
-		        vga.draw.font_tables[0] = &vga.draw.font[font1 * 8 * 1024];
+
+			const auto new_table_0 = &vga.draw.font[font1 * 8 * 1024];
+			if (vga.draw.font_tables[0] != new_table_0) {
+				vga.draw.font_tables[0] = new_table_0;
+				vga.draw.ttf.vram_font_dirty_flag = true;
+			}
+
 		        uint8_t font2 = ((val & 0xc) >> 1);
 		        if (is_machine_vga_or_better()) {
 			        font2 |= (val & 0x20) >> 5;
 		        }
-		        vga.draw.font_tables[1] = &vga.draw.font[font2 * 8 * 1024];
+
+			const auto new_table_1 = &vga.draw.font[font2 * 8 * 1024];
+			if (vga.draw.font_tables[1] != new_table_1) {
+				vga.draw.font_tables[1] = new_table_1;
+				vga.draw.ttf.vram_font_dirty_flag = true;
+			}
 	}
 	/*
 	        0,1,4  Selects VGA Character Map (0..7) if bit 3 of the character
@@ -157,4 +170,3 @@ void VGA_SetupSEQ()
 		}
 	}
 }
-

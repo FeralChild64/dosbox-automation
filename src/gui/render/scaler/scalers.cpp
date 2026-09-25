@@ -14,7 +14,8 @@
 #include <array>
 #include <cstring>
 
-std::array<int, ScalerMaxHeight> scaler_changed_lines = {};
+static_assert(ScalerMaxHeightTtf >= ScalerMaxHeight);
+std::array<int, ScalerMaxHeightTtf> scaler_changed_lines = {};
 
 int scaler_changed_line_index = 0;
 

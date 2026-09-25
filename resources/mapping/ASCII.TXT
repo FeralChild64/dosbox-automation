@@ -797,8 +797,8 @@
 0x04d1 NNN #CYRILLIC SMALL LETTER A WITH BREVE
 0x04d2 NNN #CYRILLIC CAPITAL LETTER A WITH DIAERESIS
 0x04d3 NNN #CYRILLIC SMALL LETTER A WITH DIAERESIS
-0x04d4 NNN #CYRILLIC CAPITAL LIGATURE AE
-0x04d5 NNN #CYRILLIC SMALL LIGATURE AE
+0x04d4 NNN #CYRILLIC CAPITAL LIGATURE A IE
+0x04d5 NNN #CYRILLIC SMALL LIGATURE A IE
 0x04d6 NNN #CYRILLIC CAPITAL LETTER IE WITH BREVE
 0x04d7 NNN #CYRILLIC SMALL LETTER IE WITH BREVE
 0x04d8 NNN #CYRILLIC CAPITAL LETTER SCHWA
@@ -2079,6 +2079,9 @@
 # ****************************************************************************
 
 # DOSBox Staging private (not part of Unicode standard) code points
+#
+# Please keep the list synchronized with 'is_code_point_dosbox_specific'
+# implementation in 'unicode.cpp'
 
 0xedb0 NNN #PRIVATE DOSBOX PLN SYMBOL
 0xedb1 NNN #PRIVATE DOSBOX DOUBLE TILDE
@@ -2093,12 +2096,11 @@
 0xedba NNN #PRIVATE DOSBOX CYRILLIC CAPITAL LETTER EM WITH HOOK
 0xedbb NNN #PRIVATE DOSBOX CYRILLIC SMALL LETTER EM WITH HOOK
 
-
 # Other common unofficial code points
+# Please keep the list synchronized with 'is_code_point_private_well_known'
+# implementation in 'unicode.cpp'
 
-# In case TTF output is implemented, consider rendering it as 0x0257 0x0335
 0xf20d NNN #PRIVATE COMMON LATIN CAPITAL LETTER D WITH HOOK AND TAIL
-
 0xf8ff NNN #PRIVATE APPLE LOGO
 
 # ****************************************************************************
