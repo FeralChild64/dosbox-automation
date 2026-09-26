@@ -1,5 +1,6 @@
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
-// SPDX-License-Identifier: GPL-2.0-or-later
+// This file is part of the dosbox-automation Project.
+// License: GPL-2.0-or-later. Contact: dosbox-automation-project@trinity2k.net
+//
 
 #include "gui/truetype_output.h"
 
@@ -7,8 +8,9 @@
 
 #include <cstdint>
 #include <fstream>
-#include <random>
 #include <string>
+
+#include "test_temp_dir.h"
 
 namespace {
 
@@ -65,20 +67,7 @@ class FindFontFile : public ::testing::Test {
 protected:
 	void SetUp() override
 	{
-		std::random_device rd = {};
-		auto dist = std::uniform_int_distribution<uint64_t>();
-		for (int attempt = 0; attempt < 16 && root.empty(); ++attempt) {
-			const auto candidate = std_fs::temp_directory_path() /
-			                       ("find_font_file_" +
-			                        std::to_string(dist(rd)));
-			std::error_code ec = {};
-			if (std_fs::create_directory(candidate, ec) && !ec) {
-				std_fs::permissions(candidate,
-				                    std_fs::perms::owner_all,
-				                    ec);
-				root = candidate;
-			}
-		}
+		root = TestTempDir::MakeUnique("find_font_file_");
 		ASSERT_FALSE(root.empty());
 	}
 

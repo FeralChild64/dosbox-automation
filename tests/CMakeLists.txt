@@ -12,6 +12,7 @@ add_executable(dosbox_tests
     config_help_tests.cpp
     dos_files_tests.cpp
     dos_io_delay_tests.cpp
+    dos_keyboard_layout_setting_tests.cpp
     dos_memory_struct_tests.cpp
     dos_psp_environment_tests.cpp
     dos_runtime_settings_tests.cpp
@@ -47,12 +48,16 @@ add_executable(dosbox_tests
     string_utils_tests.cpp
     # stubs.cpp
     support_tests.cpp
+    test_temp_dir.h
+    test_temp_dir_tests.cpp
+    truetype_character_block_tests.cpp
     truetype_tests.cpp
     unicode_tests.cpp
     webserver_auth_tests.cpp
     webserver_tools_tests.cpp
     webserver_tool_launch_tests.cpp
     host_browser_tests.cpp
+    host_layout_table_tests.cpp
     docs_location_tests.cpp
     osd_tests.cpp
     mount_policy_tests.cpp
@@ -97,6 +102,14 @@ target_link_libraries(dosbox_tests PRIVATE
     Freetype::Freetype
     ${ZMBV_ZLIB_TARGET}
 )
+
+# %TEMP% is on the Windows mount denylist, so the mount suites keep their
+# fixtures in the build tree there (ada-925x)
+if (WIN32)
+    target_compile_definitions(dosbox_tests PRIVATE
+        DOSBOX_TEST_SCRATCH_DIR="${CMAKE_BINARY_DIR}/test-scratch"
+    )
+endif()
 
 include(GoogleTest)
 

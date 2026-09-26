@@ -7,12 +7,12 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "augra/log.h"
+#include "test_temp_dir.h"
 
 namespace {
 
@@ -27,29 +27,8 @@ protected:
 				warnings.push_back(message);
 			}
 		});
-		dir = MakeTempDir();
+		dir = TestTempDir::MakeUnique("truetype_freetype_");
 		ASSERT_FALSE(dir.empty());
-	}
-
-	// Same shape as mount_policy_tests.cpp: random name plus creation
-	// check instead of mkdtemp, for Windows
-	static std_fs::path MakeTempDir()
-	{
-		std::random_device rd = {};
-		auto dist = std::uniform_int_distribution<uint64_t>();
-		for (int attempt = 0; attempt < 16; ++attempt) {
-			const auto name = "truetype_freetype_" +
-			                  std::to_string(dist(rd));
-			const auto candidate = std_fs::temp_directory_path() / name;
-			std::error_code ec = {};
-			if (std_fs::create_directory(candidate, ec) && !ec) {
-				std_fs::permissions(candidate,
-				                    std_fs::perms::owner_all,
-				                    ec);
-				return candidate;
-			}
-		}
-		return {};
 	}
 
 	void TearDown() override

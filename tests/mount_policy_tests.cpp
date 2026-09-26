@@ -9,11 +9,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <random>
 #include <set>
 #include <string>
 
 #include <gtest/gtest.h>
+
+#include "test_temp_dir.h"
 
 #if !defined(WIN32)
 #include <sys/socket.h>
@@ -32,28 +33,9 @@ class MountPolicyTest : public testing::Test {
 protected:
 	fs::path tmp_dir = {};
 
-	// mkdtemp does not exist on Windows; create_directory fails on an
-	// existing path, so a random name plus creation check gives the
-	// same no-clobber guarantee portably
-	static fs::path MakeTempDir()
-	{
-		std::random_device rd = {};
-		auto dist = std::uniform_int_distribution<uint64_t>();
-		for (int attempt = 0; attempt < 16; ++attempt) {
-			const auto name = "mount_policy_" + std::to_string(dist(rd));
-			const auto candidate = fs::temp_directory_path() / name;
-			std::error_code ec   = {};
-			if (fs::create_directory(candidate, ec) && !ec) {
-				fs::permissions(candidate, fs::perms::owner_all, ec);
-				return candidate;
-			}
-		}
-		return {};
-	}
-
 	void SetUp() override
 	{
-		tmp_dir = MakeTempDir();
+		tmp_dir = TestTempDir::MakeUnique("mount_policy_");
 		ASSERT_FALSE(tmp_dir.empty());
 	}
 

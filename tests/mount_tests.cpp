@@ -10,7 +10,6 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -20,6 +19,7 @@
 #include "dosbox_test_fixture.h"
 #include "ints/bios_disk.h"
 #include "misc/cross.h"
+#include "test_temp_dir.h"
 
 namespace {
 
@@ -91,6 +91,9 @@ protected:
 		init_config_dir();
 		MountPolicy::InitPolicyConfig({});
 
+		// Empty would write the fixtures relative to the working
+		// directory, which ctest sets to the source tree
+		ASSERT_FALSE(test_file_path.empty());
 		std_fs::create_directories(test_file_path);
 		std_fs::create_directories(test_file_path / "plain_dir");
 		std_fs::create_directories(test_file_path / "overlay_base");
@@ -130,7 +133,18 @@ protected:
 
 	void TearDown() override
 	{
+		// Image mounts park the open file in the BIOS disk list, which
+		// the emulator teardown keeps; Windows cannot delete open files
+		imageDiskList.fill(nullptr);
 		DOSBoxTestFixture::TearDown();
+	}
+
+	// Not a static initializer: ctest starts one process per test, and
+	// every process that never runs a MountTest would leave its
+	// directory behind.
+	static void SetUpTestSuite()
+	{
+		test_file_path = TestTempDir::MakeUnique("mount_test_files_");
 	}
 
 	// Runs once after all tests in this suite.
@@ -138,6 +152,11 @@ protected:
 	{
 		std::error_code ec;
 		std_fs::remove_all(test_file_path, ec);
+		if (ec) {
+			ADD_FAILURE() << "cleanup of " << test_file_path.string()
+			              << " failed: " << ec.message();
+		}
+		test_file_path.clear();
 	}
 
 	static std::string P(const std::string& name)
@@ -158,23 +177,8 @@ protected:
 // two chunks can overlap and cause test failures.
 //
 // Upstream anchored this to the source tree; house rule keeps test
-// writes out of it. Same temp-dir shape as mount_policy_tests.cpp:
-// random name plus creation check instead of mkdtemp for Windows
-// portability.
-std_fs::path MountTest::test_file_path = [] {
-	std::random_device rd = {};
-	auto dist             = std::uniform_int_distribution<uint64_t>();
-	for (int attempt = 0; attempt < 16; ++attempt) {
-		const auto name = std::to_string(dist(rd)) + "_mount_test_files";
-		const auto candidate = std_fs::temp_directory_path() / name;
-		std::error_code ec   = {};
-		if (std_fs::create_directory(candidate, ec) && !ec) {
-			std_fs::permissions(candidate, std_fs::perms::owner_all, ec);
-			return candidate;
-		}
-	}
-	return std_fs::path{};
-}();
+// writes out of it.
+std_fs::path MountTest::test_file_path = {};
 
 // ---------------------------------------------------------------------
 // Error paths: ProcessArguments() must return std::nullopt.

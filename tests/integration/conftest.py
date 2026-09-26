@@ -1,3 +1,7 @@
+# This file is part of the dosbox-automation Project.
+# License: GPL-2.0-or-later. Contact: dosbox-automation-project@trinity2k.net
+#
+
 import os
 import secrets
 import shutil
@@ -18,6 +22,7 @@ SETTING_SECTIONS = {
     "machine": "dosbox",
     "memsize": "dosbox",
     "output": "sdl",
+    "ttf_output": "sdl",
     "joysticktype": "joystick",
 }
 
@@ -52,7 +57,10 @@ class StderrCapture(threading.Thread):
             if self._log_fh:
                 self._log_fh.write(line + "\n")
                 self._log_fh.flush()
-            if "webserver:" in line.lower() and ("API token" in line or "Token written" in line):
+            # The engine's log wording changed case once (augra-log,
+            # 2026-08-20); a case-sensitive match stalled token-file starts
+            lowered = line.lower()
+            if "webserver:" in lowered and ("api token" in lowered or "token written" in lowered):
                 self.ready.set()
         if self._log_fh:
             self._log_fh.close()
@@ -166,7 +174,7 @@ class DosboxInstance:
 
 def start_dosbox_instance(work_dir, autoexec_lines=None, extra_sets=None,
                           conf_dir=None, allowed_image_roots=None,
-                          settings=None):
+                          settings=None, extra_env=None):
     """Start a headless DOSBox instance with optional autoexec and config.
 
     conf_dir: directory for the config file. The mount policy's conf
@@ -175,6 +183,9 @@ def start_dosbox_instance(work_dir, autoexec_lines=None, extra_sets=None,
 
     allowed_image_roots: list of paths to whitelist for API image mounting
     (drive swap). Written into the primary config as mount_allowed_image_roots.
+
+    extra_env: variables added to the engine's environment, e.g. a desktop
+    session name for host keyboard detection.
 
     Returns a DosboxInstance with client, process, and work_dir.
     """
@@ -239,6 +250,7 @@ def start_dosbox_instance(work_dir, autoexec_lines=None, extra_sets=None,
         "HOME": str(work_dir),
         "XDG_CONFIG_HOME": str(work_dir / ".config"),
         "DOSBOX_API_TOKEN": token,
+        **(extra_env or {}),
     }
 
     if not visible:
@@ -300,13 +312,14 @@ def dosbox_e2e(tmp_path):
     instances = []
 
     def _factory(autoexec_lines=None, extra_sets=None, work_dir=None,
-                 conf_dir=None, allowed_image_roots=None, settings=None):
+                 conf_dir=None, allowed_image_roots=None, settings=None,
+                 extra_env=None):
         if work_dir is None:
             work_dir = WORKSPACE / f"e2e-{secrets.token_hex(4)}"
         inst = start_dosbox_instance(
             work_dir, autoexec_lines, extra_sets, conf_dir=conf_dir,
             allowed_image_roots=allowed_image_roots,
-            settings=settings,
+            settings=settings, extra_env=extra_env,
         )
         instances.append(inst)
         return inst
