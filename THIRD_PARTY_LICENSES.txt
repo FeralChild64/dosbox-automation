@@ -3301,6 +3301,12 @@ BUNDLED DOS UTILITIES (resources/drives/y/dos/)
                  Source: https://archive.org/details/infozip_msdos
                  Homepage: https://infozip.sourceforge.net/
 
+  VIEW           Text and hex file viewer (v1.0, SJ-ACC-0650)
+                 Copyright (c) 2026 dosbox automation project
+                 License: GPL-3.0-or-later (a separate program, bundled)
+                 Source: vendor/dos-programs/view-1.0.zip (SOURCE/VIEW)
+                 Homepage: https://dosbox-automation.org
+
   FreeDOS FIND   Text search filter (v3.0b)
                  Authors: Jim Hall, Eric Auer, Imre Leber
                  Source: https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/1.4/base/find/20260218.6/find.zip
