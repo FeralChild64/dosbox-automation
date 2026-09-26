@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText:  2021-2025 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "shell/shell.h"
 
@@ -15,6 +15,7 @@
 #include "config/config.h"
 #include "cpu/callback.h"
 #include "cpu/registers.h"
+#include "dos/dos_locale.h"
 #include "dos/programs/more_output.h"
 #include "dos/programs/setver.h"
 #include "gui/mapper.h"
@@ -481,6 +482,11 @@ void DOS_Shell::Run()
 			         DOSBOX_GetDetailedVersion(),
 			         webserver_tag.c_str(),
 			         hint.c_str());
+
+			if (const auto keyboard_hint = DOS_GetKeyboardLayoutHintText();
+			    !keyboard_hint.empty()) {
+				WriteOut_NoParsing(keyboard_hint);
+			}
 		}
 		safe_strcpy(input_line, line.c_str());
 		line.erase();

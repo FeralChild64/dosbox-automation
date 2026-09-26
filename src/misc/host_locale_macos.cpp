@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2024-2026 The DOSBox Staging Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dosbox.h"
 
@@ -845,4 +846,15 @@ void StdLibLocale::DetectTimeDateFormat([[maybe_unused]] const std::locale& loca
 	if (candidate_1 == candidate_2 && is_printable_ascii(candidate_1)) {
 		date_separator = candidate_1;
 	}
+}
+
+// Built from the lookup map, so a duplicate key in the source is not
+// visible here the way it is on the other platforms
+std::vector<HostLayoutTable> GetHostLayoutTables()
+{
+	HostLayoutTable table = {"MacToDosKeyboard", {}};
+	for (const auto& [layout_id, target] : MacToDosKeyboard) {
+		table.rows.emplace_back(std::to_string(layout_id), target);
+	}
+	return {table};
 }

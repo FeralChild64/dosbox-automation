@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dos_locale.h"
+
+#include "augra/log.h"
 
 #include <cstring>
 #include <map>
@@ -33,6 +36,7 @@ static struct {
 	std::string language_str = {};
 	std::string country_str  = {};
 	std::string keyboard_str = {};
+	std::optional<KeyboardLayoutHint> keyboard_hint = {};
 
 	// Config file settings interpretation
 	LocalePeriod locale_period = LocalePeriod::Modern;
@@ -1511,70 +1515,49 @@ static std::vector<KeyboardLayoutMaybeCodepage> get_detected_keyboard_layouts()
 
 static void load_keyboard_layout()
 {
-	std::vector<KeyboardLayoutMaybeCodepage> keyboard_layouts = {};
+	const auto setting = DOS_ParseKeyboardLayoutSetting(config.keyboard_str);
 
-	bool using_detected     = false; // if layout list is autodetected
-	bool code_page_supplied = false; // if code page given in the parameter
-
-	const auto tokens = split(config.keyboard_str);
-	if (tokens.size() > 2) {
-		LOG_WARNING("LOCALE: Invalid 'keyboard_layout' setting: '%s', using 'auto'",
+	if (setting.is_invalid) {
+		LOG_WARNING("LOCALE: Invalid 'keyboard_layout' setting: '%s', using '%s'",
+		            config.keyboard_str.c_str(),
+		            DefaultKeyboardLayout);
+		set_section_property_value("dos",
+		                           "keyboard_layout",
+		                           DefaultKeyboardLayout);
+		config.keyboard_str = DefaultKeyboardLayout;
+	} else if (setting.is_auto) {
+		augra::log_info("locale",
+		                "'keyboard_layout = auto' no longer follows the host "
+		                "keyboard, using '%s'",
+		                DefaultKeyboardLayout);
+	}
+	if (setting.is_code_page_invalid) {
+		LOG_WARNING("LOCALE: Invalid code page in 'keyboard_layout' setting: '%s', ignoring it",
 		            config.keyboard_str.c_str());
-		set_section_property_value("dos", "keyboard_layout", "auto");
-		config.keyboard_str = "auto";
 	}
 
-	if (tokens.empty() || config.keyboard_str == "auto") {
-		keyboard_layouts = get_detected_keyboard_layouts();
-		using_detected   = true;
-	} else {
-		keyboard_layouts.emplace_back(KeyboardLayoutMaybeCodepage{tokens[0]});
-		if (tokens.size() == 2) {
-			const auto result = parse_int(tokens[1]);
-			if (!result || *result < 1 || *result > UINT16_MAX) {
-				LOG_WARNING("LOCALE: Invalid 'keyboard_layout' code page: '%s', ignoring",
-				            tokens[1].c_str());
-			} else {
-				keyboard_layouts[0].code_page =
-				        static_cast<uint16_t>(*result);
-				code_page_supplied = true;
-			}
-		}
-	}
+	const bool code_page_supplied = setting.code_page.has_value();
+	const bool prefer_rom_font    = !code_page_supplied;
 
-	// Apply the code page
-	KeyboardLayoutResult result = KeyboardLayoutResult::LayoutNotKnown;
-	const bool prefer_rom_font  = using_detected || !code_page_supplied;
-	for (const auto& keyboard_layout : keyboard_layouts) {
-		uint16_t tried_code_page = 0;
-		if (keyboard_layout.code_page) {
-			tried_code_page = *keyboard_layout.code_page;
-		}
-
-		result = DOS_LoadKeyboardLayout(keyboard_layout.keyboard_layout,
-		                                tried_code_page,
-		                                {},
-		                                prefer_rom_font);
-		if (result == KeyboardLayoutResult::OK) {
-			break; // success
-		}
-	}
+	uint16_t tried_code_page = setting.code_page.value_or(0);
+	auto result              = DOS_LoadKeyboardLayout(setting.layout,
+                                             tried_code_page,
+	                                                  {},
+                                             prefer_rom_font);
 
 	// If failed to set user provided settings, print out warning
-	if (!using_detected && result != KeyboardLayoutResult::OK) {
-		// We have tried to set user-requested keyboard layout, but
-		// something went wrong
+	if (result != KeyboardLayoutResult::OK) {
 		if (code_page_supplied &&
 		    (result == KeyboardLayoutResult::NoBundledCpiFileForCodePage ||
 		     result == KeyboardLayoutResult::LayoutNotKnown)) {
 			// Retry without code page
 			LOG_WARNING("LOCALE: Unable to use 'keyboard_layout' code page %d, ignoring",
-			            *keyboard_layouts[0].code_page);
-			uint16_t tried_code_page = 0;
-			result = DOS_LoadKeyboardLayout(keyboard_layouts[0].keyboard_layout,
-			                                tried_code_page,
-			                                {},
-			                                prefer_rom_font);
+			            *setting.code_page);
+			tried_code_page = 0;
+			result          = DOS_LoadKeyboardLayout(setting.layout,
+                                                        tried_code_page,
+			                                         {},
+                                                        prefer_rom_font);
 			if (result != KeyboardLayoutResult::OK) {
 				LOG_WARNING("LOCALE: Unable to use specified 'keyboard_layout' setting: '%s', using 'us'",
 				            config.keyboard_str.c_str());
@@ -1591,9 +1574,55 @@ static void load_keyboard_layout()
 	// Make sure some keyboard layout is actually set
 	if (DOS_GetLoadedLayout().empty()) {
 		constexpr bool PreferRomFont = true;
-		uint16_t tried_code_page = 0;
-		DOS_LoadKeyboardLayout("us", tried_code_page, {}, PreferRomFont);
+		uint16_t fallback_code_page  = 0;
+		DOS_LoadKeyboardLayout(DefaultKeyboardLayout,
+		                       fallback_code_page,
+		                       {},
+		                       PreferRomFont);
 	}
+
+	const auto active    = DOS_GetLoadedLayout();
+	config.keyboard_hint = DOS_GetKeyboardLayoutHint(
+	        active,
+	        get_detected_keyboard_layouts(),
+	        GetHostKeyboardLayouts().unmapped_layout_list);
+
+	if (config.keyboard_hint) {
+		augra::log_info("locale",
+		                "host keyboard %s '%s', DOS is using '%s'",
+		                config.keyboard_hint->kind ==
+		                                KeyboardLayoutHint::Kind::SwitchTo
+		                        ? "maps to DOS layout"
+		                        : "has no DOS layout for",
+		                config.keyboard_hint->layout.c_str(),
+		                active.c_str());
+	}
+}
+
+std::string DOS_GetKeyboardLayoutHintText()
+{
+	if (!config.keyboard_hint) {
+		return {};
+	}
+	const auto& hint  = *config.keyboard_hint;
+	const auto active = DOS_GetKeyboardLayoutName(DOS_GetLoadedLayout());
+
+	if (hint.kind == KeyboardLayoutHint::Kind::NoMapping) {
+		return format_str(MSG_Get("DOS_KEYBOARD_HINT_NO_MAPPING"),
+		                  hint.layout.c_str(),
+		                  active.c_str());
+	}
+	auto setting_value = hint.layout;
+	if (hint.code_page) {
+		setting_value += " " + std::to_string(*hint.code_page);
+	}
+	auto keyb_args = setting_value;
+	upcase(keyb_args);
+	return format_str(MSG_Get("DOS_KEYBOARD_HINT_SWITCH"),
+	                  DOS_GetKeyboardLayoutName(hint.layout).c_str(),
+	                  active.c_str(),
+	                  keyb_args.c_str(),
+	                  setting_value.c_str());
 }
 
 // ***************************************************************************
@@ -1695,6 +1724,16 @@ void DOS_Locale_AddMessages()
 		MSG_Add(entry.GetMsgName(), entry.layout_name);
 	}
 
+	// One sentence per line: the longest layout name is 46 characters, so
+	// no line passes 80 columns in English
+	MSG_Add("DOS_KEYBOARD_HINT_SWITCH",
+	        "Host keyboard looks %s.\n"
+	        "DOS is using %s.\n"
+	        "Type KEYB %s now, or set keyboard_layout = %s to keep it.\n");
+	MSG_Add("DOS_KEYBOARD_HINT_NO_MAPPING",
+	        "Host keyboard layout '%s' has no DOS equivalent.\n"
+	        "DOS is using %s.\n");
+
 	MSG_Add("KEYBOARD_MOD_ADJECTIVE_LEFT",  "Left");
 	MSG_Add("KEYBOARD_MOD_ADJECTIVE_RIGHT", "Right");
 }
@@ -1711,3 +1750,79 @@ void DOS_Locale_Destroy()
 	dos_locale = {};
 }
 
+KeyboardLayoutSetting DOS_ParseKeyboardLayoutSetting(const std::string& value)
+{
+	KeyboardLayoutSetting setting = {};
+
+	const auto tokens = split(value);
+	if (tokens.empty()) {
+		return setting;
+	}
+	if (tokens.size() > 2) {
+		setting.is_invalid = true;
+		return setting;
+	}
+	if (tokens.size() == 1 && tokens[0] == "auto") {
+		setting.is_auto = true;
+		return setting;
+	}
+
+	setting.layout = tokens[0];
+	if (tokens.size() == 2) {
+		const auto code_page = parse_int(tokens[1]);
+		if (!code_page || *code_page < 1 || *code_page > UINT16_MAX) {
+			setting.is_code_page_invalid = true;
+		} else {
+			setting.code_page = static_cast<uint16_t>(*code_page);
+		}
+	}
+	return setting;
+}
+
+// The name comes from the desktop's config files and goes to the DOS
+// console: printable ASCII only, short enough for the hint line
+static std::string printable_host_name(const std::string& name)
+{
+	constexpr size_t MaxLength = 32;
+
+	std::string result = {};
+	for (const auto c : name) {
+		if (result.size() == MaxLength) {
+			break;
+		}
+		const auto byte = static_cast<unsigned char>(c);
+		result.push_back((byte >= 0x20 && byte <= 0x7e) ? c : '?');
+	}
+	return result;
+}
+
+std::optional<KeyboardLayoutHint> DOS_GetKeyboardLayoutHint(
+        const std::string& active_layout,
+        const std::vector<KeyboardLayoutMaybeCodepage>& detected_host_layouts,
+        const std::vector<std::string>& unmapped_host_layouts)
+{
+	if (active_layout != DefaultKeyboardLayout) {
+		return {};
+	}
+
+	for (const auto& entry : detected_host_layouts) {
+		// A fuzzy mapping is the table's own word for a poor guess
+		if (entry.is_mapping_fuzzy) {
+			continue;
+		}
+		if (entry.keyboard_layout == active_layout) {
+			return {};
+		}
+		return KeyboardLayoutHint{KeyboardLayoutHint::Kind::SwitchTo,
+		                          entry.keyboard_layout,
+		                          entry.code_page};
+	}
+
+	if (!unmapped_host_layouts.empty()) {
+		return KeyboardLayoutHint{KeyboardLayoutHint::Kind::NoMapping,
+		                          printable_host_name(
+		                                  unmapped_host_layouts.front()),
+		                          {}};
+	}
+	return {};
+}

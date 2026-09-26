@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2024-2026 The DOSBox Staging Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dosbox.h"
 
@@ -53,11 +54,21 @@ static const std::set<std::string> KeyboardModels102 = {"pc102",
 // Constant to mark poor/imprecise keyboard layout mappings
 constexpr bool Fuzzy = true;
 
+// Tables are kept as rows so the tests see them as written; a duplicate
+// key would vanish silently from the lookup map
+using LayoutRows = std::vector<std::pair<std::string, KeyboardLayoutMaybeCodepage>>;
+
+static std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> to_lookup(
+        const LayoutRows& rows)
+{
+	return {rows.begin(), rows.end()};
+}
+
 // Mapping from X11 to DOS keyboard layouts. Reference:
 // - /usr/share/X11/xkb/rules/evdev.lst
 // - 'localectl list-x11-keymap-variants <layout>' command
 // clang-format off
-static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> X11ToDosKeyboard = {
+static const LayoutRows X11ToDosKeyboardRows = {
 	// US (standard, QWERTY/national)
 	{ "us",                         { "us" }         },
 	{ "us:chr",                     { "us", 30034 }  }, // Cherokee
@@ -245,7 +256,7 @@ static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> X11ToD
 	// Italian (standard, QWERTY/national)
 	{ "it",                         { "it" }         },
 	{ "it:lld",                     { "it", 30007 }  }, // Ladin
-	{ "fr:oci ",                    { "it", 30007 }  }, // Occitan
+	{ "fr:oci",                     { "it", 30007 }  }, // Occitan
 	// Italian (142, QWERTY/national)
 	{ "it:ibm",                     { "it142" }      },
 	{ "it:mac",                     { "it142" }      },
@@ -314,7 +325,7 @@ static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> X11ToD
 	{ "md:gag",                     { "ro", 30009 }  }, // Gaugaz (Latin)
 	// Russian (standard, QWERTY/national)
 	{ "ru",                         { "ru" }         },
-	{ "us:ru",                      { "ru" }         },
+	{ "us:rus",                     { "ru" }         },
 	// Russian (typewriter, QWERTY/national)
 	{ "ru:typewriter",              { "ru443" }      },
 	{ "ru:typewriter-legacy",       { "ru443" }      },
@@ -335,7 +346,7 @@ static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> X11ToD
 	// Swiss (French, QWERTZ)
 	{ "ch:fr",                      { "sf" }         },
 	{ "ch:fr_nodeadkeys",           { "sf" }         },
-	{ "ch:sun_type6_f",             { "sf" }         },
+	{ "ch:sun_type6_fr",            { "sf" }         },
 	// Slovenian (QWERTZ)
 	{ "si",                         { "si" }         },
 	// Slovak (QWERTZ)
@@ -438,22 +449,24 @@ static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> X11ToD
 	//   'ur465', 'ur2001', 'yu'
 };
 // clang-format on
+static const auto X11ToDosKeyboard = to_lookup(X11ToDosKeyboardRows);
 
 // Mapping as above, but for certain 102-key keyboard layouts only
 // clang-format off
-static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> X11ToDosKeyboard102 = {
+static const LayoutRows X11ToDosKeyboard102Rows = {
 	// Icelandic (102-key, QWERTY)
 	{ "is",                         { "is161" }      },
         // Ukrainian (102-key, 2007, QWERTY/national)
 	{ "ua",                         { "ur2007" }     },
 };
 // clang-format on
+static const auto X11ToDosKeyboard102 = to_lookup(X11ToDosKeyboard102Rows);
 
 // Mapping from Linux console to DOS keyboard layouts. Reference:
 // - /usr/share/keymaps
 // - 'localectl list-keymaps' command
 // clang-format off
-static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> TtyToDosKeyboard = {
+static const LayoutRows TtyToDosKeyboardRows = {
 	// US (standard, QWERTY/national)
 	{ "us",                                  { "us" }        },
 	{ "us1",                                 { "us" }        },
@@ -477,7 +490,7 @@ static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> TtyToD
 	{ "mod-dh-ansi-us",                      { "co" }        },
 	{ "mod-dh-ansi-us-awing",                { "co" }        },
 	{ "mod-dh-ansi-us-fatz",                 { "co" }        },
-	{ "mod-dh-ansi-us-fatz-wid",             { "co" }        },
+	{ "mod-dh-ansi-us-fatz-wide",            { "co" }        },
 	{ "mod-dh-ansi-us-wide",                 { "co" }        },
 	{ "mod-dh-iso-uk",                       { "co" }        },
 	{ "mod-dh-iso-uk-wide",                  { "co" }        },
@@ -751,6 +764,7 @@ static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> TtyToD
 	{ "sr-cy",                          { "us", 855, Fuzzy } }, // Serbia
 };
 // clang-format on
+static const auto TtyToDosKeyboard = to_lookup(TtyToDosKeyboardRows);
 
 // ***************************************************************************
 // Generic helper routines
@@ -1292,6 +1306,8 @@ static HostKeyboardLayouts get_host_keyboard_layouts_desktop()
 			result_list.push_back(X11ToDosKeyboard.at(key2));
 			continue;
 		}
+
+		result.unmapped_layout_list.push_back(key1);
 	}
 
 	if (!result.log_info.empty()) {
@@ -1324,6 +1340,8 @@ static HostKeyboardLayouts get_host_keyboard_layouts_tty()
 			result_list.push_back(TtyToDosKeyboard.at(entry));
 			continue;
 		}
+
+		result.unmapped_layout_list.push_back(entry);
 	}
 
 	if (!result.log_info.empty()) {
@@ -1343,15 +1361,23 @@ static HostKeyboardLayouts get_host_keyboard_layouts()
 		return results_x11;
 	}
 
+	// Nothing maps: keep the names the host gave, so the keyboard hint
+	// can say there is no DOS equivalent instead of staying silent
+	HostKeyboardLayouts unmapped_only = {};
+	unmapped_only.unmapped_layout_list = results_x11.unmapped_layout_list;
+
 #ifdef __linux__
 	// Try to get keyboard layouts from the text console settings
 	const auto results_tty = get_host_keyboard_layouts_tty();
 	if (!results_tty.keyboard_layout_list.empty()) {
 		return results_tty;
 	}
+	if (unmapped_only.unmapped_layout_list.empty()) {
+		unmapped_only.unmapped_layout_list = results_tty.unmapped_layout_list;
+	}
 #endif // __linux__
 
-	return {};
+	return unmapped_only;
 }
 
 bool IsMonetaryUtf8(const std::locale& locale)
@@ -1423,4 +1449,11 @@ const HostLanguages& GetHostLanguages()
 	}
 
 	return *locale;
+}
+
+std::vector<HostLayoutTable> GetHostLayoutTables()
+{
+	return {{"X11ToDosKeyboard", X11ToDosKeyboardRows},
+	        {"X11ToDosKeyboard102", X11ToDosKeyboard102Rows},
+	        {"TtyToDosKeyboard", TtyToDosKeyboardRows}};
 }

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText:  2024-2025 The DOSBox Staging Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "host_locale.h"
 
@@ -19,10 +19,14 @@ CHECK_NARROWING();
 // Constant to mark poor/imprecise keyboard layout mappings
 constexpr bool Fuzzy = true;
 
+// Kept as rows so the tests see the table as written; a duplicate key
+// would vanish silently from the lookup map
+using LayoutRows = std::vector<std::pair<std::string, KeyboardLayoutMaybeCodepage>>;
+
 // Mapping from modern Windows to DOS keyboard layouts. Developed using
 // https://kbdlayout.info web page for layout visualization
 // clang-format off
-static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> WinToDosKeyboard = {
+static const LayoutRows WinToDosKeyboardRows = {
 	// US (standard, QWERTY/national)
 	{ "00000409", { "us" }         }, // US
 	{ "00050409", { "us" }         }, // US English Table for IBM Arabic 238_L
@@ -329,6 +333,8 @@ static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> WinToD
 	{ "00090c00", { "fr", 437, Fuzzy } }, // N’Ko
 };
 // clang-format on
+static const std::unordered_map<std::string, KeyboardLayoutMaybeCodepage> WinToDosKeyboard(
+        WinToDosKeyboardRows.begin(), WinToDosKeyboardRows.end());
 
 static std::string to_string(const wchar_t* input, const size_t input_length)
 {
@@ -428,6 +434,8 @@ static HostKeyboardLayouts get_host_keyboard_layouts()
 		lowcase(key);
 		if (WinToDosKeyboard.contains(key)) {
 			result_list.push_back(WinToDosKeyboard.at(key));
+		} else {
+			result.unmapped_layout_list.push_back(key);
 		}
 	}
 
@@ -448,6 +456,8 @@ static HostKeyboardLayouts get_host_keyboard_layouts()
                 lowcase(key);
                 if (WinToDosKeyboard.contains(key)) {
 			result_list.push_back(WinToDosKeyboard.at(key));
+		} else {
+			result.unmapped_layout_list.push_back(key);
 		}
 	}
 
@@ -626,3 +636,8 @@ void StdLibLocale::DetectCurrencyFormat([[maybe_unused]] const std::locale& loca
 }
 
 #endif
+
+std::vector<HostLayoutTable> GetHostLayoutTables()
+{
+	return {{"WinToDosKeyboard", WinToDosKeyboardRows}};
+}

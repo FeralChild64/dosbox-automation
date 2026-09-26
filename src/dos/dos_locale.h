@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_DOS_LOCALE_H
 #define DOSBOX_DOS_LOCALE_H
@@ -12,6 +13,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 constexpr uint16_t DefaultCodePage = 437;
 
@@ -493,6 +495,47 @@ extern const std::map<uint16_t, DosCountry>               CodeToCountryCorrectio
 extern const std::map<DosCountry, CountryInfoEntry>       CountryInfo;
 
 } // namespace LocaleData
+
+// The 'keyboard_layout' setting; 'auto' no longer follows the host and
+// means the default layout (ada-b9e0)
+constexpr auto DefaultKeyboardLayout = "us";
+
+struct KeyboardLayoutSetting {
+	std::string layout = DefaultKeyboardLayout;
+	std::optional<uint16_t> code_page = {};
+
+	bool is_auto = false;
+	bool is_invalid = false;
+	bool is_code_page_invalid = false;
+};
+
+KeyboardLayoutSetting DOS_ParseKeyboardLayoutSetting(const std::string& value);
+
+// The line after the shell banner when the host keyboard differs from the
+// layout in use; only shown while that is the default (D6, 2026-09-26)
+struct KeyboardLayoutHint {
+	enum class Kind { SwitchTo, NoMapping };
+
+	Kind kind = Kind::SwitchTo;
+
+	// DOS layout code for SwitchTo, the host's own name for NoMapping
+	std::string layout = {};
+
+	// The code page the host table names for the mapping, if any
+	std::optional<uint16_t> code_page = {};
+};
+
+struct KeyboardLayoutMaybeCodepage;
+
+// A written 'keyboard_layout = us' counts as the default: the config
+// layer keeps no record of where a value came from (ada-2lbz)
+std::optional<KeyboardLayoutHint> DOS_GetKeyboardLayoutHint(
+        const std::string& active_layout,
+        const std::vector<KeyboardLayoutMaybeCodepage>& detected_host_layouts,
+        const std::vector<std::string>& unmapped_host_layouts);
+
+// The hint as the DOS shell shows it, empty when there is none
+std::string DOS_GetKeyboardLayoutHintText();
 
 // Functions to generate command line help messages
 

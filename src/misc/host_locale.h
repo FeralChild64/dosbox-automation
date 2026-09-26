@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2024-2025 The DOSBox Staging Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_HOST_LOCALE_H
 #define DOSBOX_HOST_LOCALE_H
@@ -9,6 +10,8 @@
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 // Language and territory according to 'ISO 639' and 'ISO 3166-1 alpha-2' norms
@@ -147,6 +150,10 @@ struct HostKeyboardLayouts {
 	// sorted by user priority, set this to 'true'.
 	bool is_layout_list_sorted = false;
 
+	// Host layouts no table row maps, by the host's own names, so the
+	// keyboard hint can say so instead of staying silent
+	std::vector<std::string> unmapped_layout_list = {};
+
 	// If detection was successful, always provide info for the log output,
 	// telling which host OS property/value was used to determine the
 	// language.
@@ -172,5 +179,15 @@ bool IsMonetaryUtf8(const std::locale& locale);
 const HostLocale&          GetHostLocale();
 const HostKeyboardLayouts& GetHostKeyboardLayouts();
 const HostLanguages&       GetHostLanguages();
+
+// A host-to-DOS keyboard layout table as written in the source, for the
+// tests: a duplicate key would vanish silently from the lookup map
+struct HostLayoutTable {
+	std::string name = {};
+	std::vector<std::pair<std::string, KeyboardLayoutMaybeCodepage>> rows = {};
+};
+
+// The tables of the platform this was built for
+std::vector<HostLayoutTable> GetHostLayoutTables();
 
 #endif

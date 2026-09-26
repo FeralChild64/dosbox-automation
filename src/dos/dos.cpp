@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dos.h"
 
@@ -2101,16 +2101,17 @@ static void init_dos_settings(SectionProp& section)
 	pstring = section.AddString("keyboardlayout", Deprecated, "");
 	pstring->SetHelp("Renamed to [color=light-green]'keyboard_layout'[reset].");
 
-	pstring = section.AddString("keyboard_layout", OnlyAtStart, "auto");
+	pstring = section.AddString("keyboard_layout", OnlyAtStart, DefaultKeyboardLayout);
 	pstring->SetHelp(
-	        "Keyboard layout code ('auto' by default). The list of supported keyboard layout\n"
+	        "Keyboard layout code ('us' by default). The list of supported keyboard layout\n"
 	        "codes can be displayed using the '--list-layouts' command-line argument, e.g.,\n"
 	        "'uk' is the British English layout. The layout can be followed by the code page\n"
 	        "number, e.g., 'uk 850' selects a Western European screen font.\n"
 	        "\n"
-	        "Set to 'auto' to guess the values from the host OS settings. After startup, use\n"
-	        "the 'KEYB' command to manage keyboard layouts and code pages (run 'HELP KEYB'\n"
-	        "for details).");
+	        "The layout does not follow the host OS. When the host keyboard looks different,\n"
+	        "a line after startup names it and how to switch. 'auto' is still accepted and\n"
+	        "means 'us'. After startup, use the 'KEYB' command to manage keyboard layouts\n"
+	        "and code pages (run 'HELP KEYB' for details).");
 
 	// COMMAND.COM settings
 
