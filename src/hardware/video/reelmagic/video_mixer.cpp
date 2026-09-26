@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText:  2022-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2022-2022 Jon Dennis
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 //
 // This file contains the VGA/RENDER_ interception code...

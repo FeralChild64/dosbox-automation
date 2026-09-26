@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText:  2024-2025 The DOSBox Staging Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 // The MSVC min/max macro imported by clap/all.h collides with
 // std::numeric_limits which makes the MSCV Debug x64 build fail.

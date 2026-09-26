@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText:  2022-2026 The DOSBox Staging Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_MOUSE_INTERFACES_H
 #define DOSBOX_MOUSE_INTERFACES_H

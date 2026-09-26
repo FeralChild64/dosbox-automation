@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText:  2002-2025 The DOSBox Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "keyb.h"
 

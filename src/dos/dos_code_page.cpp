@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText:  2025-2026 The DOSBox Staging Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dos_code_page.h"
 
