@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText:  2019-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_RENDER_H
 #define DOSBOX_RENDER_H
@@ -90,6 +90,10 @@ struct Render {
 
 		// Set the size of 'cache' and 'out_buf', sets 'cache_size'
 		void SetSize(const size_t width, const size_t height);
+
+		// Grow 'out_buf' to at least 'bytes', zero-filled; true if it
+		// had to be reallocated (its previous contents are gone)
+		bool ReserveOutBufBytes(const size_t bytes);
 
 		bool clear_cache = false;
 

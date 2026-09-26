@@ -58,4 +58,46 @@ TEST(RenderScale, SamePixelCountOtherShapeResizesOutBuf)
 	EXPECT_NE(ExpectedOutBufSize(wide, narrow), ExpectedOutBufSize(narrow, wide));
 }
 
+// The deinterlacer writes out_height rows at the backend's pitch, which is
+// only known when a frame starts; SetSize() can only estimate it.
+TEST(RenderScale, ReserveOutBufGrowsAndZeroesWhenTheFrameNeedsMore)
+{
+	Render::Scale scale = {};
+	scale.SetSize(640, 400);
+	const auto* cache       = scale.cache;
+	const auto needed_bytes = scale.out_buf_size * sizeof(uint32_t) + 4096;
+
+	EXPECT_TRUE(scale.ReserveOutBufBytes(needed_bytes));
+
+	ASSERT_NE(scale.out_buf, nullptr);
+	EXPECT_GE(scale.out_buf_size * sizeof(uint32_t), needed_bytes);
+	EXPECT_EQ(scale.out_buf[0], 0u);
+	EXPECT_EQ(scale.out_buf[scale.out_buf_size - 1], 0u);
+	EXPECT_EQ(scale.cache, cache);
+}
+
+TEST(RenderScale, ReserveOutBufKeepsTheBufferWhenItFits)
+{
+	Render::Scale scale = {};
+	scale.SetSize(640, 400);
+	const auto* out_buf = scale.out_buf;
+	const auto size     = scale.out_buf_size;
+
+	EXPECT_FALSE(scale.ReserveOutBufBytes(size * sizeof(uint32_t)));
+
+	EXPECT_EQ(scale.out_buf, out_buf);
+	EXPECT_EQ(scale.out_buf_size, size);
+}
+
+TEST(RenderScale, ReserveOutBufRoundsUpToWholePixels)
+{
+	Render::Scale scale = {};
+	scale.SetSize(640, 400);
+	const auto needed_bytes = scale.out_buf_size * sizeof(uint32_t) + 1;
+
+	EXPECT_TRUE(scale.ReserveOutBufBytes(needed_bytes));
+
+	EXPECT_GE(scale.out_buf_size * sizeof(uint32_t), needed_bytes);
+}
+
 } // namespace

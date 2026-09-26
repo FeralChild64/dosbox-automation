@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dosbox.h"
 
@@ -1454,12 +1454,17 @@ static void VGA_TTF_DrawPart(uint32_t lines)
 	}
 
 	if (--vga.draw.parts_left) {
+		// A geometry change mid-frame can leave lines_done past
+		// lines_total, and the unsigned difference would be billions
+		const auto lines_left = (vga.draw.lines_total > vga.draw.lines_done)
+		                              ? vga.draw.lines_total - vga.draw.lines_done
+		                              : 0;
+
 		// Schedule drawing the next part if we're not at the last part
 		PIC_AddEvent(VGA_TTF_DrawPart,
 		             vga.draw.delay.parts,
-		             (vga.draw.parts_left != 1)
-		                     ? vga.draw.parts_lines
-		                     : (vga.draw.lines_total - vga.draw.lines_done));
+		             (vga.draw.parts_left != 1) ? vga.draw.parts_lines
+		                                        : lines_left);
 	} else {
 		if (TTF_ShouldChangeScreenOverride()) {
 			PIC_RemoveEvents(VGA_SetupDrawing);
@@ -3516,6 +3521,13 @@ ImageInfo setup_drawing()
 	return img_info;
 }
 
+static bool is_same_ttf_geometry(const VgaTtf& a, const VgaTtf& b)
+{
+	return a.blocks_horizontal == b.blocks_horizontal &&
+	       a.blocks_vertical == b.blocks_vertical &&
+	       a.block_width == b.block_width && a.block_height == b.block_height;
+}
+
 void VGA_SetupDrawing(uint32_t /*val*/)
 {
 	if (vga.mode == M_ERROR) {
@@ -3524,6 +3536,8 @@ void VGA_SetupDrawing(uint32_t /*val*/)
 		PIC_RemoveEvents(VGA_DisplayStartLatch);
 		return;
 	}
+
+	const auto previous_ttf = vga.draw.ttf;
 
 	auto image_info = setup_drawing();
 
@@ -3584,6 +3598,11 @@ void VGA_SetupDrawing(uint32_t /*val*/)
 		}
 
 		previous_video_mode = image_info.video_mode;
+	} else if (vga.draw.ttf.override &&
+	           !is_same_ttf_geometry(previous_ttf, vga.draw.ttf)) {
+		// 80x25 at 28 px and 80x50 at 14 px give the same image, but a
+		// frame in progress would count its lines past the render buffers
+		VGA_KillDrawing();
 	}
 }
 

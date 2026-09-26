@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText:  2019-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
-// SPDX-FileCopyrightText:  2026 dosbox-automation Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dosbox.h"
+
+#include "augra/log.h"
 
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 
@@ -39,7 +42,38 @@
 CHECK_NARROWING();
 
 Render render;
-ScalerLineHandler RENDER_DrawLine;
+
+// The handler for the next line of the frame; RENDER_DrawLine itself
+// always points to bounded_line_handler
+static ScalerLineHandler current_line_handler = nullptr;
+
+static bool warned_extra_lines = false;
+
+// Nothing else stops a frame that delivers more lines than render_reset()
+// sized the cache for; drop them instead of writing past it (ada-a08x)
+static void bounded_line_handler(const void* src_line_data)
+{
+	const auto pitch = render.scale.cache_pitch;
+	const auto start = reinterpret_cast<const uint8_t*>(render.scale.cache);
+	const auto lines_done = pitch > 0 && start != nullptr
+	                              ? (render.scale.cache_read - start) / pitch
+	                              : render.src.height;
+	if (!current_line_handler) {
+		return;
+	}
+	if (lines_done >= render.src.height) {
+		if (!warned_extra_lines) {
+			augra::log_warn("render",
+			                "frame delivered more than %d lines, dropping the rest",
+			                render.src.height);
+			warned_extra_lines = true;
+		}
+		return;
+	}
+	current_line_handler(src_line_data);
+}
+
+ScalerLineHandler RENDER_DrawLine = bounded_line_handler;
 
 static std::mutex shared_frame_mutex;
 static RenderedImage shared_frame = {};
@@ -130,6 +164,15 @@ static bool maybe_gfx_start_update()
 	}
 
 	if (is_deinterlacing()) {
+		// The backend's pitch is only known here; a fresh buffer lost
+		// the rows the scaler skips as unchanged, so redraw them all
+		assert(pitch > 0 && render.scale.out_height >= 0);
+		const auto needed_bytes = static_cast<size_t>(render.scale.out_height) *
+		                          static_cast<size_t>(pitch);
+		if (render.scale.ReserveOutBufBytes(needed_bytes)) {
+			render.scale.clear_cache = true;
+		}
+
 		// Write the scaled output to a temporary buffer first
 		render.scale.out_write = reinterpret_cast<uint8_t*>(
 		        render.scale.out_buf);
@@ -166,7 +209,7 @@ static void start_line_handler(const void* src_line_data)
 			// swap followed by a texture upload to the GPU.
 			//
 			if (!maybe_gfx_start_update()) {
-				RENDER_DrawLine = empty_line_handler;
+				current_line_handler = empty_line_handler;
 				return;
 			}
 
@@ -175,8 +218,8 @@ static void start_line_handler(const void* src_line_data)
 
 			render.updating_frame = true;
 
-			RENDER_DrawLine = render.scale.line_handler;
-			RENDER_DrawLine(src_line_data);
+			current_line_handler = render.scale.line_handler;
+			current_line_handler(src_line_data);
 			return;
 		}
 	}
@@ -246,6 +289,7 @@ bool RENDER_StartUpdate()
 
 	scaler_changed_lines[0]   = 0;
 	scaler_changed_line_index = 0;
+	warned_extra_lines        = false;
 
 	// Set up output image dimensions
 	render.scale.out_width = render.src.width *
@@ -265,7 +309,7 @@ bool RENDER_StartUpdate()
 			return false;
 		}
 
-		RENDER_DrawLine = clear_cache_handler;
+		current_line_handler = clear_cache_handler;
 
 		render.render_in_progress = true;
 		render.updating_frame     = true;
@@ -283,7 +327,7 @@ bool RENDER_StartUpdate()
 			return false;
 		}
 
-		RENDER_DrawLine = render.scale.line_palette_handler;
+		current_line_handler = render.scale.line_palette_handler;
 
 		render.render_in_progress = true;
 		return true;
@@ -296,7 +340,7 @@ bool RENDER_StartUpdate()
 	// `start_line_handler()` if the contents of the current frame differs
 	// from the previous one (see comments in `start_line_handler()`).
 	//
-	RENDER_DrawLine = start_line_handler;
+	current_line_handler = start_line_handler;
 
 	render.render_in_progress = true;
 	return true;
@@ -304,7 +348,7 @@ bool RENDER_StartUpdate()
 
 static void halt_render()
 {
-	RENDER_DrawLine = empty_line_handler;
+	current_line_handler = empty_line_handler;
 	GFX_EndUpdate();
 
 	render.render_in_progress = false;
@@ -381,7 +425,7 @@ void RENDER_EndUpdate([[maybe_unused]] bool abort)
 		return;
 	}
 
-	RENDER_DrawLine = empty_line_handler;
+	current_line_handler = empty_line_handler;
 
 	if (CAPTURE_IsCapturingImage() || CAPTURE_IsCapturingVideo()) {
 		handle_capture_frame();
@@ -520,7 +564,7 @@ static void render_reset()
 	memset(render.palette.modified, 0, sizeof(render.palette.modified));
 
 	// Finish this frame using a copy only handler
-	RENDER_DrawLine        = finish_line_handler;
+	current_line_handler   = finish_line_handler;
 	render.scale.out_write = nullptr;
 
 	// Signal the next frame to first reinit the cache
@@ -589,6 +633,27 @@ void Render::Scale::SetSize(const size_t width, const size_t height)
 
 	cache_size   = new_cache_size;
 	out_buf_size = new_out_buf_size;
+}
+
+bool Render::Scale::ReserveOutBufBytes(const size_t bytes)
+{
+	const size_t needed_size = (bytes + sizeof(uint32_t) - 1) / sizeof(uint32_t);
+	if (needed_size <= out_buf_size) {
+		return false;
+	}
+
+	constexpr size_t Alignment = sizeof(uint64_t);
+	const size_t needed_bytes  = needed_size * sizeof(uint32_t);
+
+	free_aligned(out_buf);
+	out_buf = static_cast<uint32_t*>(malloc_aligned(needed_bytes, Alignment));
+	if (out_buf == nullptr) {
+		E_Exit("Out of memory");
+	}
+	std::memset(out_buf, 0, needed_bytes);
+
+	out_buf_size = needed_size;
+	return true;
 }
 
 Render::Scale::~Scale()

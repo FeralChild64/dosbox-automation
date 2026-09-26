@@ -4,6 +4,7 @@ target_sources(dosboxcommon PRIVATE
   mapper.cpp
   sdl_gui.cpp
   titlebar.cpp
+  truetype_character_block.cpp
   truetype_freetype.cpp
   truetype_output.cpp
 
