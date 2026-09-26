@@ -68,8 +68,10 @@ def build_autoexec(manifest: GameManifest, game_dir: Path,
     lines = []
 
     if manifest.media == "booter":
+        # A booter has no DOS file system; without '-fs none' MOUNT refuses
+        # the image and BOOT A: finds no drive
         disk_path = game_dir / manifest.disc_images[0]
-        lines.append(f"mount a \"{disk_path}\" -t floppy")
+        lines.append(f"mount a \"{disk_path}\" -t floppy -fs none")
     elif manifest.media in ("cdrom-iso", "cdrom-cue"):
         lines.append(f"mount {manifest.target_drive} \"{hd_dir}\"")
         disk_path = game_dir / manifest.disc_images[0]

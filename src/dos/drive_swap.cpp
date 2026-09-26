@@ -4,10 +4,13 @@
 
 #include "dos/drive_swap.h"
 
+#include "augra/log.h"
+
 #include "dos/dos.h"
 #include "dos/drives.h"
 #include "dos/programs/mount_policy.h"
 #include "ints/bios_disk.h"
+#include "misc/cross.h"
 #include "misc/logging.h"
 #include "utils/checks.h"
 
@@ -113,6 +116,39 @@ Result Swap(char drive_letter, const std::filesystem::path& image_path,
 			is_floppy = true;
 			break;
 		}
+	}
+
+	// A booted or '-fs none' floppy has no DOS drive, only the BIOS disk;
+	// swap that disk the way BOOT loads images (ada-plh7)
+	const bool is_raw_slot = drv_idx < 2 && !Drives[drv_idx] &&
+	                         imageDiskList[drv_idx];
+	if (is_raw_slot) {
+		if (!is_floppy) {
+			result.error = "Not a floppy image";
+			return result;
+		}
+		bool is_readonly = false;
+		auto* file = fopen_wrap_ro_fallback(resolved, is_readonly);
+		if (file == nullptr) {
+			result.error = "File not found";
+			return result;
+		}
+		const auto old_disk    = imageDiskList[drv_idx];
+		imageDiskList[drv_idx] = std::make_shared<imageDisk>(
+		        file, resolved.c_str(), file_size_kb, false);
+
+		// BOOT's Ctrl+F4 list would otherwise bring the old image back
+		for (auto& slot : diskSwap) {
+			if (slot == old_disk) {
+				slot = imageDiskList[drv_idx];
+			}
+		}
+		augra::log_info("drive-swap",
+		                "swapped the raw disk in %c: for '%s'",
+		                'A' + drv_idx,
+		                resolved.c_str());
+		result.ok = true;
+		return result;
 	}
 
 	// Build the new drive before releasing the old one so a

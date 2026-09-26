@@ -16,14 +16,14 @@ target_drive = "C"
 [prompts]
 # Boot sector shows splash screen with status bar at bottom:
 # "Augra Disk Tools Test -- DISK N -- Press Ctrl+F4 to swap"
-# Keypress triggers re-read from current disk.
-# NOTE: booter E2E has a known bridge timing issue after BOOT.
-# The disc swap sequence requires Ctrl+F4 (not yet wired in Lua).
+# It re-reads the drive only after a keypress, so every swap is followed
+# by a key while the old screen is still up, then the new disk's text.
 sequence = [
     { wait = "Augra Disk Tools Test -- DISK 1", type = "" },
     { wait = "Augra Disk Tools Test -- DISK 1", action = "swap:2" },
-    { wait = "Augra Disk Tools Test -- DISK 2", type = "" },
+    { wait = "Augra Disk Tools Test -- DISK 1", type = "" },
     { wait = "Augra Disk Tools Test -- DISK 2", action = "swap:3" },
+    { wait = "Augra Disk Tools Test -- DISK 2", type = "" },
     { wait = "Augra Disk Tools Test -- DISK 3", type = "" },
 ]
 
