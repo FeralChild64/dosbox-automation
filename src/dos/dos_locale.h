@@ -399,6 +399,10 @@ struct CountryInfoEntry {
 	//   BIH_LAT = Bosnia and Herzegovina (Latin)
 	std::string country_code;
 
+	// Alphabet, in order - will be used to generate collation tables
+	std::string alphabet_lowercase;
+	std::string alphabet_uppercase;
+
 	std::map<LocalePeriod, LocaleInfoEntry> locale_info;
 
 	std::string GetMsgName() const;

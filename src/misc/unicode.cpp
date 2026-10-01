@@ -273,11 +273,11 @@ static config_duplicates_t config_duplicates = {};
 static map_grapheme_to_dos_t mapping_ascii = {};
 
 // Mappings between lowercase and uppercase characters
-static map_code_point_case_t uppercase = {};
+static map_code_point_case_t uppercase = {}; // XXX to be replaced with library
 static map_code_point_case_t lowercase = {};
 
 // Unicode 'KD' decomposition rules
-static decomposition_rules_t decomposition_rules = {};
+static decomposition_rules_t decomposition_rules = {}; // XXX to be replaced with library
 
 // Set of per code page mappings
 
@@ -305,7 +305,7 @@ static std::map<uint16_t, code_page_maps_t> per_code_page_mappings = {};
 // ***************************************************************************
 
 // Check for combining characters within the supported Unicode blocks
-static bool is_combining_mark(const char32_t code_point)
+static bool is_combining_mark(const char32_t code_point) // XXX to be (mostly) replaced with a library
 {
 	// clang-format off
 	static constexpr std::pair<char32_t, char32_t> Ranges[] = {

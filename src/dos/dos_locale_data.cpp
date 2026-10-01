@@ -267,7 +267,7 @@ const std::vector<CodePagePackInfo> LocaleData::CodePageInfo = { {
 	{ 58619, { "Apple Gaelic (old ortography), Welsh",                Script::Latin    } },
 	{ 58627, { "Apple Ukrainian",                                     Script::Cyrillic } },
 	{ 58630, { "Apple Saami, Kalo, Finnic, with EUR symbol",          Script::Latin    } },
-}, {    // Windows series	
+}, {    // Windows series
 	{ 1250,  { "Windows Central European, with EUR symbol",           Script::Latin    } },
 	{ 1251,  { "Windows Cyrillic, with EUR symbol",                   Script::Cyrillic } },
 	{ 1252,  { "Windows Western European, with EUR symbol",           Script::Latin    } },
@@ -472,7 +472,7 @@ const std::vector<KeyboardLayoutInfoEntry> LocaleData::KeyboardLayoutInfo = {
 			{ 872,  KeyboardScript::Cyrillic },
 			{ 3021, KeyboardScript::Cyrillic },
 		},
-	}, 
+	},
 	{
 		{ "bn" }, "Beninese (AZERTY)",
 		// Not sure if the layout is popular, low priority for now
@@ -1186,7 +1186,7 @@ const std::vector<KeyboardLayoutInfoEntry> LocaleData::KeyboardLayoutInfo = {
 		{
 			{ 59234, KeyboardScript::CyrillicPhonetic },
 		},
-	}, 
+	},
 	{
 		{ "tr" }, "Turkish (QWERTY)",
 		// Not sure if the layout is popular, low priority for now
@@ -1200,7 +1200,7 @@ const std::vector<KeyboardLayoutInfoEntry> LocaleData::KeyboardLayoutInfo = {
 		AutodetectionPriority::Low,
 		857,
 		KeyboardScript::LatinNonStandard,
-	}, 
+	},
 	{
 		{ "tt" }, "Tatar (standard, QWERTY/national)",
 		// The QWERTY layer is almost identical to the US layout
@@ -1373,10 +1373,14 @@ const std::map<uint16_t, DosCountry> LocaleData::CodeToCountryCorrectionMap = {
 };
 // clang-format on
 
+// Unless stated otherwise, the alphabet and sorting rules for the territories
+// below are taken from the Wikipedia
+
 // clang-format off
 const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
-	{ DosCountry::International, { "International (English)", "XXA", { // stateless
-		{ LocalePeriod::Modern, {
+	{ DosCountry::International, { "International (English)", "XXA", // stateless
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// C
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1395,8 +1399,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Albania, { "Albania", "ALB", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Albania, { "Albania", "ALB",
+		"abcçdeëfghijklmnopqrstuvxyz",
+		"ABCÇDEËFGHIJKLMNOPQRSTUVXYZ",
+		{ { LocalePeriod::Modern, {
 			// sq_AL
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -1415,8 +1421,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Algeria, { "Algeria", "DZA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Algeria, { "Algeria", "DZA",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// fr_DZ
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -1435,8 +1442,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Andorra, { "Andorra", "AND", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Andorra, { "Andorra", "AND",
+		// Catalan alphabet
+		"aàbcçdeéèfghiíïjklmnoóòpqrstuúüvwxyz", "AÀBCÇDEÉÈFGHIÍÏJKLMNOÓÒPQRSTUÚÜVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// ca_AD
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1446,8 +1455,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Arabic, { "Arabic (Middle East)", "XME", { // custom country code
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Arabic, { "Arabic (Middle East)", "XME", // custom country code
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (common/representative values for Arabic languages)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -1466,8 +1476,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Argentina, { "Argentina", "ARG", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Argentina, { "Argentina", "ARG",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_AR
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1486,8 +1499,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Armenia, { "Armenia", "ARM", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Armenia, { "Armenia", "ARM",
+		"աբգդեզէըթժիլխծկհձղճմյնշոչպջռսվտրցւփքօֆ",
+		"ԱԲԳԴԵԶԷԸԹԺԻԼԽԾԿՀՁՂՃՄՅՆՇՈՉՊՋՌՍՎՏՐՑՒՓՔՕՖ",
+		// XXX 'և' should be the last - not sure whether lowercase of uppercase
+		{ { LocalePeriod::Modern, {
 			// hy_AM
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1497,8 +1513,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Aruba, { "Aruba", "ABW", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Aruba, { "Aruba", "ABW",
+		// XXX Dutch + Spanish + check https://en.wikipedia.org/wiki/Papiamento_orthography
+		{ { LocalePeriod::Modern, {
 			// nl_AW
 			DosDateFormat::DayMonthYear, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1508,8 +1525,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::AsiaEnglish, { "Asia (English)", "XAE", { // custom country code
-		{ LocalePeriod::Modern, {
+	{ DosCountry::AsiaEnglish, { "Asia (English)", "XAE", // custom country code
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// en_HK, en_MO, en_IN, en_PK
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1528,8 +1546,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Australia, { "Australia", "AUS", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Australia, { "Australia", "AUS",
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// en_AU
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -1548,8 +1567,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Austria, { "Austria", "AUT", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Austria, { "Austria", "AUT",
+		// Same sorting order as for Germany
+		"aäbcdefghijklmnoöpqrsßtuüvwxyz",
+		"AÄBCDEFGHIJKLMNOÖPQRSẞTUÜVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// de_AT
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1568,8 +1590,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Azerbaijan, { "Azerbaijan", "AZE", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Azerbaijan, { "Azerbaijan", "AZE",
+		// The sorting order is unusual
+		"abcçdeəfgğhxıijkqlmnoöprsştuüvyz",
+		"ABCÇDEƏFGĞHXIİJKQLMNOÖPRSŞTUÜVYZ",
+		{ { LocalePeriod::Modern, {
 			// az_AZ
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1579,8 +1604,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Bahrain, { "Bahrain", "BHR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Bahrain, { "Bahrain", "BHR",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (taken from the common Arabic, adapted the currency)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -1599,8 +1625,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Belarus, { "Belarus", "BLR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Belarus, { "Belarus", "BLR",
+		"абвгдеёжзійклмнопрстуўфхцчшыьэюя",
+		"АБВГДЕЁЖЗІЙКЛМНОПРСТУЎФХЦЧШЫЬЭЮЯ",
+		// XXX U+2019 (or U+02BC) needs to be put after all the letters
+		{ { LocalePeriod::Modern, {
 			// be_BY
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1621,8 +1650,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Belgium, { "Belgium", "BEL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Belgium, { "Belgium", "BEL",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// fr_BE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1641,8 +1671,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Benin, { "Benin", "BEN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Benin, { "Benin", "BEN",
+		// Same sorting order as for France
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// fr_BJ
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1652,8 +1685,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Bolivia, { "Bolivia", "BOL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Bolivia, { "Bolivia", "BOL",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_BO
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1672,8 +1708,12 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::BosniaLatin, { "Bosnia and Herzegovina (Latin)", "BIH_LAT", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::BosniaLatin, { "Bosnia and Herzegovina (Latin)", "BIH_LAT",
+		// Gaj's Latin alphabet is used for Latin
+		// Cyrillic alphabet taken fdrom https://easybosnian.com/bosnian-alphabet
+		"abcčćdđefghijklmnoprsštuvzž" "абцчћдџђефгхијклљмнњопрсштувзж",
+		"ABCČĆDĐEFGHIJKLMNOPRSŠTUVZŽ" "АБЦЧЋДЏЂЕФГХИЈКЛЉМНЊОПРСШТУВЗЖ",
+		{ { LocalePeriod::Modern, {
 			// bs_BA
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1692,8 +1732,12 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::BosniaCyrillic, { "Bosnia and Herzegovina (Cyrillic)", "BIH_CYR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::BosniaCyrillic, { "Bosnia and Herzegovina (Cyrillic)", "BIH_CYR",
+		// Gaj's Latin alphabet is used for Latin
+		// Cyrillic alphabet taken fdrom https://easybosnian.com/bosnian-alphabet
+		"abcčćdđefghijklmnoprsštuvzž" "абцчћдџђефгхијклљмнњопрсштувзж",
+		"ABCČĆDĐEFGHIJKLMNOPRSŠTUVZŽ" "АБЦЧЋДЏЂЕФГХИЈКЛЉМНЊОПРСШТУВЗЖ",
+		{ { LocalePeriod::Modern, {
 			// bs_BA
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1712,8 +1756,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma            // list separator
 		} }
 	} } },
-	{ DosCountry::Botswana, { "Botswana", "BWA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Botswana, { "Botswana", "BWA",
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// en_BW
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1723,8 +1768,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Brazil, { "Brazil", "BRA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Brazil, { "Brazil", "BRA",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// pt_BR
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1743,8 +1789,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Bulgaria, { "Bulgaria", "BGR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Bulgaria, { "Bulgaria", "BGR",
+		"абвгдежзийклмнопрстуфхцчшщъьюя",
+		"АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЬЮЯ",
+		{ { LocalePeriod::Modern, {
 			// bg_BG
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1763,8 +1811,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::CanadaEnglish, { "Canada (English)", "CAN_EN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::CanadaEnglish, { "Canada (English)", "CAN_EN",
+		// Same sorting order as for France (it's English-compatible)
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// en_CA
 			DosDateFormat::YearMonthDay, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1783,8 +1834,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::CanadaFrench, { "Canada (French)", "CAN_FR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::CanadaFrench, { "Canada (French)", "CAN_FR",
+		// Same sorting order as for France
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// fr_CA
 			DosDateFormat::YearMonthDay, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1803,8 +1857,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Chile, { "Chile", "CHL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Chile, { "Chile", "CHL",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_CL
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1823,8 +1880,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::China, { "China", "CHN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::China, { "China", "CHN",
+		{}, {}, // unsupported script
+		{ { LocalePeriod::Modern, {
 			// zh_CN
 			DosDateFormat::YearMonthDay, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1843,8 +1901,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Colombia, { "Colombia", "COL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Colombia, { "Colombia", "COL",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_CO
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -1863,8 +1924,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Congo, { "Congo", "COG", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Congo, { "Congo", "COG",
+		// Same sorting order as for France
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// ln_CD
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1874,8 +1938,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::CostaRica, { "Costa Rica", "CRI", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::CostaRica, { "Costa Rica", "CRI",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_CR
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1894,8 +1961,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Croatia, { "Croatia", "HRV", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Croatia, { "Croatia", "HRV",
+		// Gaj's Latin alphabet is used here
+		"abcčćdđefghijklmnoprsštuvzž",
+		"ABCČĆDĐEFGHIJKLMNOPRSŠTUVZŽ",
+		{ { LocalePeriod::Modern, {
 			// hr_HR
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1915,8 +1985,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Cuba, { "Cuba", "CUB", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Cuba, { "Cuba", "CUB",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_CU
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -1926,8 +1999,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Czechia, { "Czechia", "CZE", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Czechia, { "Czechia", "CZE",
+		"aábcčdďeéěfghiíjklmnňoópqrřsštťuúůvwxyýzž",
+		"AÁBCČDĎEÉĚFGHIÍJKLMNŇOÓPQRŘSŠTŤUÚŮVWXYÝZŽ",
+		{ { LocalePeriod::Modern, {
 			// cs_CZ
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1946,8 +2021,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Denmark, { "Denmark", "DNK", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Denmark, { "Denmark", "DNK",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// da_DK
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1966,8 +2042,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Ecuador, { "Ecuador", "ECU", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Ecuador, { "Ecuador", "ECU",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_EC
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -1986,8 +2065,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Egypt, { "Egypt", "EGY", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Egypt, { "Egypt", "EGY",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (taken from the common Arabic, adapted the currency)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2006,8 +2086,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::ElSalvador, { "El Salvador", "SLV", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::ElSalvador, { "El Salvador", "SLV",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_SV
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2026,8 +2109,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Emirates, { "United Arab Emirates", "ARE", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Emirates, { "United Arab Emirates", "ARE",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// en_AE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2046,8 +2130,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Eritrea, { "Eritrea", "ERI", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Eritrea, { "Eritrea", "ERI",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// aa_ER, byn_ER, gez_ER, ssy_ER, tig_ER, ti_ER
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2057,8 +2142,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Estonia, { "Estonia", "EST", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Estonia, { "Estonia", "EST",
+		// The sorting order is unusual
+		"abcdefghijklmnopqrsšzžtuvwõäöüxy",
+		"ABCDEFGHIJKLMNOPQRSŠZŽTUVWÕÄÖÜXY",
+		{ { LocalePeriod::Modern, {
 			// et_EE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2079,8 +2167,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::FaroeIslands, { "Faroe Islands", "FRO", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::FaroeIslands, { "Faroe Islands", "FRO",
+		"aábdðefghiíjklmnoóprstuúvyýæø",
+		"AÁBDÐEFGHIÍJKLMNOÓPRSTUÚVYÝÆØ",
+		{ { LocalePeriod::Modern, {
 			// fo_FO
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2090,8 +2180,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Finland, { "Finland", "FIN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Finland, { "Finland", "FIN",
+		// 'Å', 'Ä', and 'Ö' are sorted after 'Z'
+		"abcdefghijklmnopqrstuvwxyzåäö",
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ"
+		{ { LocalePeriod::Modern, {
 			// fi_FI
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2110,8 +2203,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::France, { "France", "FRA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::France, { "France", "FRA",
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// fr_FR
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2130,8 +2225,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Georgia, { "Georgia", "GEO", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Georgia, { "Georgia", "GEO",
+		"აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ",
+		"ᲐᲑᲒᲓᲔᲕᲖᲗᲘᲙᲚᲛᲜᲝᲞᲟᲠᲡᲢᲣᲤᲥᲦᲧᲨᲩᲪᲫᲬᲭᲮᲯᲰ",
+		{ { LocalePeriod::Modern, {
 			// ka_GE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2141,8 +2238,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Germany, { "Germany", "DEU", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Germany, { "Germany", "DEU",
+		"aäbcdefghijklmnoöpqrsßtuüvwxyz",
+		"AÄBCDEFGHIJKLMNOÖPQRSẞTUÜVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// de_DE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2161,8 +2260,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Ghana, { "Ghana", "GHA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Ghana, { "Ghana", "GHA",
+		// Same sorting order as for France
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// ak_GH
 			DosDateFormat::MonthDayYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2172,8 +2274,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Greece, { "Greece", "GRC", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Greece, { "Greece", "GRC",
+		"αβγδεζηθικλμνξοπρσςτυφχψω",
+		"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ"
+		{ { LocalePeriod::Modern, {
 			// el_GR
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2192,8 +2296,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Greenland, { "Greenland", "GRL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Greenland, { "Greenland", "GRL",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// kl_GL
 			DosDateFormat::YearMonthDay, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Period,
@@ -2203,8 +2308,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Guatemala, { "Guatemala", "GTM", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Guatemala, { "Guatemala", "GTM",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_GT
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2223,8 +2331,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Haiti, { "Haiti", "HTI", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Haiti, { "Haiti", "HTI",
+		// Same sorting order as for France
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// ht_HT
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2234,8 +2345,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Honduras, { "Honduras", "HND", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Honduras, { "Honduras", "HND",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_HN
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2254,8 +2368,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::HongKong, { "Hong Kong", "HKG", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::HongKong, { "Hong Kong", "HKG",
+		{}, {}, // unsupported script
+		{ { LocalePeriod::Modern, {
 			// en_HK, zh_HK
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2274,8 +2389,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Hungary, { "Hungary", "HUN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Hungary, { "Hungary", "HUN",
+		"aábcdeéfghiíjklmnoóöőpqrstuúüűvwxyz",
+		"AÁBCDEÉFGHIÍJKLMNOÓÖŐPQRSTUÚÜŰVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// hu_HU
 			DosDateFormat::YearMonthDay, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2294,8 +2411,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Iceland, { "Iceland", "ISL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Iceland, { "Iceland", "ISL",
+		"aábdðeéfghiíjklmnoóprstuúvxyýzþæö",
+		"AÁBDÐEÉFGHIÍJKLMNOÓPRSTUÚVXYÝZÞÆÖ",
+		{ { LocalePeriod::Modern, {
 			// is_IS
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2314,8 +2433,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::India, { "India", "IND", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::India, { "India", "IND",
+		{}, {}, // unsupported script
+		{ { LocalePeriod::Modern, {
 			// hi_IN
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2334,8 +2454,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Indonesia, { "Indonesia", "IDN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Indonesia, { "Indonesia", "IDN",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// id_ID
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2354,8 +2475,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Ireland, { "Ireland", "IRL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Ireland, { "Ireland", "IRL",
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// en_IE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2374,8 +2496,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Israel, { "Israel", "ISR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Israel, { "Israel", "ISR",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// he_IL
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2394,8 +2517,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Italy, { "Italy", "ITA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Italy, { "Italy", "ITA",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// it_IT
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2414,8 +2538,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Japan, { "Japan", "JPN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Japan, { "Japan", "JPN",
+		{}, {}, // unsupported script
+		{ { LocalePeriod::Modern, {
 			// ja_JP
 			DosDateFormat::YearMonthDay, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2434,8 +2559,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Jordan, { "Jordan", "JOR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Jordan, { "Jordan", "JOR",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (taken from the common Arabic, adapted the currency)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2454,8 +2580,14 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Kazakhstan, { "Kazakhstan", "KAZ", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Kazakhstan, { "Kazakhstan", "KAZ",
+		// Both Latin and Cyrillic alphabets might be used
+		// For Latin. the following order is assumed: ISO 9:1995, BGN/PCGN, ALA-LC
+		"aäa̋ăbvgğdeëjziïīĭykqlmnñŋoöôȯprstwuūüùu̇fxhcçşyıiiīé"
+		"аәбвгғдеёжзийкқлмнңоөпрстуұүфхһцчшщъыіьэюя",
+		"AÄA̋ĂBVGĞDEËJZIÏĪĬYKQLMNÑŊOÖÔȮPRSTWUŪÜÙU̇FXHCÇŞYIİIІÉ"
+		"АӘБВГҒДЕЁЖЗИЙКҚЛМНҢОӨПРСТУҰҮФХҺЦЧШЩЪЫІЬЭЮЯ",
+		{ { LocalePeriod::Modern, {
 			// kk_KZ
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2465,8 +2597,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Kenya, { "Kenya", "KEN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Kenya, { "Kenya", "KEN",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// om_KE, so_KE, sw_KE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2476,8 +2609,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Kuwait, { "Kuwait", "KWT", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Kuwait, { "Kuwait", "KWT",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (taken from the common Arabic, adapted the currency)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2496,8 +2630,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Kyrgyzstan, { "Kyrgyzstan", "KGZ", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Kyrgyzstan, { "Kyrgyzstan", "KGZ",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// ky_KG
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2507,8 +2642,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::LatinAmerica, { "Latin America", "XLA", { // custom country code
-		{ LocalePeriod::Modern, {
+	{ DosCountry::LatinAmerica, { "Latin America", "XLA", // custom country code
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// es_419
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2527,8 +2663,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Latvia, { "Latvia", "LVA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Latvia, { "Latvia", "LVA",
+		"aābcčdeēfgģhiījkķlļmnņoprsštuūvzž",
+		"AĀBCČDEĒFGĢHIĪJKĶLĻMNŅOPRSŠTUŪVZŽ",
+		{ { LocalePeriod::Modern, {
 			// lv_LV
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2547,8 +2685,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Lebanon, { "Lebanon", "LBN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Lebanon, { "Lebanon", "LBN",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (taken from the common Arabic, adapted the currency)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2567,8 +2706,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Liechtenstein, { "Liechtenstein", "LIE", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Liechtenstein, { "Liechtenstein", "LIE",
+		// Same sorting order as for Germany
+		"aäbcdefghijklmnoöpqrsßtuüvwxyz",
+		"AÄBCDEFGHIJKLMNOÖPQRSẞTUÜVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// de_LI
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2578,8 +2720,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Lithuania, { "Lithuania", "LTU", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Lithuania, { "Lithuania", "LTU",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// lt_LT
 			DosDateFormat::YearMonthDay, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2598,8 +2741,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon     // list separator
 		} }
 	} } },
-	{ DosCountry::Luxembourg, { "Luxembourg", "LUX", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Luxembourg, { "Luxembourg", "LUX",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// lb_LU
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2618,8 +2762,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Madagascar, { "Madagascar", "MDG", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Madagascar, { "Madagascar", "MDG",
+		// Same sorting order as for France
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// mg_MG,
 			DosDateFormat::YearMonthDay, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2629,8 +2776,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Malaysia, { "Malaysia", "MYS", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Malaysia, { "Malaysia", "MYS",
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// ms_MY
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2649,8 +2797,12 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Malta, { "Malta", "MLT", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Malta, { "Malta", "MLT",
+		"abċdefġghħijklmnopqrstuvwxżz",
+		"ABĊDEFĠGHĦIJKLMNOPQRSTUVWXŻZ",
+		// XXX consider adding 'C' and 'Y'
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// mt_MT
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2660,8 +2812,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Mexico, { "Mexico", "MEX", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Mexico, { "Mexico", "MEX",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_MX
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2680,8 +2835,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma            // list separator
 		} }
 	} } },
-	{ DosCountry::Monaco, { "Monaco", "MCO", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Monaco, { "Monaco", "MCO",
+		// Same sorting order as for France
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// fr_FR
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2700,8 +2858,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Mongolia, { "Mongolia", "MNG", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Mongolia, { "Mongolia", "MNG",
+		"абвгдеёжзийклмноөпрстуүфхцчшщъыьэюя",
+		"АБВГДЕЁЖЗИЙКЛМНОӨПРСТУҮФХЦЧШЩЪЫЬЭЮЯ",
+		{ { LocalePeriod::Modern, {
 			// mn_MN
 			DosDateFormat::YearMonthDay, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2711,8 +2871,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Montenegro, { "Montenegro", "MNE", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Montenegro, { "Montenegro", "MNE",
+		"abcčćdđefghijklmnoprsšśtuvzžź",
+		"ABCČĆDĐEFGHIJKLMNOPRSŠŚTUVZŽŹ",
+		{ { LocalePeriod::Modern, {
 			// sr_ME
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2731,8 +2893,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Morocco, { "Morocco", "MAR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Morocco, { "Morocco", "MAR",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// fr_MA
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2751,8 +2914,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Netherlands, { "Netherlands", "NLD", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Netherlands, { "Netherlands", "NLD",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			DosDateFormat::DayMonthYear, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
 			{ "€" }, "EUR", 2,
@@ -2770,8 +2934,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::NewZealand, { "New Zealand", "NZL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::NewZealand, { "New Zealand", "NZL",
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// en_NZ
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2790,8 +2955,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Nicaragua, { "Nicaragua", "NIC", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Nicaragua, { "Nicaragua", "NIC",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_NI
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2810,8 +2978,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Niger, { "Niger", "NER", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Niger, { "Niger", "NER",
+		// Same sorting order as for France
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// fr_NE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2821,8 +2992,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Nigeria, { "Nigeria", "NGA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Nigeria, { "Nigeria", "NGA",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// en_NG
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2832,8 +3004,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::NorthMacedonia, { "North Macedonia", "MKD", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::NorthMacedonia, { "North Macedonia", "MKD",
+		"абвгдѓежзѕијклљмнњопрстќуфхцчџш",
+		"АБВГДЃЕЖЗЅИЈКЛЉМНЊОПРСТЌУФХЦЧЏШ",
+		{ { LocalePeriod::Modern, {
 			// mk_MK
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2852,8 +3026,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Norway, { "Norway", "NOR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Norway, { "Norway", "NOR",
+		// 'Æ', 'Ø', and 'Å' are sorted after 'Z'
+		"abcdefghijklmnopqrstuvwxyzæøå",
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅ"
+		{ { LocalePeriod::Modern, {
 			// nn_NO
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2872,8 +3049,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Oman, { "Oman", "OMN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Oman, { "Oman", "OMN",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (taken from the common Arabic, adapted the currency)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2892,8 +3070,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Pakistan, { "Pakistan", "PAK", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Pakistan, { "Pakistan", "PAK",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// en_PK
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2912,8 +3091,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Panama, { "Panama", "PAN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Panama, { "Panama", "PAN",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_PA
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2932,8 +3114,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Paraguay, { "Paraguay", "PRY", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Paraguay, { "Paraguay", "PRY",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_PY
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2952,8 +3137,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Peru, { "Peru", "PER", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Peru, { "Peru", "PER",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_PE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2963,8 +3151,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Philippines, { "Philippines", "PHL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Philippines, { "Philippines", "PHL",
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// fil_PH
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -2974,8 +3164,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Poland, { "Poland", "POL", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Poland, { "Poland", "POL",
+		// Includes Kashubian dialect alphabet (both modern and 1919 version)
+		"aąãbcćčdeęéëfghijklłmnńoòóôœǫprřsśtuùwyzźżž",
+		"AĄÃBCĆČDEĘÉËFGHIJKLŁMNŃOÒÓÔŒǪPRŘSŚTUÙWYZŹŻŽ",
+		{ { LocalePeriod::Modern, {
 			// pl_PL
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -2995,8 +3188,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Portugal, { "Portugal", "PRT", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Portugal, { "Portugal", "PRT",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// pt_PT
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3015,8 +3209,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::PuertoRico, { "Puerto Rico", "PRI", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::PuertoRico, { "Puerto Rico", "PRI",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_PR
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3026,8 +3223,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Qatar, { "Qatar", "QAT", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Qatar, { "Qatar", "QAT",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (taken from the common Arabic, adapted the currency)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3046,8 +3244,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Romania, { "Romania", "ROU", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Romania, { "Romania", "ROU",
+		"aăâbcdefghiîjklmnopqrsștțuvwxyz",
+		"AĂÂBCDEFGHIÎJKLMNOPQRSȘTȚUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// ro_RO
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3068,8 +3268,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Russia, { "Russia", "RUS", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Russia, { "Russia", "RUS",
+		"абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+		"АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ",
+		{ { LocalePeriod::Modern, {
 			// ru_RU
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3088,8 +3290,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Rwanda, { "Rwanda", "RWA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Rwanda, { "Rwanda", "RWA",
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// rw_RW
 			DosDateFormat::YearMonthDay, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3099,8 +3302,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::SanMarino, { "San Marino", "SMR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::SanMarino, { "San Marino", "SMR",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// it_IT
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3119,8 +3323,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::SaudiArabia, { "Saudi Arabia", "SAU", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::SaudiArabia, { "Saudi Arabia", "SAU",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (taken from the common Arabic, adapted the currency)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3139,8 +3344,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Senegal, { "Senegal", "SEN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Senegal, { "Senegal", "SEN",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// wo_SN
 			DosDateFormat::DayMonthYear, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3150,8 +3356,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Serbia, { "Serbia", "SRB", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Serbia, { "Serbia", "SRB",
+		"абвгдђежзијклљмнњопрстћуфхцчџш",
+		"АБВГДЂЕЖЗИЈКЛЉМНЊОПРСТЋУФХЦЧЏШ",
+		{ { LocalePeriod::Modern, {
 			// sr_RS
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3170,8 +3378,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Seychelles, { "Seychelles", "SYC", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Seychelles, { "Seychelles", "SYC",
+		// Same sorting order as for France
+		"aàâæbcçdeéèêëfghiïîjklmnoôœpqrstuùüûvwxyÿz",
+		"AÀÂÆBCÇDEÉÈÊËFGHIÏÎJKLMNOÔŒPQRSTUÙÜÛVWXYŸZ",
+		{ { LocalePeriod::Modern, {
 			// en_SC
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3181,8 +3392,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Singapore, { "Singapore", "SGP", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Singapore, { "Singapore", "SGP",
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// ms_SG
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3201,8 +3413,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Slovakia, { "Slovakia", "SVK", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Slovakia, { "Slovakia", "SVK",
+		"aáäbcčdďeéfghiíjklĺľmnňoóôpqrŕsštťuúvwxyýzž",
+		"AÁÄBCČDĎEÉFGHIÍJKLĹĽMNŇOÓÔPQRŔSŠTŤUÚVWXYÝZŽ",
+		{ { LocalePeriod::Modern, {
 			// sk_SK
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3221,8 +3435,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Slovenia, { "Slovenia", "SVN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Slovenia, { "Slovenia", "SVN",
+		"abcčdefghijklmnoprsštuvzž",
+		"ABCČDEFGHIJKLMNOPRSŠTUVZŽ",
+		{ { LocalePeriod::Modern, {
 			// sl_SI
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3243,8 +3459,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::SouthAfrica, { "South Africa", "ZAF", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::SouthAfrica, { "South Africa", "ZAF",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// af_ZA
 			DosDateFormat::YearMonthDay, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3263,8 +3480,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::SouthKorea, { "South Korea", "KOR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::SouthKorea, { "South Korea", "KOR",
+		{}, {}, // unsupported script
+		{ { LocalePeriod::Modern, {
 			// ko_KR
 			DosDateFormat::YearMonthDay, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3286,8 +3504,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Spain, { "Spain", "ESP", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Spain, { "Spain", "ESP",
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_ES
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3306,8 +3526,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Sweden, { "Sweden", "SWE", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Sweden, { "Sweden", "SWE",
+		// 'Å', 'Ä', and 'Ö' are sorted after 'Z'
+		"abcdefghijklmnopqrstuvwxyzåäö",
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ"
+		{ { LocalePeriod::Modern, {
 			// sv_SE
 			DosDateFormat::YearMonthDay, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3326,8 +3549,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Switzerland, { "Switzerland", "CHE", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Switzerland, { "Switzerland", "CHE",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// de_CH
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3346,8 +3570,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Syria, { "Syria", "SYR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Syria, { "Syria", "SYR",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// fr_SY
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3366,8 +3591,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Tajikistan, { "Tajikistan", "TJK", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Tajikistan, { "Tajikistan", "TJK",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// tg_TJ
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3377,8 +3603,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Taiwan, { "Taiwan", "TWN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Taiwan, { "Taiwan", "TWN",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// zh_TW
 			DosDateFormat::YearMonthDay, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3397,8 +3624,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Tanzania, { "Tanzania", "TZA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Tanzania, { "Tanzania", "TZA",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// sw_TZ
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3408,8 +3636,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Thailand, { "Thailand", "THA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Thailand, { "Thailand", "THA",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// th_TH
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3421,7 +3650,7 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			// Windows ME; country 66
 			DosDateFormat::YearMonthDay, LocaleSeparator::Dash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
-			// Windows ME uses dollar symbol for currency, this 
+			// Windows ME uses dollar symbol for currency, this
 			// looks wrong, or perhaps it is a workaround for some
 			// OS limitation
 			{ "฿", "B" }, "THB", 2,
@@ -3431,8 +3660,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Tonga, { "Tonga", "TON", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Tonga, { "Tonga", "TON",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// to_TO
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3442,8 +3672,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Tunisia, { "Tunisia", "TUN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Tunisia, { "Tunisia", "TUN",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// fr_TN
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3462,8 +3693,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Slash          // list separator
 		} }
 	} } },
-	{ DosCountry::Turkey, { "Turkey", "TUR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Turkey, { "Turkey", "TUR",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// tr_TR
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3482,8 +3714,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Turkmenistan, { "Turkmenistan", "TKM", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Turkmenistan, { "Turkmenistan", "TKM",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// tk_TM
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3493,8 +3726,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Uganda, { "Uganda", "UGA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Uganda, { "Uganda", "UGA",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// lg_UG
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3504,8 +3738,10 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Ukraine, { "Ukraine", "UKR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Ukraine, { "Ukraine", "UKR",
+		"абвгґдеєжзиіїйклмнопрстуфхцчшщьюя",
+		"АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯ",
+		{ { LocalePeriod::Modern, {
 			// uk_UA
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3528,8 +3764,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::UnitedKingdom, { "United Kingdom", "GBR", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::UnitedKingdom, { "United Kingdom", "GBR",
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// en_GB
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3548,8 +3785,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::UnitedStates, { "United States", "USA", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::UnitedStates, { "United States", "USA",
+		{}, {}, // let it use the default one
+		{ { LocalePeriod::Modern, {
 			// en_US
 			DosDateFormat::MonthDayYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3568,8 +3806,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Uruguay, { "Uruguay", "URY", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Uruguay, { "Uruguay", "URY",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_UY
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3588,8 +3829,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Uzbekistan, { "Uzbekistan", "UZB", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Uzbekistan, { "Uzbekistan", "UZB",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// uz_UZ
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3599,8 +3841,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::VaticanCity, { "Vatican City", "VAT", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::VaticanCity, { "Vatican City", "VAT",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// it_IT
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3619,8 +3862,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Venezuela, { "Venezuela", "VEN", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Venezuela, { "Venezuela", "VEN",
+		// Same sorting order as for Spain
+		"abcdefghijklmnñopqrstuvwxyz",
+		"ABCDEFGHIJKLMNÑOPQRSTUVWXYZ",
+		{ { LocalePeriod::Modern, {
 			// es_VE
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3639,8 +3885,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Vietnam, { "Vietnam", "VNM", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Vietnam, { "Vietnam", "VNM",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// vi_VN
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3650,8 +3897,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma,         // decimal separator
 		} }
 	} } },
-	{ DosCountry::Yemen, { "Yemen", "YEM", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Yemen, { "Yemen", "YEM",
+		{}, {}, // right-to-left alphabet, no collation supported
+		{ { LocalePeriod::Modern, {
 			// (taken from the common Arabic, adapted the currency)
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3670,8 +3918,11 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Semicolon      // list separator
 		} }
 	} } },
-	{ DosCountry::Yugoslavia, { "Yugoslavia", "YUG", { // obsolete country code
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Yugoslavia, { "Yugoslavia", "YUG", // obsolete country code
+		// Gaj's Latin alphabet is used here
+		"abcčćdđefghijklmnoprsštuvzž",
+		"ABCČĆDĐEFGHIJKLMNOPRSŠTUVZŽ",
+		{ { LocalePeriod::Modern, {
 			// sr_RS, sr_ME, hr_HR, sk_SK, bs_BA, mk_MK
 			DosDateFormat::DayMonthYear, LocaleSeparator::Period,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
@@ -3690,8 +3941,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Comma          // list separator
 		} }
 	} } },
-	{ DosCountry::Zambia, { "Zambia", "ZMB", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Zambia, { "Zambia", "ZMB",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// bem_ZM, en_ZM
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time12H,      LocaleSeparator::Colon,
@@ -3701,8 +3953,9 @@ const std::map<DosCountry, CountryInfoEntry> LocaleData::CountryInfo = {
 			LocaleSeparator::Period,        // decimal separator
 		} }
 	} } },
-	{ DosCountry::Zimbabwe, { "Zimbabwe", "ZWE", {
-		{ LocalePeriod::Modern, {
+	{ DosCountry::Zimbabwe, { "Zimbabwe", "ZWE",
+		// XXX
+		{ { LocalePeriod::Modern, {
 			// en_ZW
 			DosDateFormat::DayMonthYear, LocaleSeparator::Slash,
 			DosTimeFormat::Time24H,      LocaleSeparator::Colon,
