@@ -41,19 +41,40 @@ endif()
 
 add_executable(dosbox_tests
     ansi_code_markup_tests.cpp
+    archive_cache_tests.cpp
     archive_entry_names_tests.cpp
+    archive_cp437_tests.cpp
+    archive_cue_rewrite_tests.cpp
     archive_exclusive_file_tests.cpp
+    archive_helper_client_tests.cpp
+    archive_helper_protocol_tests.cpp
     archive_identity_tests.cpp
+    archive_legacy_zip_tests.cpp
+    archive_lock_tests.cpp
+    archive_member_path_tests.cpp
+    archive_random_name_tests.cpp
     archive_reader_tests.cpp
+    archive_toml_tests.cpp
+    archive_tree_tests.cpp
     archive_zip_central_directory_tests.cpp
+    head_sniff_tests.cpp
+    rar4_headers_tests.cpp
+    sidecar_locator_tests.cpp
+    sidecar_record_tests.cpp
     batch_file_tests.cpp
     bda_cursor_type_tests.cpp
     bit_view_tests.cpp
     bitops_tests.cpp
+    cache_dir_tests.cpp
+    child_process_tests.cpp
     cmd_move_tests.cpp
+    drive_archive_tests.cpp
+    drive_search_slots_tests.cpp
+    drive_union_tests.cpp
     command_line_tests.cpp
     config_help_tests.cpp
     dos_files_tests.cpp
+    dos_settings_tests.cpp
     dos_io_delay_tests.cpp
     dos_keyboard_layout_setting_tests.cpp
     dos_memory_struct_tests.cpp
@@ -73,6 +94,7 @@ add_executable(dosbox_tests
     messages_adjust_tests.cpp
     mixer_tests.cpp
     mode_symbolic_tests.cpp
+    mount_archive_tests.cpp
     mount_tests.cpp
     ne2000_tests.cpp
     path_command_tests.cpp
@@ -145,6 +167,12 @@ target_link_libraries(dosbox_tests PRIVATE
     SDL3::Headers
     Freetype::Freetype
     ${ZMBV_ZLIB_TARGET}
+)
+
+# The helper client tests spawn the real helper binary.
+add_dependencies(dosbox_tests dosbox_archive_helper)
+target_compile_definitions(dosbox_tests PRIVATE
+    DOSBOX_ARCHIVE_HELPER_PATH="$<TARGET_FILE:dosbox_archive_helper>"
 )
 
 if (DOSBOX_IS_BSD_GCC)

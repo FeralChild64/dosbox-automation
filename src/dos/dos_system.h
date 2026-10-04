@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_DOS_SYSTEM_H
 #define DOSBOX_DOS_SYSTEM_H
@@ -280,6 +281,7 @@ enum class DosDriveType : uint16_t {
 	Fat     = 3,
 	Iso     = 4,
 	Virtual = 5,
+	Archive = 6,
 };
 
 class DOS_Drive {
@@ -312,6 +314,9 @@ public:
 	virtual bool IsRemote(void)     = 0;
 	virtual bool IsRemovable(void)  = 0;
 	virtual Bits UnMount(void)      = 0;
+	// False while the medium behind the drive is unusable; DOS then
+	// answers drive not ready (archive mounts, design D16).
+	virtual bool IsReady() { return true; }
 
 	DosDriveType GetType() const
 	{
@@ -336,6 +341,7 @@ public:
 		case DosDriveType::Fat: return MSG_Get("MOUNT_TYPE_FAT");
 		case DosDriveType::Iso: return MSG_Get("MOUNT_TYPE_CDROM");
 		case DosDriveType::Virtual: return MSG_Get("MOUNT_TYPE_VIRTUAL");
+		case DosDriveType::Archive: return MSG_Get("MOUNT_TYPE_ARCHIVE");
 		default: return MSG_Get("MOUNT_TYPE_UNKNOWN");
 		}
 	}
@@ -365,6 +371,11 @@ public:
 		}
 		case DosDriveType::Virtual:
 			return MSG_Get("MOUNT_TYPE_VIRTUAL");
+		case DosDriveType::Archive: {
+			int msg_length = MSG_Get("MOUNT_TYPE_ARCHIVE").size();
+			return MSG_Get("MOUNT_TYPE_ARCHIVE") + std::string(" ") +
+			       truncate_path(info, max_length - msg_length - 1);
+		}
 		default: return MSG_Get("MOUNT_TYPE_UNKNOWN");
 		}
 	}

@@ -11,6 +11,9 @@
 #include <string>
 #include <vector>
 
+#include "dos/archive/archive_source.h"
+#include "dos/archive/head_sniff.h"
+
 enum class DenyReason {
 	None,
 	DoesNotResolve,
@@ -21,6 +24,26 @@ enum class DenyReason {
 	NotADiskImage,
 	NotADirectory,
 	ReservedDeviceName,
+	// Archive mounts (archive mount design 2.3)
+	NotAnArchive,
+	ArchiveTooLarge,
+	ArchiveSequential,
+	ArchiveSolidUnsupported,
+	ArchiveEncrypted,
+	ArchiveMultiVolume,
+	ArchiveUnsupported,
+	ArchiveEntryRejected,
+	ArchiveCorrupt,
+	ArchiveChanged,
+	ArchiveHelperFailed,
+	ArchiveRootNotFound,
+	CacheUnavailable,
+	// Phase 3: the sidecar (3.2)
+	SidecarBusy,
+	SidecarUnavailable,
+	// Phase 4a: member paths (design D7, D17)
+	ArchiveMemberNotFound,
+	ArchiveCueRejected,
 };
 
 struct MountVerdict {
@@ -76,6 +99,21 @@ MountVerdict ValidateImagePath(const std::filesystem::path& raw_path,
                                MountOrigin origin,
                                const std::vector<std::filesystem::path>& allowed_image_roots,
                                const std::filesystem::path& conf_anchor = {});
+
+struct ArchiveVerdict {
+	MountVerdict verdict          = {};
+	ArchiveMount::HeadSniff sniff = {};
+};
+
+// ValidateImagePath's six host-path steps, then the head sniff as the
+// structure gate (no signature: NotAnArchive; sequential: refused unless
+// allowed). The index verdict is the helper's Open, see the mapping below.
+ArchiveVerdict ValidateArchivePath(
+        const std::filesystem::path& raw_path, MountOrigin origin,
+        const std::vector<std::filesystem::path>& allowed_image_roots,
+        const std::filesystem::path& conf_anchor, bool sequential_allowed);
+
+DenyReason DenyReasonForArchiveError(ArchiveMount::Error error);
 
 #if defined(WIN32)
 bool IsDeviceNamespacePath(const std::string& path);

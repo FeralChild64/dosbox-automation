@@ -13,8 +13,8 @@ function(add_install_rules)
 
     set(INSTALL_ICON_NAME "org.dosbox_automation.dosbox_automation")
 
-    # Install the application binary
-    install(TARGETS dosbox RUNTIME)
+    # The engine starts the archive helper from its own directory.
+    install(TARGETS dosbox dosbox_archive_helper RUNTIME)
 
     # System manual page
     install(FILES "docs/dosbox.1"

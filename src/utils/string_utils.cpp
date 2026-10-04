@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText:  2022-2026 The DOSBox Staging Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "utils/string_utils.h"
 
 #include <algorithm>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 bool is_hex_digits(const std::string_view s) noexcept
@@ -286,13 +289,18 @@ bool ciequals(const char a, const char b)
 
 bool natural_compare(const std::string& a_str, const std::string& b_str)
 {
-	auto parse_num = [](auto& it, const auto it_end) {
-		int num = 0;
-		while (it != it_end && isdigit(*it)) {
-			num = num * 10 + (*it - '0');
+	// A number as its significant digits: compared by length, then digit
+	// by digit, so no run of digits can overflow.
+	auto digit_run = [](auto& it, const auto it_end) {
+		while (it != it_end && *it == '0') {
 			++it;
 		}
-		return num;
+		const auto start = it;
+		while (it != it_end && isdigit(*it)) {
+			++it;
+		}
+		return std::string_view(std::to_address(start),
+		                        static_cast<size_t>(it - start));
 	};
 	auto a = a_str.begin();
 	auto b = b_str.begin();
@@ -301,9 +309,19 @@ bool natural_compare(const std::string& a_str, const std::string& b_str)
 	const auto b_end = b_str.end();
 
 	while (a != a_end && b != b_end) {
-		const auto found_nums = isdigit(*a) && isdigit(*b);
-		const auto a_val = found_nums ? parse_num(a, a_end) : tolower(*a++);
-		const auto b_val = found_nums ? parse_num(b, b_end) : tolower(*b++);
+		if (isdigit(*a) && isdigit(*b)) {
+			const auto a_num = digit_run(a, a_end);
+			const auto b_num = digit_run(b, b_end);
+			if (a_num.size() != b_num.size()) {
+				return a_num.size() < b_num.size();
+			}
+			if (a_num != b_num) {
+				return a_num < b_num;
+			}
+			continue;
+		}
+		const auto a_val = tolower(*a++);
+		const auto b_val = tolower(*b++);
 		if (a_val != b_val) {
 			return a_val < b_val;
 		}

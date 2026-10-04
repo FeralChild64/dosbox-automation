@@ -8,6 +8,7 @@
 
 #include "dos/dos.h"
 #include "dos/programs.h"
+#include "dos/programs/mount_policy.h"
 #include "shell/command_line.h"
 
 #include <array>
@@ -20,7 +21,8 @@ enum class MountType {
 	HardDiskImage,
 	CdRomImage,
 	Directory,
-	Overlay
+	Overlay,
+	Archive
 };
 
 enum class MountFileSystemType { Fat16, Iso, None };
@@ -43,8 +45,8 @@ struct MountParameters {
 	int8_t ide_index          = -1;
 	bool is_second_cable_slot = false;
 
-	// Defaulting to Hard Disk prevents obscure issues in games like Hyperspace 
-	uint8_t mediaid           = MediaId::HardDisk;
+	// Defaulting to Hard Disk prevents obscure issues in games like Hyperspace
+	uint8_t mediaid = MediaId::HardDisk;
 
 	// 0-3 vs A-Z
 	bool is_drive_number = false;
@@ -57,6 +59,12 @@ struct MountParameters {
 	std::string freesize_arg = "";
 	std::string size_arg     = "";
 	std::string chs_arg      = "";
+
+	// Archive mounts (archive mount design D10, D1)
+	std::string archive_root = ""; // DOS path inside the archive, "" =
+	                               // D10's rule
+	bool no_sidecar = false;       // D1: no sidecar, read-only
+	std::string sidecar_path = ""; // -sidecar PATH, else D2 decides
 };
 
 class MOUNT final : public Program {
@@ -72,6 +80,27 @@ public:
 	void Run() override;
 
 	std::optional<MountParameters> ProcessArguments(CommandLine* cmd);
+
+	// Archive mounts (archive mount design, Phase 2c)
+	bool HandleReconnect();
+	bool MountArchive(MountParameters& params);
+	// The engine's one cache store is opened on the first archive
+	// mount; the tests close it between cases.
+	static void ResetArchiveCacheForTests();
+	// Opens the archive cache from the [dos] settings and runs its cleanup
+	// (design D14), at engine start, before any mount.
+	static void ArchiveCacheStartup();
+	static void ReportMountDenied(const std::string& path,
+	                              const MountVerdict& verdict,
+	                              const std::string& detail = {});
+	// Owner-trusted without the webserver, whitelist-enforced with it.
+	static DirMountPolicy CurrentDirPolicy();
+	// Drops the in-process sidecar key and lock of a drive being unmounted;
+	// a no-op for other drives (3.2).
+	static void ReleaseSidecar(char drive_letter);
+	// PROGRAM_MOUNT_ARCHIVE_UNSUPPORTED's text; the unit tests link a
+	// message stub, so they read it here.
+	static const char* const ArchiveUnsupportedMessage;
 
 private:
 	static void AddMessages();
@@ -106,6 +135,9 @@ private:
 	                              bool is_relative_to_last_config) const;
 
 	std::string GetDosMappedHostPath(const std::string& dos_path) const;
+
+	std::string ResolveHostPath(const std::string& arg,
+	                            bool relative_to_last_config) const;
 
 	void ProcessPaths(const std::string first_path, MountParameters& params,
 	                  bool path_relative_to_last_config);

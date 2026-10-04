@@ -64,6 +64,26 @@ webserver an attack surface by design. The short version:
   for all of them, so a recipe can reach the files sitting next to it.
   Beyond that anchor, whitelists are read from the primary config only,
   so a bundled game config cannot widen them.
+- Archive mounts (zip, RAR, 7z, tar) go through the same path validation
+  as disk images, then a structure check on the file's own bytes, and the
+  archive is read by a separate helper process that links the reader
+  library alone. The archive itself is never written. A game's writes
+  land in a sidecar directory, created with owner-only permissions under
+  the saves directory (XDG data home, `%LOCALAPPDATA%` or
+  `~/Library/Application Support`) or named with `-sidecar` and validated
+  like any directory mount; a sidecar found beside the archive is adopted
+  only when that directory passes the directory whitelist for the mount's
+  origin. Nothing in the sidecar that is a symlink is written to or
+  through, the deletions and renames of base files are kept as DOS names
+  only, and a name that fails the DOS rules on load is dropped. One
+  sidecar serves one mount at a time, held by a lock file and an
+  in-process key; a second mount of the same archive is refused unless it
+  asks for no sidecar. Unpacked members live under the cache directory
+  with caps on size, free space and age.
+  Zip members packed with PKZIP 1.x's shrink and implode methods are
+  decoded by our port of Info-ZIP's decoders, inside the same helper
+  process, stopped at the member's declared size and checked against its
+  CRC-32.
 - Lua scripts run sandboxed: no filesystem or process access, bytecode
   rejected, dangerous globals removed, instruction and pattern-complexity
   limits against runaway scripts.

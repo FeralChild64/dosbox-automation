@@ -8,3 +8,5 @@
 
 # for github linguist 
 *.h	linguist-language=C++
+# PKZIP 1.x fixture inputs are byte-exact DOS text; never normalized
+tests/files/archives/legacy/inputs/* -text

@@ -2067,6 +2067,64 @@ static void init_dos_settings(SectionProp& section)
 	        "  standard:  128 KB total memory with applications residing below 96 KB.\n"
 	        "             Required for some older games (e.g., Jumpman, Troll).");
 
+	// Archive mounts (archive mount design D14, D5)
+	auto ppath = section.AddPath("archive_cache_path", OnlyAtStart, "");
+	ppath->SetHelp(
+	        "Directory for the archive cache, where members of mounted archives are\n"
+	        "unpacked on demand (unset by default, which means the platform cache\n"
+	        "directory: XDG_CACHE_HOME or ~/.cache on Linux and BSD,\n"
+	        "LOCALAPPDATA\\dosbox-automation\\cache on Windows, ~/Library/Caches on\n"
+	        "macOS). A system path, a symlink, or a non-empty directory without a\n"
+	        "CACHEDIR.TAG is refused, and the mount with it.");
+
+	ppath = section.AddPath("archive_sidecar_path", OnlyAtStart, "");
+	ppath->SetHelp(
+	        "Directory for the sidecars of archive mounts, where a game's writes land\n"
+	        "(unset by default, which means the saves directory under the platform data\n"
+	        "directory: XDG_DATA_HOME or ~/.local/share on Linux and BSD,\n"
+	        "LOCALAPPDATA\\dosbox-automation on Windows, ~/Library/Application Support\n"
+	        "on macOS). Delete a sidecar to reset a game.");
+
+	auto pint = section.AddInt("archive_cache_max_size", WhenIdle, 4096);
+	pint->SetMinMax(64, 1024 * 1024);
+	pint->SetHelp("Size cap of the archive cache in MiB (4096 by default). Above it the\n"
+	              "least recently used entries are removed before a new member is written.");
+
+	pint = section.AddInt("archive_cache_min_free", WhenIdle, 2048);
+	pint->SetMinMax(0, 1024 * 1024);
+	pint->SetHelp("Free space in MiB that must remain on the cache's file system after a\n"
+	              "member is written (2048 by default); a mount that would go below it is\n"
+	              "refused before any byte is unpacked.");
+
+	pint = section.AddInt("archive_cache_ttl", WhenIdle, 7);
+	pint->SetMinMax(1, 30);
+	pint->SetHelp("Days an unused cache entry lives (7 by default, at most 30). Entries\n"
+	              "past it are removed when the cache is next opened.");
+
+	pint = section.AddInt("archive_memory_limit", WhenIdle, 16);
+	pint->SetMinMax(0, 256);
+	pint->SetHelp("Members up to this size in MiB are unpacked into memory when opened\n"
+	              "(16 by default); larger ones go to the archive cache on disk.");
+
+	pint = section.AddInt("archive_max_entries", WhenIdle, 65536);
+	pint->SetMinMax(1, 1000000);
+	pint->SetHelp("Most entries an archive may hold (65536 by default); over it the mount\n"
+	              "is refused when the archive is indexed, before any byte is unpacked.");
+
+	pint = section.AddInt("archive_max_size", WhenIdle, 4096);
+	pint->SetMinMax(1, 65536);
+	pint->SetHelp("Most declared uncompressed content an archive may hold, in MiB (4096 by\n"
+	              "default); over it the mount is refused at index time.");
+
+	pstring = section.AddString("archive_sequential", WhenIdle, "refuse");
+	pstring->SetValues({"refuse", "cache"});
+	pstring->SetHelp(
+	        "What to do with archive formats that cannot serve one member without\n"
+	        "unpacking everything before it: 7z, RAR 5, and every tar ('refuse' by\n"
+	        "default). With 'cache' the whole archive is unpacked into the archive\n"
+	        "cache once at mount time and served from there. Solid RAR 4 archives\n"
+	        "are refused either way.");
+
 	pstring = section.AddString("ver", WhenIdle, "5.0");
 	pstring->SetHelp(
 	        "Set DOS version in MAJOR.MINOR format (5.0 by default). A single number is\n"

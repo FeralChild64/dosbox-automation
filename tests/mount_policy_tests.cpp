@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include "archive_fixtures.h"
 #include "test_temp_dir.h"
 
 #if !defined(WIN32)
@@ -513,10 +514,20 @@ TEST_F(MountPolicyTest, GeometryTableFloppySizesPass)
 	// mount, including the 10-sector booters (200K/400K) and the
 	// XDF/DMF formats - signature-less booter disks exist in all of
 	// them (aug-55a2, table sync with disk_geometry_list).
-	constexpr std::array<std::uintmax_t, 14> sizes = {
-	        163840,  184320,  204800,  327680,  368640,
-	        409600,  737280,  1228800, 1474560, 1556480,
-	        1720320, 1761280, 1884160, 2949120};
+	constexpr std::array<std::uintmax_t, 14> sizes = {163840,
+	                                                  184320,
+	                                                  204800,
+	                                                  327680,
+	                                                  368640,
+	                                                  409600,
+	                                                  737280,
+	                                                  1228800,
+	                                                  1474560,
+	                                                  1556480,
+	                                                  1720320,
+	                                                  1761280,
+	                                                  1884160,
+	                                                  2949120};
 	for (const auto size : sizes) {
 		EXPECT_TRUE(MountPolicy::ValidateDiskImageStructure(
 		        CreateFloppyImage("geom.img", size)))
@@ -599,8 +610,11 @@ TEST_F(MountPolicyTest, DirMountSystemPathRejectedEvenOwnerTrusted)
 {
 	// A system directory that is not itself a symlink: on macOS /etc
 	// points into /private, and the symlink check runs first
-	const auto verdict = MountPolicy::ValidateDirectoryMount(
-	        fs::path(kPlainSystemDir), fs::path(kPlainSystemDir), {}, DirMountPolicy::OwnerTrusted);
+	const auto verdict =
+	        MountPolicy::ValidateDirectoryMount(fs::path(kPlainSystemDir),
+	                                            fs::path(kPlainSystemDir),
+	                                            {},
+	                                            DirMountPolicy::OwnerTrusted);
 
 	EXPECT_FALSE(verdict.allowed);
 	EXPECT_EQ(verdict.reason, DenyReason::SystemPath);
@@ -997,10 +1011,8 @@ TEST_F(MountPolicyTest, ImagePathApiNoAnchorNoRootsBlocks)
 {
 	const auto img = CreateFatImage("somewhere/disk.img");
 
-	const auto verdict = MountPolicy::ValidateImagePath(img,
-	                                                    MountOrigin::Api,
-	                                                    {},
-	                                                    {});
+	const auto verdict =
+	        MountPolicy::ValidateImagePath(img, MountOrigin::Api, {}, {});
 
 	EXPECT_FALSE(verdict.allowed);
 	EXPECT_EQ(verdict.reason, DenyReason::OutsideWhitelist);
@@ -1257,8 +1269,11 @@ TEST_F(MountPolicyTest, ParseCapAtFive)
 
 	const auto cfg = CreateFile("test.conf",
 	                            "[webserver]\n"
-	                            "mount_allowed_bases = " + list + "\n"
-	                            "mount_allowed_image_roots = " + list + "\n");
+	                            "mount_allowed_bases = " +
+	                                    list +
+	                                    "\n"
+	                                    "mount_allowed_image_roots = " +
+	                                    list + "\n");
 
 	const auto paths = MountPolicy::ParsePolicyConfig(cfg);
 	EXPECT_EQ(paths.allowed_bases.size(), 5u);
@@ -1421,6 +1436,184 @@ TEST(MountPolicyWindows, DeviceNamespacePathRejected)
 }
 
 #endif // WIN32
+
+// -- ValidateArchivePath --
+
+std::filesystem::path BuiltArchive(const std::filesystem::path& dir,
+                                   const std::string& name,
+                                   const ArchiveFixtures::Kind kind)
+{
+	const auto path = dir / name;
+	auto error      = std::string();
+	EXPECT_TRUE(ArchiveFixtures::WriteArchive(path,
+	                                          kind,
+	                                          {
+	                                                  {"game/", "", true},
+	                                                  {"game/doom.exe", "xx"}
+        },
+	                                          nullptr,
+	                                          &error))
+	        << error;
+	return path;
+}
+
+TEST_F(MountPolicyTest, ArchivePathZipIsAllowedWithItsSniff)
+{
+	const auto zip = BuiltArchive(tmp_dir,
+	                              "game.zip",
+	                              ArchiveFixtures::Kind::ZipStored);
+	const auto v   = MountPolicy::ValidateArchivePath(
+                zip, MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_TRUE(v.verdict.allowed);
+	EXPECT_EQ(v.verdict.reason, DenyReason::None);
+	EXPECT_EQ(v.verdict.resolved, std::filesystem::canonical(zip));
+	EXPECT_EQ(v.sniff.kind, ArchiveMount::HeadKind::Zip);
+	ASSERT_TRUE(v.sniff.access);
+	EXPECT_EQ(*v.sniff.access, ArchiveMount::Access::PerMember);
+}
+
+TEST_F(MountPolicyTest, ArchivePathJunkIsNotAnArchive)
+{
+	const auto junk = tmp_dir / "notes.zip";
+	{
+		std::ofstream out(junk, std::ios::binary);
+		out << std::string(600, 'a');
+	}
+	const auto v = MountPolicy::ValidateArchivePath(
+	        junk, MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_FALSE(v.verdict.allowed);
+	EXPECT_EQ(v.verdict.reason, DenyReason::NotAnArchive);
+	EXPECT_EQ(v.sniff.kind, ArchiveMount::HeadKind::Unknown);
+}
+
+TEST_F(MountPolicyTest, ArchivePathSequentialIsRefusedUnlessAllowed)
+{
+	const auto tgz     = BuiltArchive(tmp_dir,
+                                      "game.tar.gz",
+                                      ArchiveFixtures::Kind::TarGz);
+	const auto refused = MountPolicy::ValidateArchivePath(
+	        tgz, MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_FALSE(refused.verdict.allowed);
+	EXPECT_EQ(refused.verdict.reason, DenyReason::ArchiveSequential);
+	EXPECT_EQ(refused.sniff.kind, ArchiveMount::HeadKind::Gzip);
+	const auto allowed = MountPolicy::ValidateArchivePath(
+	        tgz, MountOrigin::GuestCommand, {}, {}, true);
+	EXPECT_TRUE(allowed.verdict.allowed);
+}
+
+TEST_F(MountPolicyTest, ArchivePathRunsTheHostStepsBeforeTheSniff)
+{
+	const auto zip = BuiltArchive(tmp_dir,
+	                              "game.zip",
+	                              ArchiveFixtures::Kind::ZipStored);
+	// Outside the whitelist for the API origin, although a fine zip.
+	const auto api = MountPolicy::ValidateArchivePath(
+	        zip, MountOrigin::Api, {tmp_dir / "elsewhere"}, {}, false);
+	EXPECT_FALSE(api.verdict.allowed);
+	EXPECT_EQ(api.verdict.reason, DenyReason::OutsideWhitelist);
+	// Under a whitelisted root it passes.
+	const auto api_ok = MountPolicy::ValidateArchivePath(
+	        zip, MountOrigin::Api, {tmp_dir}, {}, false);
+	EXPECT_TRUE(api_ok.verdict.allowed);
+	// Missing.
+	const auto missing = MountPolicy::ValidateArchivePath(
+	        tmp_dir / "nope.zip", MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_EQ(missing.verdict.reason, DenyReason::DoesNotResolve);
+	// A directory.
+	const auto dir = MountPolicy::ValidateArchivePath(
+	        tmp_dir, MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_EQ(dir.verdict.reason, DenyReason::NotRegularFile);
+#if !defined(WIN32)
+	// A link to a junk file is refused as a link, not as junk: the
+	// host steps run first.
+	std::filesystem::create_symlink(tmp_dir / "notes.zip", tmp_dir / "link.zip");
+	{
+		std::ofstream out(tmp_dir / "notes.zip", std::ios::binary);
+		out << "junk";
+	}
+	const auto link = MountPolicy::ValidateArchivePath(
+	        tmp_dir / "link.zip", MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_EQ(link.verdict.reason, DenyReason::SymlinkComponent);
+#endif
+}
+
+TEST_F(MountPolicyTest, ArchivePathFiresTheVerdictHook)
+{
+	const auto zip = BuiltArchive(tmp_dir,
+	                              "game.zip",
+	                              ArchiveFixtures::Kind::ZipStored);
+	static std::vector<std::pair<std::filesystem::path, MountVerdict>> seen = {};
+	seen.clear();
+	MountPolicy::verdict_hook = [](const std::filesystem::path& raw,
+	                               const MountVerdict& verdict) {
+		seen.emplace_back(raw, verdict);
+	};
+	MountPolicy::ValidateArchivePath(zip, MountOrigin::GuestCommand, {}, {}, false);
+	MountPolicy::verdict_hook = nullptr;
+	ASSERT_EQ(seen.size(), 1u);
+	EXPECT_EQ(seen[0].first, zip);
+	EXPECT_TRUE(seen[0].second.allowed);
+}
+
+TEST(MountPolicyArchive, AnUnsupportedMethodHasAMessageOfItsOwn)
+{
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::ArchiveUnsupported),
+	             "PROGRAM_MOUNT_ARCHIVE_UNSUPPORTED");
+}
+
+TEST(MountPolicyArchiveErrors, EveryIndexErrorHasAReasonAndAText)
+{
+	using ArchiveMount::Error;
+	const std::pair<Error, DenyReason> table[] = {
+	        {            Error::None,                    DenyReason::None},
+	        {      Error::OpenFailed,          DenyReason::ArchiveCorrupt},
+	        {    Error::NotAnArchive,            DenyReason::NotAnArchive},
+	        {        Error::TooLarge,         DenyReason::ArchiveTooLarge},
+	        {  Error::TooManyEntries,         DenyReason::ArchiveTooLarge},
+	        {       Error::Encrypted,        DenyReason::ArchiveEncrypted},
+	        {     Error::MultiVolume,      DenyReason::ArchiveMultiVolume},
+	        {Error::SolidUnsupported, DenyReason::ArchiveSolidUnsupported},
+	        {   Error::EntryRejected,    DenyReason::ArchiveEntryRejected},
+	        {         Error::Corrupt,          DenyReason::ArchiveCorrupt},
+	        {         Error::Changed,          DenyReason::ArchiveChanged},
+	        {     Error::Unsupported,      DenyReason::ArchiveUnsupported},
+	        {        Error::NotFound,          DenyReason::ArchiveCorrupt},
+	        {    Error::HelperFailed,     DenyReason::ArchiveHelperFailed},
+	        {         Error::Timeout,     DenyReason::ArchiveHelperFailed},
+	};
+	for (const auto& [error, reason] : table) {
+		EXPECT_EQ(MountPolicy::DenyReasonForArchiveError(error), reason)
+		        << ArchiveMount::ErrorText(error);
+		if (reason != DenyReason::None) {
+			EXPECT_STRNE(MountPolicy::DenyReasonText(reason), "");
+			EXPECT_STRNE(MountPolicy::DenyMessageId(reason), "");
+		}
+	}
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::ArchiveSequential),
+	             "PROGRAM_MOUNT_ARCHIVE_SEQUENTIAL");
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::CacheUnavailable),
+	             "PROGRAM_MOUNT_ARCHIVE_CACHE");
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::SidecarUnavailable),
+	             "PROGRAM_MOUNT_ARCHIVE_SIDECAR");
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::ArchiveRootNotFound),
+	             "PROGRAM_MOUNT_ARCHIVE_ROOT");
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::NotAnArchive),
+	             "PROGRAM_MOUNT_ERROR_2");
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::ArchiveCorrupt),
+	             "PROGRAM_MOUNT_ARCHIVE_REFUSED");
+}
+
+TEST(MountPolicyArchiveErrors, MemberRefusalsUseTheArchiveRefusedMessage)
+{
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::ArchiveMemberNotFound),
+	             "PROGRAM_MOUNT_ARCHIVE_REFUSED");
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::ArchiveCueRejected),
+	             "PROGRAM_MOUNT_ARCHIVE_REFUSED");
+	EXPECT_STREQ(MountPolicy::DenyReasonText(DenyReason::ArchiveMemberNotFound),
+	             "no such member in the archive");
+	EXPECT_STREQ(MountPolicy::DenyReasonText(DenyReason::ArchiveCueRejected),
+	             "the cue sheet cannot be served from the archive");
+}
 
 } // namespace
 

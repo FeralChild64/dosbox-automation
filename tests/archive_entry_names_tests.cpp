@@ -3,10 +3,14 @@
 //
 #include "dos/archive/entry_names.h"
 
+#include "dos/dos_system.h"
+
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
+
+static_assert(ArchiveNames::DosPathLength == DOS_PATHLENGTH);
 
 namespace {
 

@@ -152,6 +152,7 @@
 #cmakedefine HAVE_SYS_SOCKET_H
 #cmakedefine HAVE_SYS_TYPES_H
 #cmakedefine HAVE_SYS_XATTR_H
+#cmakedefine HAVE_SYS_EXTATTR_H
 
 
 // Windows-related defines

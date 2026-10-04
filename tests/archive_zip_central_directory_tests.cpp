@@ -3,8 +3,6 @@
 //
 #include "dos/archive/zip_central_directory.h"
 
-#include "misc/cross.h"
-
 #include <fcntl.h>
 
 #include <filesystem>
@@ -29,9 +27,6 @@ protected:
 	fs::path tmp_dir = {};
 	void SetUp() override
 	{
-		// DecodeName's code page table comes from the resources, whose
-		// lookup starts at the config dir; main() initializes it.
-		init_config_dir();
 		tmp_dir = TestTempDir::MakeUnique("zip_cd_");
 		ASSERT_FALSE(tmp_dir.empty());
 	}
@@ -113,6 +108,33 @@ TEST_F(ZipCentralDirectoryTest, ReadsTheFlags)
 	ASSERT_EQ(result.error, Error::None);
 	EXPECT_TRUE(result.records[0].utf8_flag);
 	EXPECT_TRUE(result.records[1].encrypted);
+}
+
+TEST_F(ZipCentralDirectoryTest, TheRecordCarriesTheGeneralPurposeFlags)
+{
+	// Bit 1: 8K window, bit 2: three Shannon-Fano trees (APPNOTE 4.4.4).
+	auto imploded        = StoredEntry{"a.txt", "aaaa"};
+	imploded.method      = 6;
+	imploded.extra_flags = 0x0006;
+	const auto result = Read(Write("flags.zip", MakeStoredZip({imploded})), 100);
+	ASSERT_EQ(result.error, Error::None);
+	EXPECT_EQ(result.records[0].flags, 0x0006);
+}
+
+TEST_F(ZipCentralDirectoryTest, RefusesAnImplodeLocalHeaderWithOtherWindowOrTreeBits)
+{
+	auto imploded        = StoredEntry{"a.txt", "aaaa"};
+	imploded.method      = 6;
+	imploded.extra_flags = 0x0006;
+	imploded.local_flags = 0x0002;
+	EXPECT_EQ(Read(Write("flags.zip", MakeStoredZip({imploded})), 100).error,
+	          Error::LocalHeaderMismatch);
+	// Other methods do not read those bits; a difference there is no refusal.
+	auto stored        = StoredEntry{"b.txt", "bbbb"};
+	stored.extra_flags = 0x0006;
+	stored.local_flags = 0x0000;
+	EXPECT_EQ(Read(Write("stored.zip", MakeStoredZip({stored})), 100).error,
+	          Error::None);
 }
 
 TEST_F(ZipCentralDirectoryTest, DecodesCp437NamesWithoutTheUtf8Flag)
@@ -310,7 +332,11 @@ TEST(ZipCentralDirectoryParse, MethodsNeedTheirDecoder)
 	EXPECT_FALSE(MethodReadable(95, Decoders{true, false, true}));
 	EXPECT_FALSE(MethodReadable(93, Decoders{true, true, false}));
 	EXPECT_TRUE(MethodReadable(93, Decoders{false, false, true}));
-	EXPECT_FALSE(MethodReadable(6, Decoders{true, true, true}));
+	EXPECT_TRUE(MethodReadable(1, Decoders{false, false, false}));
+	EXPECT_TRUE(MethodReadable(6, Decoders{false, false, false}));
+	for (const uint16_t reduce : {2, 3, 4, 5}) {
+		EXPECT_FALSE(MethodReadable(reduce, Decoders{true, true, true}));
+	}
 }
 
 // The local header is read for every record; a differing size, CRC or

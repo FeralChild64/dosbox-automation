@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2024-2026 The DOSBox Staging Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_TEST_FIXTURE_H
 #define DOSBOX_TEST_FIXTURE_H
@@ -8,6 +9,8 @@
 #include <string>
 
 #include <gtest/gtest.h>
+
+#include <SDL3/SDL_hints.h>
 
 #include "audio/mixer.h"
 #include "config/config.h"
@@ -38,6 +41,10 @@ public:
 
 	void SetUp() override
 	{
+		// DOS_Init starts SDL audio for CD audio decoding; the host's
+		// drivers differ between machines and leak inside their libraries.
+		SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+
 		// Create the config directory, which is a
 		// pre-requisite that's asserted during the Init process.
 		//

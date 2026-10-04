@@ -9,6 +9,9 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   )
 endif()
 
+add_subdirectory(archive)
+target_link_libraries(dosboxcommon PUBLIC archivereader)
+
 target_sources(dosboxcommon PRIVATE
   cdrom.cpp
   cdrom_image.cpp
@@ -28,22 +31,18 @@ target_sources(dosboxcommon PRIVATE
   dos_stacks.cpp
   dos_tables.cpp
   dos_windows.cpp
+  drive_archive.cpp
   drive_cache.cpp
   drive_fat.cpp
   drive_iso.cpp
   drive_local.cpp
   drive_overlay.cpp
   drive_swap.cpp
+  drive_union.cpp
   drive_virtual.cpp
   drives.cpp
+  archive/archive_helper_client.cpp
   programs.cpp
-
-  archive/archive_identity.cpp
-  archive/archive_reader.cpp
-  archive/descriptor.cpp
-  archive/entry_names.cpp
-  archive/exclusive_file.cpp
-  archive/zip_central_directory.cpp
 
   programs/append.cpp
   programs/attrib.cpp
@@ -67,6 +66,7 @@ target_sources(dosboxcommon PRIVATE
   programs/more.cpp
   programs/more_output.cpp
   programs/mount.cpp
+  programs/mount_archive.cpp
   programs/mount_common.cpp
   programs/mount_policy.cpp
   programs/mount_policy_system_paths.cpp

@@ -42,11 +42,13 @@
 //
 
 #include "mount_policy.h"
+#include "dos/archive/descriptor.h"
 
 #include "mount_policy_system_paths.h"
 
 #include "augra/log.h"
 #include "config/config.h"
+#include "dos/dos_names.h"
 #include "dosbox.h"
 #include "misc/support.h"
 
@@ -166,53 +168,7 @@ bool IsUnderAnyRoot(const std::filesystem::path& canonical_path,
 
 bool IsWindowsReservedDeviceName(const std::string& path_component)
 {
-	// Win32 strips trailing dots and spaces before name resolution and
-	// the stem before the first dot names the device, so "CON." and
-	// "COM1 .txt" both reach a device (Win32 file naming rules).
-	const auto end = path_component.find_last_not_of(" .");
-	if (end == std::string::npos) {
-		return false;
-	}
-	const auto trimmed = path_component.substr(0, end + 1);
-
-	const auto dot = trimmed.find('.');
-	auto stem = (dot == std::string::npos) ? trimmed : trimmed.substr(0, dot);
-	const auto stem_end = stem.find_last_not_of(' ');
-	if (stem_end == std::string::npos) {
-		return false;
-	}
-	stem = stem.substr(0, stem_end + 1);
-
-	auto upper = std::string();
-	upper.reserve(stem.size());
-	for (const char c : stem) {
-		upper.push_back(static_cast<char>(
-		        std::toupper(static_cast<unsigned char>(c))));
-	}
-
-	static constexpr std::array<const char*, 7> fixed_names = {
-	        "CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"};
-	for (const auto* name : fixed_names) {
-		if (upper == name) {
-			return true;
-		}
-	}
-
-	if (upper.size() >= 4 &&
-	    (upper.compare(0, 3, "COM") == 0 || upper.compare(0, 3, "LPT") == 0)) {
-		const auto tail = upper.substr(3);
-		if (tail.size() == 1 && tail[0] >= '1' && tail[0] <= '9') {
-			return true;
-		}
-		// Superscript one/two/three count too (U+00B9/B2/B3, UTF-8)
-		if (tail.size() == 2 && static_cast<unsigned char>(tail[0]) == 0xC2 &&
-		    (static_cast<unsigned char>(tail[1]) == 0xB9 ||
-		     static_cast<unsigned char>(tail[1]) == 0xB2 ||
-		     static_cast<unsigned char>(tail[1]) == 0xB3)) {
-			return true;
-		}
-	}
-	return false;
+	return DosNames::IsWindowsReservedDeviceName(path_component);
 }
 
 bool HasWindowsReservedComponent(const std::filesystem::path& raw_path)
@@ -271,7 +227,8 @@ std::vector<std::filesystem::path> BuildWindowsSystemPaths(
 	auto add_env = [&](const char* var) {
 		const auto val = get_env(var);
 		if (val.empty()) {
-			augra::log_warn("mount-policy", "%s unset - literal denylist covers it",
+			augra::log_warn("mount-policy",
+			                "%s unset - literal denylist covers it",
 			                var);
 			return std::string();
 		}
@@ -322,10 +279,20 @@ static bool IsKnownFloppySize(std::uintmax_t size)
 	// boot signature, so the size gate is the only check that can
 	// pass them. Keep in sync with disk_geometry_list - the detection
 	// chain accepts what this table refuses otherwise.
-	constexpr std::array<std::uintmax_t, 14> sizes = {
-	        163840,  184320,  204800,  327680,  368640,
-	        409600,  737280,  1228800, 1474560, 1556480,
-	        1720320, 1761280, 1884160, 2949120};
+	constexpr std::array<std::uintmax_t, 14> sizes = {163840,
+	                                                  184320,
+	                                                  204800,
+	                                                  327680,
+	                                                  368640,
+	                                                  409600,
+	                                                  737280,
+	                                                  1228800,
+	                                                  1474560,
+	                                                  1556480,
+	                                                  1720320,
+	                                                  1761280,
+	                                                  1884160,
+	                                                  2949120};
 
 	for (const auto& s : sizes) {
 		if (size == s) {
@@ -487,7 +454,10 @@ static MountVerdict ValidateDirectoryMountImpl(
 	return verdict;
 }
 
-static MountVerdict ValidateImagePathImpl(
+// Steps one to six of every host-file mount: reserved names, resolve,
+// regular file, symlink component, system path, the whitelist for the
+// API origin or when injection is possible (the conf anchor as a root).
+static MountVerdict ValidateHostFilePath(
         const std::filesystem::path& raw_path, MountOrigin origin,
         const std::vector<std::filesystem::path>& allowed_image_roots,
         const std::filesystem::path& conf_anchor)
@@ -551,13 +521,28 @@ static MountVerdict ValidateImagePathImpl(
 		}
 	}
 
-	if (!ValidateDiskImageStructure(*canonical)) {
-		verdict.reason = DenyReason::NotADiskImage;
-		return verdict;
-	}
-
 	verdict.allowed = true;
 	verdict.reason  = DenyReason::None;
+	return verdict;
+}
+
+static MountVerdict ValidateImagePathImpl(
+        const std::filesystem::path& raw_path, MountOrigin origin,
+        const std::vector<std::filesystem::path>& allowed_image_roots,
+        const std::filesystem::path& conf_anchor)
+{
+	auto verdict = ValidateHostFilePath(raw_path,
+	                                    origin,
+	                                    allowed_image_roots,
+	                                    conf_anchor);
+	if (!verdict.allowed) {
+		return verdict;
+	}
+	if (!ValidateDiskImageStructure(verdict.resolved)) {
+		verdict.allowed = false;
+		verdict.reason  = DenyReason::NotADiskImage;
+		return verdict;
+	}
 	return verdict;
 }
 
@@ -646,7 +631,8 @@ static void ParsePathList(const std::string& val,
 
 		auto expanded = ExpandPolicyEnvVars(entry);
 		if (expanded.empty()) {
-			augra::log_warn("mount-policy", "dropped '%s' - env var unset",
+			augra::log_warn("mount-policy",
+			                "dropped '%s' - env var unset",
 			                entry.c_str());
 			continue;
 		}
@@ -654,13 +640,15 @@ static void ParsePathList(const std::string& val,
 		auto ec        = std::error_code();
 		auto canonical = std::filesystem::canonical(expanded, ec);
 		if (ec) {
-			augra::log_warn("mount-policy", "dropped '%s' - does not resolve",
+			augra::log_warn("mount-policy",
+			                "dropped '%s' - does not resolve",
 			                expanded.c_str());
 			continue;
 		}
 
 		if (static_cast<int>(out.size()) >= max_entries) {
-			augra::log_warn("mount-policy", "ignoring '%s' - max %d entries",
+			augra::log_warn("mount-policy",
+			                "ignoring '%s' - max %d entries",
 			                expanded.c_str(),
 			                max_entries);
 			continue;
@@ -738,7 +726,9 @@ void InitPolicyConfig(const std::filesystem::path& primary_config_path)
 		augra::log_info("mount-policy", "allowed base: %s", p.string().c_str());
 	}
 	for (const auto& p : policy_paths.allowed_image_roots) {
-		augra::log_info("mount-policy", "allowed image root: %s", p.string().c_str());
+		augra::log_info("mount-policy",
+		                "allowed image root: %s",
+		                p.string().c_str());
 	}
 }
 
@@ -762,6 +752,62 @@ std::filesystem::path ConfAnchor()
 	return control->loaded_config_paths_canonical.back().parent_path();
 }
 
+ArchiveVerdict ValidateArchivePath(
+        const std::filesystem::path& raw_path, const MountOrigin origin,
+        const std::vector<std::filesystem::path>& allowed_image_roots,
+        const std::filesystem::path& conf_anchor, const bool sequential_allowed)
+{
+	ArchiveVerdict out = {};
+	out.verdict = ValidateHostFilePath(raw_path, origin, allowed_image_roots, conf_anchor);
+	if (out.verdict.allowed) {
+		const int fd = ArchiveMount::OpenReadOnlyShared(out.verdict.resolved);
+		if (fd < 0) {
+			out.verdict.allowed = false;
+			out.verdict.reason  = DenyReason::NotRegularFile;
+		} else {
+			out.sniff = ArchiveMount::SniffFile(fd);
+			ArchiveMount::CloseDescriptor(fd);
+			if (out.sniff.kind == ArchiveMount::HeadKind::Unknown) {
+				out.verdict.allowed = false;
+				out.verdict.reason  = DenyReason::NotAnArchive;
+			} else if (!sequential_allowed && out.sniff.access &&
+			           *out.sniff.access ==
+			                   ArchiveMount::Access::Sequential) {
+				out.verdict.allowed = false;
+				out.verdict.reason = DenyReason::ArchiveSequential;
+			}
+		}
+	}
+	if (verdict_hook) {
+		verdict_hook(raw_path, out.verdict);
+	}
+	return out;
+}
+
+DenyReason DenyReasonForArchiveError(const ArchiveMount::Error error)
+{
+	using ArchiveMount::Error;
+	switch (error) {
+	case Error::None: return DenyReason::None;
+	case Error::NotAnArchive: return DenyReason::NotAnArchive;
+	case Error::TooLarge:
+	case Error::TooManyEntries: return DenyReason::ArchiveTooLarge;
+	case Error::Encrypted: return DenyReason::ArchiveEncrypted;
+	case Error::MultiVolume: return DenyReason::ArchiveMultiVolume;
+	case Error::SolidUnsupported:
+		return DenyReason::ArchiveSolidUnsupported;
+	case Error::EntryRejected: return DenyReason::ArchiveEntryRejected;
+	case Error::Changed: return DenyReason::ArchiveChanged;
+	case Error::Unsupported: return DenyReason::ArchiveUnsupported;
+	case Error::HelperFailed:
+	case Error::Timeout: return DenyReason::ArchiveHelperFailed;
+	case Error::OpenFailed:
+	case Error::Corrupt:
+	case Error::NotFound: return DenyReason::ArchiveCorrupt;
+	}
+	return DenyReason::ArchiveCorrupt;
+}
+
 const char* DenyReasonText(const DenyReason reason)
 {
 	switch (reason) {
@@ -774,6 +820,31 @@ const char* DenyReasonText(const DenyReason reason)
 	case DenyReason::NotADiskImage: return "not a recognized disk image";
 	case DenyReason::NotADirectory: return "not a directory";
 	case DenyReason::ReservedDeviceName: return "reserved device name";
+	case DenyReason::NotAnArchive: return "not a recognized archive";
+	case DenyReason::ArchiveTooLarge:
+		return "archive over the configured caps";
+	case DenyReason::ArchiveSequential: return "sequential archive format";
+	case DenyReason::ArchiveSolidUnsupported: return "solid RAR 4 archive";
+	case DenyReason::ArchiveEncrypted: return "encrypted archive";
+	case DenyReason::ArchiveMultiVolume: return "multi-volume archive";
+	case DenyReason::ArchiveUnsupported:
+		return "unsupported compression method";
+	case DenyReason::ArchiveEntryRejected:
+		return "an entry name is not allowed";
+	case DenyReason::ArchiveCorrupt: return "archive cannot be read";
+	case DenyReason::ArchiveChanged:
+		return "archive changed while it was read";
+	case DenyReason::ArchiveHelperFailed: return "archive helper failed";
+	case DenyReason::ArchiveRootNotFound:
+		return "root directory not in the archive";
+	case DenyReason::CacheUnavailable: return "archive cache unavailable";
+	case DenyReason::SidecarBusy:
+		return "the sidecar is in use by another mount";
+	case DenyReason::SidecarUnavailable: return "sidecar unavailable";
+	case DenyReason::ArchiveMemberNotFound:
+		return "no such member in the archive";
+	case DenyReason::ArchiveCueRejected:
+		return "the cue sheet cannot be served from the archive";
 	}
 	return "";
 }
@@ -792,6 +863,28 @@ const char* DenyMessageId(const DenyReason reason)
 	case DenyReason::OutsideWhitelist:
 	case DenyReason::ReservedDeviceName:
 		return "PROGRAM_MOUNT_POLICY_REFUSED";
+	case DenyReason::NotAnArchive: return "PROGRAM_MOUNT_ERROR_2";
+	case DenyReason::ArchiveSequential:
+		return "PROGRAM_MOUNT_ARCHIVE_SEQUENTIAL";
+	case DenyReason::CacheUnavailable: return "PROGRAM_MOUNT_ARCHIVE_CACHE";
+	case DenyReason::ArchiveUnsupported:
+		return "PROGRAM_MOUNT_ARCHIVE_UNSUPPORTED";
+	case DenyReason::SidecarBusy: return "PROGRAM_MOUNT_SIDECAR_BUSY";
+	case DenyReason::SidecarUnavailable:
+		return "PROGRAM_MOUNT_ARCHIVE_SIDECAR";
+	case DenyReason::ArchiveRootNotFound:
+		return "PROGRAM_MOUNT_ARCHIVE_ROOT";
+	case DenyReason::ArchiveTooLarge:
+	case DenyReason::ArchiveSolidUnsupported:
+	case DenyReason::ArchiveEncrypted:
+	case DenyReason::ArchiveMultiVolume:
+	case DenyReason::ArchiveEntryRejected:
+	case DenyReason::ArchiveCorrupt:
+	case DenyReason::ArchiveChanged:
+	case DenyReason::ArchiveHelperFailed:
+	case DenyReason::ArchiveMemberNotFound:
+	case DenyReason::ArchiveCueRejected:
+		return "PROGRAM_MOUNT_ARCHIVE_REFUSED";
 	}
 	return "";
 }

@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dos/dos_system.h"
 
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <string_view>
 
 #include "dosbox.h"
 #include "cpu/callback.h"
@@ -476,29 +479,8 @@ DOS_File &DOS_File::operator=(const DOS_File &orig)
 	return *this;
 }
 
-uint8_t DOS_FindDevice(const char* name)
+static uint8_t find_device_by_name(char* name_part)
 {
-	/* should only check for the names before the dot and spacepadded */
-	char fullname[DOS_PATHLENGTH];uint8_t drive;
-//	if(!name || !(*name)) return DOS_DEVICES; //important, but makename does it
-	if (!DOS_MakeName(name,fullname,&drive)) return DOS_DEVICES;
-
-	char* name_part = strrchr(fullname,'\\');
-	if(name_part) {
-		*name_part++ = 0;
-		// DOS 2.0+ accepts \DEV\ as a virtual directory into the
-		// device namespace (\DEV\NUL, \DEV\CON, ...). It exists on
-		// no drive, so it bypasses the directory check. Only the
-		// root-level form; a real subdirectory named DEV elsewhere
-		// in the path is still validated normally.
-		const bool is_dev_prefix = (strcmp(fullname, "DEV") == 0);
-		// Check validity of leading directory.
-		if (!is_dev_prefix && !Drives.at(drive)->TestDir(fullname)) {
-			return DOS_DEVICES;
-		}
-	} else
-		name_part = fullname;
-
 	char* dot = strrchr(name_part,'.');
 	if(dot) *dot = 0; //no ext checking
 
@@ -541,6 +523,40 @@ uint8_t DOS_FindDevice(const char* name)
 		}
 	}
 	return DOS_DEVICES;
+}
+
+bool DOS_NamesDevice(const char* fullname)
+{
+	const std::string_view full = fullname;
+	const auto slash            = full.rfind('\\');
+	auto name_part = std::string(slash == std::string_view::npos ? full : full.substr(slash + 1));
+	return find_device_by_name(name_part.data()) != DOS_DEVICES;
+}
+
+uint8_t DOS_FindDevice(const char* name)
+{
+	/* should only check for the names before the dot and spacepadded */
+	char fullname[DOS_PATHLENGTH];uint8_t drive;
+//	if(!name || !(*name)) return DOS_DEVICES; //important, but makename does it
+	if (!DOS_MakeName(name,fullname,&drive)) return DOS_DEVICES;
+
+	char* name_part = strrchr(fullname,'\\');
+	if(name_part) {
+		*name_part++ = 0;
+		// DOS 2.0+ accepts \DEV\ as a virtual directory into the
+		// device namespace (\DEV\NUL, \DEV\CON, ...). It exists on
+		// no drive, so it bypasses the directory check. Only the
+		// root-level form; a real subdirectory named DEV elsewhere
+		// in the path is still validated normally.
+		const bool is_dev_prefix = (strcmp(fullname, "DEV") == 0);
+		// Check validity of leading directory.
+		if (!is_dev_prefix && !Drives.at(drive)->TestDir(fullname)) {
+			return DOS_DEVICES;
+		}
+	} else
+		name_part = fullname;
+
+	return find_device_by_name(name_part);
 }
 
 void DOS_AddDevice(DOS_Device * adddev) {

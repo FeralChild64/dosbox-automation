@@ -99,6 +99,16 @@ constexpr auto localtime_r = ::localtime_r;
 void init_config_dir();
 
 std_fs::path get_config_dir();
+
+// The platform cache directory for this application (archive mount
+// design D14); not created here. XDG_CACHE_HOME overrides it on every
+// platform but macOS, as XDG_CONFIG_HOME does for the config directory.
+std_fs::path get_cache_dir();
+
+// The platform data directory for this application (the saves of the
+// archive mount design, D2); not created here. XDG_DATA_HOME overrides
+// it everywhere but macOS.
+std_fs::path get_data_dir();
 std::string get_primary_config_name();
 std_fs::path get_primary_config_path();
 

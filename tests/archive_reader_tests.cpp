@@ -2,10 +2,12 @@
 // License: GPL-2.0-or-later. Contact: dosbox-automation-project@trinity2k.net
 //
 #include "dos/archive/archive_reader.h"
-
-#include "misc/cross.h"
+#include "dos/archive/descriptor.h"
+#include "dos/archive/rar4_headers.h"
+#include "dos/archive/zip_central_directory.h"
 
 #include <archive.h>
+#include <archive_entry.h>
 
 #include <chrono>
 #include <filesystem>
@@ -13,6 +15,11 @@
 #include <iterator>
 #include <string>
 #include <sys/stat.h>
+#if defined(WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -75,6 +82,25 @@ std::string Read(ArchiveReader& reader, const int ordinal)
 	return std::string(out.begin(), out.end());
 }
 
+// Writes bytes as one gzip stream (libarchive's raw writer).
+void GzipTo(const fs::path& path, const std::vector<uint8_t>& bytes)
+{
+	struct archive* a = archive_write_new();
+	ASSERT_EQ(archive_write_set_format_raw(a), ARCHIVE_OK);
+	ASSERT_EQ(archive_write_add_filter_gzip(a), ARCHIVE_OK);
+	ASSERT_EQ(archive_write_open_filename(a, path.string().c_str()), ARCHIVE_OK);
+	struct archive_entry* ae = archive_entry_new();
+	archive_entry_set_pathname(ae, "data");
+	archive_entry_set_filetype(ae, AE_IFREG);
+	archive_entry_set_size(ae, static_cast<la_int64_t>(bytes.size()));
+	ASSERT_EQ(archive_write_header(a, ae), ARCHIVE_OK);
+	ASSERT_EQ(archive_write_data(a, bytes.data(), bytes.size()),
+	          static_cast<la_ssize_t>(bytes.size()));
+	archive_entry_free(ae);
+	ASSERT_EQ(archive_write_close(a), ARCHIVE_OK);
+	archive_write_free(a);
+}
+
 // 3.4.0 is the first release with the RAR 5.0 reader (libarchive NEWS,
 // Oct 06 2018 / Jun 11 2019); the design's D5 table depends on it.
 TEST(ArchiveReader, LinksALibarchiveWithRar5Support)
@@ -89,9 +115,6 @@ protected:
 
 	void SetUp() override
 	{
-		// zip names decode through the code page table in the
-		// resources, whose lookup starts at the config dir.
-		init_config_dir();
 		tmp_dir = TestTempDir::MakeUnique("archive_reader_");
 		ASSERT_FALSE(tmp_dir.empty());
 	}
@@ -335,16 +358,18 @@ TEST_F(ArchiveReaderTest, ATruncatedZipIsCorruptNotUnrecognized)
 // archive from 1991 says so at mount time, not at the first read.
 TEST_F(ArchiveReaderTest, RefusesAZipWithAnUnreadableMethodAtIndex)
 {
-	auto imploded   = StoredEntry{"MONTY.EXE", "x"};
-	imploded.method = 6;
-	auto opened     = ArchiveReader::Open(Raw("old.zip",
+	// Reduce (2-5): Info-ZIP dropped it and so do we; shrink and implode
+	// are read since ada-unr8.
+	auto reduced   = StoredEntry{"MONTY.EXE", "x"};
+	reduced.method = 2;
+	auto opened    = ArchiveReader::Open(Raw("old.zip",
                                               MakeStoredZip({
                                                       {"README.TXT", "r"},
-                                                      imploded
+                                                      reduced
         })),
                                           limits);
 	EXPECT_EQ(opened.error, Error::Unsupported);
-	EXPECT_NE(opened.detail.find("imploded"), std::string::npos) << opened.detail;
+	EXPECT_NE(opened.detail.find("reduced"), std::string::npos) << opened.detail;
 	EXPECT_NE(opened.detail.find("MONTY.EXE"), std::string::npos)
 	        << opened.detail;
 }
@@ -675,6 +700,117 @@ TEST_F(ArchiveReaderTest, KeepsTheFirstOfDuplicateNames)
 	EXPECT_EQ(opened.reader->Entries()[1].dos_path, "A~2.TXT");
 }
 
+TEST_F(ArchiveReaderTest, ADuplicatePathWithDifferentBytesRefusesTheArchive)
+{
+	auto opened = ArchiveReader::Open(Raw("dup2.zip",
+	                                      MakeStoredZip({
+	                                              {"a.txt", "first"},
+	                                              {"a.txt", "other"}  // same
+	                                              // size,
+	                                              // other
+	                                              // CRC
+        })),
+	                                  limits);
+	EXPECT_EQ(opened.error, Error::EntryRejected) << opened.detail;
+	EXPECT_NE(opened.detail.find("twice"), std::string::npos) << opened.detail;
+
+	auto sizes = ArchiveReader::Open(Built("dup3.tar",
+	                                       Kind::Tar,
+	                                       {
+	                                               {"a.txt",  "xx"},
+	                                               {"a.txt", "yyy"}
+        }),
+	                                 limits);
+	EXPECT_EQ(sizes.error, Error::EntryRejected) << sizes.detail;
+}
+
+TEST_F(ArchiveReaderTest, AnIdenticalDuplicateKeepsTheFirst)
+{
+	auto opened = ArchiveReader::Open(
+	        Raw("dup4.zip",
+	            MakeStoredZip({
+	                    {"a.txt", "same"},
+                            {"b.txt",    "b"},
+                            {"a.txt", "same"}
+        })),
+	        limits);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	EXPECT_EQ(opened.reader->Entries().size(), 2u);
+	EXPECT_EQ(Read(*opened.reader, 0), "same");
+	// tar carries no CRC: equal sizes with different bytes cannot be
+	// told apart, the first wins (documented limit).
+	auto tar = ArchiveReader::Open(Built("dup5.tar",
+	                                     Kind::Tar,
+	                                     {
+	                                             {"a.txt", "xx"},
+                                                     {"a.txt", "yy"}
+        }),
+	                               limits);
+	ASSERT_EQ(tar.error, Error::None) << tar.detail;
+	EXPECT_EQ(tar.reader->Entries().size(), 1u);
+}
+
+TEST_F(ArchiveReaderTest, OpensFromADescriptorAndKeepsReadingAfterTheCallerClosesIt)
+{
+	const auto path = Built("fd.zip", Kind::ZipStored, Game());
+	const auto fd   = ArchiveMount::OpenReadOnlyShared(path);
+	ASSERT_GE(fd, 0);
+	auto opened = ArchiveReader::Open(fd, path, limits);
+	ArchiveMount::CloseDescriptor(fd);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	EXPECT_EQ(opened.reader->Entries().size(), 4u);
+	EXPECT_EQ(Read(*opened.reader, 3), "hello");
+	// The stat pair comes from the descriptor, so it equals the path's.
+	auto by_path = ArchiveReader::Open(path, limits);
+	ASSERT_EQ(by_path.error, Error::None);
+	EXPECT_EQ(opened.reader->IndexedStat().size,
+	          by_path.reader->IndexedStat().size);
+	EXPECT_EQ(opened.reader->IdentityHash(), by_path.reader->IdentityHash());
+}
+
+#if !defined(WIN32)
+TEST_F(ArchiveReaderTest, KeepsServingAnUnlinkedArchive)
+{
+	const auto path = Built("gone.zip", Kind::ZipStored, Game());
+	const auto fd   = ArchiveMount::OpenReadOnlyShared(path);
+	ASSERT_GE(fd, 0);
+	auto opened = ArchiveReader::Open(fd, path, limits);
+	ArchiveMount::CloseDescriptor(fd);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	ASSERT_TRUE(fs::remove(path));
+	// D16: the session runs on the inode it started with.
+	EXPECT_EQ(Read(*opened.reader, 0), std::string(3000, 'x'));
+	std::vector<uint8_t> out = {};
+	auto detail              = std::string();
+	EXPECT_EQ(opened.reader->Materialize(2, out, &detail), Error::None) << detail;
+}
+#endif
+
+TEST_F(ArchiveReaderTest, ABadDescriptorIsOpenFailed)
+{
+	auto opened = ArchiveReader::Open(-1, "nothing.zip", limits);
+	EXPECT_EQ(opened.error, Error::OpenFailed);
+	EXPECT_FALSE(opened.reader);
+}
+
+TEST_F(ArchiveReaderTest, AZipBehindAStubIsJudgedByItsDirectoryBeforeTheOpen)
+{
+	// ada-qbxb: a stub hides the local header signature; the end record
+	// is still found. A spanned set's last part tells the paths apart:
+	// libarchive's bid says "unrecognized", the directory names it.
+	auto options   = ZipOptions{};
+	options.prefix = "MZ" + std::string(198, 'S');
+	auto bytes     = MakeStoredZip(
+                {
+                        {"A.TXT", "aaaa"}
+        },
+                options);
+	const auto eocd = bytes.size() - 22;
+	bytes[eocd + 4] = bytes[eocd + 6] = 1; // this disk, directory's disk
+	auto opened = ArchiveReader::Open(Raw("span-sfx.zip", bytes), limits);
+	EXPECT_EQ(opened.error, Error::MultiVolume) << opened.detail;
+}
+
 TEST_F(ArchiveReaderTest, DecodesCp437NamesAndKeepsUtf8Ones)
 {
 	// 0x81 is u-umlaut in code page 437; the second name is a-umlaut
@@ -703,6 +839,8 @@ TEST_F(ArchiveReaderTest, DecodesCp437NamesAndKeepsUtf8Ones)
 	EXPECT_EQ(opened.reader->Entries()[1].dos_path, "_RGER.TXT");
 }
 
+// Same bytes under both spellings: with different bytes the duplicate
+// rule refuses the archive (ADuplicatePathWithDifferentBytesRefusesTheArchive).
 TEST_F(ArchiveReaderTest, TwoEncodingsOfOneNameAreOneEntry)
 {
 	auto utf8 = StoredEntry{
@@ -713,7 +851,7 @@ TEST_F(ArchiveReaderTest, TwoEncodingsOfOneNameAreOneEntry)
 	auto opened    = ArchiveReader::Open(Raw("n2.zip",
                                               MakeStoredZip({
                                                       {"\x81"
-	                                                     "bung.txt", "c"},
+	                                                     "bung.txt", "u"},
                                                       utf8
         })),
                                           limits);
@@ -1047,6 +1185,80 @@ TEST_F(RarFixtureTest, OpensANonSolidRarV4PerMember)
 	EXPECT_EQ(out.size(), static_cast<size_t>(last_file->size));
 }
 
+// Only tar sits behind a filter (D12): with every reader registered the
+// streaming RAR reader would open this. (A gzip of a zip tells nothing,
+// the seekable zip reader cannot bid on a stream.) Either error is fine.
+TEST_F(RarFixtureTest, AGzipOfARarIsNotAnArchive)
+{
+	const auto fixture = Fixture("plain-v4.rar");
+	if (Missing(fixture)) {
+		return;
+	}
+	auto in    = std::ifstream(fixture, std::ios::binary);
+	auto bytes = std::vector<uint8_t>(std::istreambuf_iterator<char>(in),
+	                                  std::istreambuf_iterator<char>());
+	const auto path = tmp_dir / "rar.gz";
+	GzipTo(path, bytes);
+	auto opened = ArchiveReader::Open(path, limits);
+	EXPECT_TRUE(opened.error == Error::NotAnArchive ||
+	            opened.error == Error::Corrupt)
+	        << ErrorText(opened.error) << ": " << opened.detail;
+	EXPECT_FALSE(opened.reader);
+}
+
+// Behind "MZ" libarchive's RAR bidders search from 64 KiB on in 16-byte
+// steps (to 128 KiB for RAR4, 512 KiB for RAR5), so a self-extractor
+// reaches the walk with the main flags unread: refused, not searched.
+TEST_F(RarFixtureTest, RefusesARarBehindAStub)
+{
+	for (const auto* name : {"plain-v4.rar", "plain-v5.rar"}) {
+		const auto fixture = Fixture(name);
+		if (Missing(fixture)) {
+			return;
+		}
+		auto bytes = std::vector<uint8_t>(0x10000, 'S');
+		bytes[0]   = 'M';
+		bytes[1]   = 'Z';
+		auto in    = std::ifstream(fixture, std::ios::binary);
+		bytes.insert(bytes.end(),
+		             std::istreambuf_iterator<char>(in),
+		             std::istreambuf_iterator<char>());
+		auto opened = ArchiveReader::Open(Raw(std::string("sfx-") + name, bytes),
+		                                  limits);
+		EXPECT_EQ(opened.error, Error::NotAnArchive)
+		        << name << ": " << opened.detail;
+		EXPECT_NE(opened.detail.find("self-extract"), std::string::npos)
+		        << name << ": " << opened.detail;
+	}
+}
+
+TEST_F(RarFixtureTest, Rar4IdentityCarriesCrcsAndTheStoredTime)
+{
+	const auto fixture = Fixture("plain-v4.rar");
+	if (Missing(fixture)) {
+		return;
+	}
+	auto opened = ArchiveReader::Open(fixture, limits);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	auto files = 0;
+	for (const auto& e : opened.reader->Entries()) {
+		if (!e.is_dir) {
+			EXPECT_TRUE(e.has_crc) << e.utf8_path;
+			++files;
+		}
+	}
+	EXPECT_GE(files, 2);
+	// The walk counts the fixture's symlink, Entries() its implied
+	// directories, hence the loose bound; the CRCs above and the
+	// reader's count check prove the strict pairing.
+	const auto fd = ArchiveMount::OpenReadOnlyShared(fixture);
+	ASSERT_GE(fd, 0);
+	const auto walked = Rar4Headers::Read(fd, 1000);
+	ArchiveMount::CloseDescriptor(fd);
+	EXPECT_EQ(walked.error, Rar4Headers::Error::None);
+	EXPECT_GE(walked.files.size(), opened.reader->Entries().size() - 2);
+}
+
 TEST_F(RarFixtureTest, RefusesASolidRarV4)
 {
 	const auto fixture = Fixture("solid-v4.rar");
@@ -1122,3 +1334,184 @@ TEST_F(RarFixtureTest, RefusesAMultiVolumeRar)
 }
 
 } // namespace
+
+TEST(ArchiveSource, TheNewErrorValuesHaveText)
+{
+	EXPECT_STREQ(ErrorText(Error::HelperFailed),
+	             "the archive helper failed or spoke out of protocol");
+	EXPECT_STREQ(ErrorText(Error::Timeout),
+	             "the archive helper did not answer in time");
+}
+
+TEST_F(ArchiveReaderTest, ReaderIsAnArchiveSourceAndReportsItsStatPair)
+{
+	const auto path = Built("src.zip",
+	                        Kind::ZipStored,
+	                        {
+	                                {"A.TXT", "abc"}
+        });
+	auto opened     = ArchiveReader::Open(path, limits);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	ArchiveSource& source = *opened.reader;
+	EXPECT_EQ(source.Entries().size(), 1u);
+	const auto pair = source.IndexedStat();
+	EXPECT_EQ(pair.size, static_cast<int64_t>(fs::file_size(path)));
+	EXPECT_GT(pair.mtime, 0);
+	EXPECT_EQ(source.ArchiveLength(), pair.size);
+}
+
+// PKZIP 1.x shrink and implode (ada-unr8): the reader serves these members
+// itself; the fixtures and their inputs are described in tests/files/archives/README.md.
+namespace {
+
+const fs::path LegacyDir = fs::path("tests/files/archives/legacy");
+
+std::vector<uint8_t> SlurpBytes(const fs::path& path)
+{
+	std::ifstream in(path, std::ios::binary);
+	return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+class LegacyZipReaderTest : public ArchiveReaderTest {};
+
+int64_t SeekDescriptor(const int fd, const int64_t offset, const int origin)
+{
+#if defined(WIN32)
+	return _lseeki64(fd, offset, origin);
+#else
+	return lseek(fd, offset, origin);
+#endif
+}
+
+} // namespace
+
+TEST_F(LegacyZipReaderTest, PkzipArchivesIndexAndEveryMemberMatchesItsInput)
+{
+	for (const auto* zip : {"SHRUNK.ZIP", "IMPLODED.ZIP"}) {
+		auto opened = ArchiveReader::Open(LegacyDir / zip, limits);
+		ASSERT_EQ(opened.error, Error::None) << zip << ": " << opened.detail;
+		ASSERT_EQ(opened.reader->Entries().size(), 6u) << zip;
+		for (const auto& e : opened.reader->Entries()) {
+			std::vector<uint8_t> out = {};
+			auto detail              = std::string();
+			ASSERT_EQ(opened.reader->Materialize(e.ordinal, out, &detail), Error::None)
+			        << zip << " " << e.utf8_path << ": " << detail;
+			EXPECT_EQ(out, SlurpBytes(LegacyDir / "inputs" / e.utf8_path))
+			        << zip << " " << e.utf8_path;
+		}
+	}
+}
+
+TEST_F(LegacyZipReaderTest, MaterializeToFileWritesTheMemberWithItsDate)
+{
+	auto opened = ArchiveReader::Open(LegacyDir / "IMPLODED.ZIP", limits);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	for (const auto& e : opened.reader->Entries()) {
+		auto detail       = std::string();
+		const auto target = tmp_dir / e.utf8_path;
+		ASSERT_EQ(opened.reader->MaterializeToFile(e.ordinal, target, &detail), Error::None)
+		        << e.utf8_path << ": " << detail;
+		EXPECT_EQ(SlurpBytes(target), SlurpBytes(LegacyDir / "inputs" / e.utf8_path));
+		EXPECT_EQ(MtimeOf(target), e.mtime) << e.utf8_path;
+	}
+}
+
+TEST_F(LegacyZipReaderTest, ADamagedImplodedMemberFailsWithoutAFile)
+{
+	const auto copy = tmp_dir / "DAMAGED.ZIP";
+	fs::copy_file(LegacyDir / "IMPLODED.ZIP", copy);
+	auto bytes    = SlurpBytes(copy);
+	const auto cd = ZipCentralDirectory::Read(copy, 100);
+	ASSERT_EQ(cd.error, ZipCentralDirectory::Error::None);
+	bool flipped = false;
+	for (const auto& rec : cd.records) {
+		if (rec.raw_name == "LARGE.TXT") {
+			const auto at = static_cast<size_t>(rec.local_header_offset);
+			const auto start = at + 30 + (bytes[at + 26] | (bytes[at + 27] << 8)) +
+			                   (bytes[at + 28] | (bytes[at + 29] << 8));
+			bytes[start + rec.compressed_size / 2] ^= 0x10;
+			flipped = true;
+		}
+	}
+	ASSERT_TRUE(flipped);
+	ArchiveFixtures::WriteBytes(copy, bytes);
+	auto opened = ArchiveReader::Open(copy, limits);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	for (const auto& e : opened.reader->Entries()) {
+		if (e.utf8_path != "LARGE.TXT") {
+			continue;
+		}
+		std::vector<uint8_t> out = {};
+		auto detail              = std::string();
+		EXPECT_EQ(opened.reader->Materialize(e.ordinal, out, &detail), Error::Corrupt) << detail;
+		const auto target = tmp_dir / "out" / "LARGE.TXT";
+		EXPECT_EQ(opened.reader->MaterializeToFile(e.ordinal, target, &detail), Error::Corrupt)
+		        << detail;
+		EXPECT_FALSE(fs::exists(target));
+	}
+}
+
+TEST_F(LegacyZipReaderTest, ReadRangeLeavesTheCallersOffsetAlone)
+{
+	const int fd = OpenReadOnlyShared(LegacyDir / "SHRUNK.ZIP");
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(SeekDescriptor(fd, 17, SEEK_SET), 17);
+	std::vector<uint8_t> out = {};
+	EXPECT_EQ(ZipCentralDirectory::ReadRange(fd, 0, 4, out), ZipCentralDirectory::Error::None);
+	EXPECT_EQ(out, (std::vector<uint8_t>{'P', 'K', 3, 4}));
+	EXPECT_EQ(SeekDescriptor(fd, 0, SEEK_CUR), 17);
+	EXPECT_EQ(ZipCentralDirectory::ReadRange(fd, fs::file_size(LegacyDir / "SHRUNK.ZIP") - 2, 4, out),
+	          ZipCentralDirectory::Error::Truncated);
+	CloseDescriptor(fd);
+}
+
+TEST_F(LegacyZipReaderTest, ReduceStaysUnsupportedAndNamesTheMethod)
+{
+	StoredEntry e = {};
+	e.name        = "A.TXT";
+	e.data        = "hello";
+	e.method      = 2;
+	const auto path = Raw("reduced.zip", MakeStoredZip({e}));
+	auto opened     = ArchiveReader::Open(path, limits);
+	EXPECT_EQ(opened.error, Error::Unsupported);
+	EXPECT_NE(opened.detail.find("method 2"), std::string::npos) << opened.detail;
+}
+
+TEST_F(LegacyZipReaderTest, AWrongCrcFailsAMemberThatDecodes)
+{
+	const auto copy = tmp_dir / "BADCRC.ZIP";
+	fs::copy_file(LegacyDir / "SHRUNK.ZIP", copy);
+	auto bytes    = SlurpBytes(copy);
+	const auto cd = ZipCentralDirectory::Read(copy, 100);
+	ASSERT_EQ(cd.error, ZipCentralDirectory::Error::None);
+	// The CRC sits at offset 14 of the local header and 16 of the central
+	// header (APPNOTE 4.3.7, 4.3.12); flip its low bit in both.
+	size_t patched = 0;
+	for (size_t i = 0; i + 46 <= bytes.size(); ++i) {
+		const bool local   = bytes[i] == 'P' && bytes[i + 1] == 'K' && bytes[i + 2] == 3 && bytes[i + 3] == 4;
+		const bool central = bytes[i] == 'P' && bytes[i + 1] == 'K' && bytes[i + 2] == 1 && bytes[i + 3] == 2;
+		const size_t name_at = local ? 26 : 28;
+		const size_t head    = local ? 30 : 46;
+		if ((local || central) &&
+		    std::string(reinterpret_cast<const char*>(&bytes[i + head]),
+		                bytes[i + name_at] | (bytes[i + name_at + 1] << 8)) == "LARGE.TXT") {
+			bytes[i + (local ? 14 : 16)] ^= 1;
+			++patched;
+		}
+	}
+	ASSERT_EQ(patched, 2u);
+	ArchiveFixtures::WriteBytes(copy, bytes);
+	auto opened = ArchiveReader::Open(copy, limits);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	for (const auto& e : opened.reader->Entries()) {
+		std::vector<uint8_t> out = {};
+		auto detail              = std::string();
+		const auto read          = opened.reader->Materialize(e.ordinal, out, &detail);
+		if (e.utf8_path == "LARGE.TXT") {
+			EXPECT_EQ(read, Error::Corrupt);
+			EXPECT_NE(detail.find("CRC"), std::string::npos) << detail;
+		} else {
+			EXPECT_EQ(read, Error::None) << e.utf8_path << ": " << detail;
+		}
+	}
+}

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dos.h"
 
@@ -218,7 +219,23 @@ void DOS_SetDefaultDrive(uint8_t drive) {
 	if (drive<DOS_DRIVES && ((drive<2) || Drives[drive])) {dos.current_drive = drive; DOS_SDA(DOS_SDA_SEG,DOS_SDA_OFS).SetDrive(drive);}
 }
 
+static bool make_name(const char* const name, char* const fullname, uint8_t* drive);
+
+// Device names resolve without the medium (D16), so NUL and CON keep
+// working while the default drive is not ready.
 bool DOS_MakeName(const char* const name, char* const fullname, uint8_t* drive)
+{
+	if (!make_name(name, fullname, drive)) {
+		return false;
+	}
+	if (!Drives[*drive]->IsReady() && !DOS_NamesDevice(fullname)) {
+		DOS_SetError(DOSERR_DRIVE_NOT_READY);
+		return false;
+	}
+	return true;
+}
+
+static bool make_name(const char* const name, char* const fullname, uint8_t* drive)
 {
 	if(!name || *name == 0 || *name == ' ') {
 		/* Both \0 and space are seperators and
@@ -427,8 +444,13 @@ bool DOS_ChangeDir(const char* const dir)
 {
 	uint8_t drive;
 	char fulldir[DOS_PATHLENGTH];
-	const auto exists_and_set = DOS_MakeName(dir, fulldir, &drive) &&
-	                            Drives.at(drive)->TestDir(fulldir) &&
+	if (!DOS_MakeName(dir, fulldir, &drive)) {
+		if (dos.errorcode != DOSERR_DRIVE_NOT_READY) {
+			DOS_SetError(DOSERR_PATH_NOT_FOUND);
+		}
+		return false;
+	}
+	const auto exists_and_set = Drives.at(drive)->TestDir(fulldir) &&
 	                            safe_strcpy(Drives.at(drive)->curdir, fulldir);
 	if (!exists_and_set) {
 		DOS_SetError(DOSERR_PATH_NOT_FOUND);
@@ -883,7 +905,8 @@ bool DOS_OpenFile(const char* name, uint8_t flags, uint16_t* entry, bool fcb)
 		if (Files[handle]) {
 			Files[handle]->SetDrive(drive);
 		}
-		if (dos.errorcode == DOSERR_ACCESS_CODE_INVALID)
+		if (dos.errorcode == DOSERR_ACCESS_CODE_INVALID ||
+		    dos.errorcode == DOSERR_DRIVE_NOT_READY)
 			return false;
 		dos.errorcode = old_errorcode;
 	}
@@ -971,7 +994,9 @@ bool DOS_UnlinkFile(const char* const name)
 
 	// If a proper DOS path cannot be constructed ...
 	if (!DOS_MakeName(name, fullname, &drive)) {
-		DOS_SetError(DOSERR_PATH_NOT_FOUND);
+		if (dos.errorcode != DOSERR_DRIVE_NOT_READY) {
+			DOS_SetError(DOSERR_PATH_NOT_FOUND);
+		}
 		return false;
 	}
 

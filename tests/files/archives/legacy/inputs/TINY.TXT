@@ -1,0 +1,5 @@
+length sector cluster drive
+cluster prompt sector disk
+buffer batch sector stream archive buffer tree
+distance drive length cluster disk stream window tree
+window literal buffer disk disk cluster 

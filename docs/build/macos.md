@@ -120,6 +120,11 @@ A build tree is not a self-contained install. The emulator looks for
 ./build/debug-macos-homebrew/dosbox-automation
 ```
 
+The build writes `dosbox-automation-archive-helper` next to the
+emulator, and the emulator looks for it there, so keep the two together
+when you copy a build directory. An app bundle would put the helper in
+`Contents/MacOS/` beside the emulator.
+
 If GLSL shaders are not found, copy `resources/shaders` and
 `resources/shader-presets` into
 `~/Library/Preferences/dosbox-automation/`.

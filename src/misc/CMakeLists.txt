@@ -1,5 +1,6 @@
 target_sources(dosboxcommon PRIVATE
   ansi_code_markup.cpp
+  child_process.cpp
   console.cpp
   cross.cpp
   dos_rwops.cpp

@@ -16,6 +16,7 @@ struct Record {
 	std::string raw_name         = {};    // bytes as stored, no conversion
 	bool utf8_flag               = false; // general purpose bit 11
 	bool encrypted               = false; // bit 0 or bit 6
+	uint16_t flags               = 0;     // general purpose bits, as stored
 	uint16_t method              = 0;
 	uint32_t crc32               = 0;
 	uint32_t dos_datetime        = 0; // time low, date high, as stored
@@ -57,6 +58,14 @@ Result Read(const std::filesystem::path& path, uint64_t max_entries);
 // works on a duplicate, so the caller's position is untouched.
 Result Read(int fd, uint64_t max_entries);
 
+// size bytes at offset through a duplicate of fd; the caller's position
+// is untouched. Truncated when the range runs past the end of the file.
+Error ReadRange(int fd, uint64_t offset, uint64_t size, std::vector<uint8_t>& out);
+
+// The member data ReadRange hands out: PKZIP 1.x members are DOS-era
+// sizes, and the helper process caps its own memory at 1 GiB.
+constexpr uint64_t MaxRangeBytes = 64ull * 1024 * 1024;
+
 // The entry name as UTF-8: as stored when the UTF-8 flag is set, else
 // decoded from code page 437, the zip default (APPNOTE appendix D).
 std::string DecodeName(const Record& record);
@@ -70,7 +79,7 @@ struct Decoders {
 
 // APPNOTE 4.4.5: stored and deflate always; bzip2 (12), lzma (14), xz
 // (95) and zstd (93) with their decoder; ppmd (98) always; PKZIP 1.x's
-// shrink, reduce and implode never (DOS-era zips carry them).
+// shrink (1) and implode (6) through legacy_zip; reduce (2-5) never.
 bool MethodReadable(uint16_t method, const Decoders& decoders);
 
 constexpr uint64_t MaxDirectoryBytes = 64ull * 1024 * 1024;

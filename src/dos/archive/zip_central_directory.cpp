@@ -3,15 +3,13 @@
 //
 #include "dos/archive/zip_central_directory.h"
 
+#include "dos/archive/cp437.h"
 #include "dos/archive/descriptor.h"
 
-#include "misc/cross.h"
-#include "misc/unicode.h"
 #include "utils/checks.h"
 
 #include <algorithm>
 #include <cstdio>
-#include <fcntl.h>
 #include <system_error>
 
 #if defined(WIN32)
@@ -122,11 +120,30 @@ struct File {
 	}
 };
 
+// cross.h's 64-bit seek and tell, without the engine headers it pulls in
+int seek_to(FILE* f, const int64_t offset, const int origin)
+{
+#if defined(WIN32)
+	return _fseeki64(f, offset, origin);
+#else
+	return fseeko(f, static_cast<off_t>(offset), origin);
+#endif
+}
+
+int64_t tell(FILE* f)
+{
+#if defined(WIN32)
+	return _ftelli64(f);
+#else
+	return static_cast<int64_t>(ftello(f));
+#endif
+}
+
 bool read_at(FILE* f, const uint64_t offset, std::vector<uint8_t>& out,
              const size_t size)
 {
 	out.resize(size);
-	if (cross_fseeko(f, static_cast<cross_off_t>(offset), SEEK_SET) != 0) {
+	if (seek_to(f, static_cast<int64_t>(offset), SEEK_SET) != 0) {
 		return false;
 	}
 	return fread(out.data(), 1, size, f) == size;
@@ -173,6 +190,7 @@ Result Parse(const std::span<const uint8_t> central_directory,
 		}
 		auto record              = Record{};
 		const auto flags         = le16(p + 8);
+		record.flags             = flags;
 		record.utf8_flag         = (flags & FlagUtf8) != 0;
 		record.encrypted         = (flags &
                                     (FlagEncrypted | FlagStrongEncryption)) != 0;
@@ -240,6 +258,11 @@ static Error check_local_headers(File& file, const std::vector<Record>& records,
 		    le16(local.data() + 8) != record.method) {
 			return Error::LocalHeaderMismatch;
 		}
+		// Implode's window and tree bits decide the decoding (APPNOTE 4.4.4).
+		if (record.method == 6 &&
+		    ((le16(local.data() + 6) ^ record.flags) & 0x0006) != 0) {
+			return Error::LocalHeaderMismatch;
+		}
 		const auto crc   = le32(local.data() + 14);
 		const auto csize = le32(local.data() + 18);
 		const auto usize = le32(local.data() + 22);
@@ -261,11 +284,11 @@ static Error check_local_headers(File& file, const std::vector<Record>& records,
 static Result read_from(File& file, const uint64_t max_entries)
 {
 	auto result = Result{};
-	if (cross_fseeko(file.handle, 0, SEEK_END) != 0) {
+	if (seek_to(file.handle, 0, SEEK_END) != 0) {
 		result.error = Error::NotAZip;
 		return result;
 	}
-	const auto file_size = static_cast<uint64_t>(cross_ftello(file.handle));
+	const auto file_size = static_cast<uint64_t>(tell(file.handle));
 	if (file_size < EndRecordSize) {
 		result.error = Error::NotAZip;
 		return result;
@@ -391,22 +414,15 @@ static Result read_from(File& file, const uint64_t max_entries)
 
 Result Read(const std::filesystem::path& path, const uint64_t max_entries)
 {
-	auto file = File{};
+	auto file     = File{};
+	const auto fd = ArchiveMount::OpenReadOnlyShared(path);
 #if defined(WIN32)
-	const auto fd = _wopen(path.wstring().c_str(),
-	                       _O_RDONLY | _O_BINARY | _O_NOINHERIT);
-	file.handle   = fd >= 0 ? _fdopen(fd, "rb") : nullptr;
-	if (!file.handle && fd >= 0) {
-		_close(fd);
-	}
+	file.handle = fd >= 0 ? _fdopen(fd, "rb") : nullptr;
 #else
-	const auto fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-	file.handle   = fd >= 0 ? fdopen(fd, "rb") : nullptr;
-	if (!file.handle && fd >= 0) {
-		close(fd);
-	}
+	file.handle = fd >= 0 ? fdopen(fd, "rb") : nullptr;
 #endif
 	if (!file.handle) {
+		ArchiveMount::CloseDescriptor(fd);
 		auto result  = Result{};
 		result.error = Error::IoFailed;
 		return result;
@@ -414,50 +430,99 @@ Result Read(const std::filesystem::path& path, const uint64_t max_entries)
 	return read_from(file, max_entries);
 }
 
-// A duplicate shares the open file description, offset included, so
-// the caller's position is saved and put back after the read.
+namespace {
+
+// A duplicate shares the open file description, offset included, so the
+// caller's position is saved and put back. POSIX lets fclose move the
+// shared offset to the stream position: the FILE goes first.
+class DuplicateFile {
+public:
+	explicit DuplicateFile(const int caller_fd) : fd(caller_fd)
+	{
+#if defined(WIN32)
+		caller_offset    = _telli64(fd);
+		const int dup_fd = ArchiveMount::DuplicateNoInherit(fd);
+		file.handle      = dup_fd >= 0 ? _fdopen(dup_fd, "rb") : nullptr;
+		if (!file.handle && dup_fd >= 0) {
+			_close(dup_fd);
+		}
+#else
+		caller_offset    = lseek(fd, 0, SEEK_CUR);
+		const int dup_fd = ArchiveMount::DuplicateNoInherit(fd);
+		file.handle      = dup_fd >= 0 ? fdopen(dup_fd, "rb") : nullptr;
+		if (!file.handle && dup_fd >= 0) {
+			close(dup_fd);
+		}
+#endif
+	}
+	~DuplicateFile()
+	{
+		if (file.handle) {
+			fclose(file.handle);
+			file.handle = nullptr;
+		}
+		if (caller_offset >= 0) {
+#if defined(WIN32)
+			_lseeki64(fd, caller_offset, SEEK_SET);
+#else
+			lseek(fd, caller_offset, SEEK_SET);
+#endif
+		}
+	}
+	DuplicateFile(const DuplicateFile&)            = delete;
+	DuplicateFile& operator=(const DuplicateFile&) = delete;
+
+	File file = {};
+
+private:
+	int fd                = -1;
+	int64_t caller_offset = -1;
+};
+
+} // namespace
+
 Result Read(const int fd, const uint64_t max_entries)
 {
-	auto file = File{};
-#if defined(WIN32)
-	const auto caller_offset = _telli64(fd);
-	const auto dup_fd        = ArchiveMount::DuplicateNoInherit(fd);
-	file.handle = dup_fd >= 0 ? _fdopen(dup_fd, "rb") : nullptr;
-	if (!file.handle && dup_fd >= 0) {
-		_close(dup_fd);
-	}
-#else
-	const auto caller_offset = lseek(fd, 0, SEEK_CUR);
-	const auto dup_fd        = ArchiveMount::DuplicateNoInherit(fd);
-	file.handle              = dup_fd >= 0 ? fdopen(dup_fd, "rb") : nullptr;
-	if (!file.handle && dup_fd >= 0) {
-		close(dup_fd);
-	}
-#endif
-	if (!file.handle) {
+	DuplicateFile dup(fd);
+	if (!dup.file.handle) {
 		auto result  = Result{};
 		result.error = Error::IoFailed;
 		return result;
 	}
-	auto result = read_from(file, max_entries);
-	// POSIX lets fclose move the shared offset to the stream position, so
-	// the FILE goes first and the caller's position last.
-	fclose(file.handle);
-	file.handle = nullptr;
-	if (caller_offset >= 0) {
-#if defined(WIN32)
-		_lseeki64(fd, caller_offset, SEEK_SET);
-#else
-		lseek(fd, caller_offset, SEEK_SET);
-#endif
+	return read_from(dup.file, max_entries);
+}
+
+Error ReadRange(const int fd, const uint64_t offset, const uint64_t size,
+                std::vector<uint8_t>& out)
+{
+	out.clear();
+	if (size > MaxRangeBytes) {
+		return Error::IoFailed;
 	}
-	return result;
+	DuplicateFile dup(fd);
+	if (!dup.file.handle || seek_to(dup.file.handle, 0, SEEK_END) != 0) {
+		return Error::IoFailed;
+	}
+	const auto file_size = tell(dup.file.handle);
+	if (file_size < 0) {
+		return Error::IoFailed;
+	}
+	const auto length = static_cast<uint64_t>(file_size);
+	if (offset > length || size > length - offset) {
+		return Error::Truncated;
+	}
+	if (!read_at(dup.file.handle, offset, out, static_cast<size_t>(size))) {
+		return Error::IoFailed;
+	}
+	return Error::None;
 }
 
 bool MethodReadable(const uint16_t method, const Decoders& decoders)
 {
 	switch (method) {
 	case 0:
+	case 1:
+	case 6:
 	case 8:
 	case 98: return true;
 	case 12: return decoders.bzip2;
@@ -473,7 +538,7 @@ std::string DecodeName(const Record& record)
 	if (record.utf8_flag) {
 		return record.raw_name;
 	}
-	return dos_437_to_fs_utf8(record.raw_name);
+	return ArchiveMount::Cp437ToUtf8(record.raw_name);
 }
 
 } // namespace ZipCentralDirectory

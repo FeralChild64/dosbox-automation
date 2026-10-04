@@ -24,6 +24,15 @@ SETTING_SECTIONS = {
     "output": "sdl",
     "ttf_output": "sdl",
     "joysticktype": "joystick",
+    "archive_cache_path": "dos",
+    "archive_sidecar_path": "dos",
+    "archive_cache_max_size": "dos",
+    "archive_cache_min_free": "dos",
+    "archive_cache_ttl": "dos",
+    "archive_memory_limit": "dos",
+    "archive_max_entries": "dos",
+    "archive_max_size": "dos",
+    "archive_sequential": "dos",
 }
 
 DOSBOX_BIN = os.environ.get(

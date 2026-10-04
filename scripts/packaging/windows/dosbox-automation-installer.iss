@@ -73,6 +73,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 ; Main executable
 Source: "{#StagingDir}\dosbox-automation.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StagingDir}\dosbox-automation-archive-helper.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Resources tree (shaders, soundfonts, translations, drives, icons, webserver)
 Source: "{#StagingDir}\Resources\*"; DestDir: "{app}\Resources"; Flags: ignoreversion recursesubdirs createallsubdirs

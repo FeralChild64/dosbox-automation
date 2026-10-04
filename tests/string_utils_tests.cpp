@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "utils/string_utils.h"
 
@@ -90,6 +91,19 @@ TEST(NaturalCompare, InMiddleNum)
 	EXPECT_TRUE(natural_compare("a1a", "a1aa"));
 	EXPECT_TRUE(natural_compare("A1A", "a2a"));
 	EXPECT_TRUE(natural_compare("A999b", "a1000a"));
+}
+TEST(NaturalCompare, NumbersBeyondIntRange)
+{
+	EXPECT_TRUE(natural_compare("a1", "a4294967296"));
+	EXPECT_FALSE(natural_compare("a4294967296", "a1"));
+	EXPECT_TRUE(natural_compare("12345678901234567890", "12345678901234567891"));
+	EXPECT_TRUE(natural_compare("99999999999999999999", "100000000000000000000"));
+}
+TEST(NaturalCompare, LeadingZerosAreTheSameNumber)
+{
+	EXPECT_TRUE(natural_compare("a007b", "a7c"));
+	EXPECT_FALSE(natural_compare("a007c", "a7b"));
+	EXPECT_TRUE(natural_compare("a0009", "a10"));
 }
 TEST(NaturalCompare, AtEndChar)
 {

@@ -3,9 +3,7 @@
 //
 #include "dos/archive/entry_names.h"
 
-#include "dos/dos_system.h"
-#include "dos/drives.h"
-#include "dos/programs/mount_policy.h"
+#include "dos/dos_names.h"
 #include "utils/checks.h"
 
 CHECK_NARROWING();
@@ -104,7 +102,7 @@ std::optional<SplitPath> SplitEntryPath(const std::string_view utf8_path,
 		if (trimmed.empty()) {
 			return reject(Rejection::EmptyComponent);
 		}
-		if (MountPolicy::IsWindowsReservedDeviceName(trimmed)) {
+		if (DosNames::IsWindowsReservedDeviceName(trimmed)) {
 			return reject(Rejection::ReservedDeviceName);
 		}
 		result.components.push_back(trimmed);
@@ -194,7 +192,7 @@ std::optional<std::string> DosNameTable::Assign(const std::string& parent_dos_pa
 		                      : parent_dos_path + "\\" + name;
 		// DOS_MakeName wants "\\" + path under DOS_PATHLENGTH, so 78 is
 		// the longest path DOS itself can open.
-		if (dos_path.size() > DOS_PATHLENGTH - 2) {
+		if (dos_path.size() > DosPathLength - 2) {
 			return {};
 		}
 		taken.insert(name);

@@ -6,6 +6,7 @@
 
 #include "ints/bios_disk.h"
 #include "dos/drives.h"
+#include "dos/programs/mount.h"
 #include "misc/support.h"
 
 Bitu ZDRIVE_NUM = 25;
@@ -35,8 +36,11 @@ std::string UnmountHelper(char umount)
 		switch (DriveManager::UnmountDrive(i_drive)) {
 			case 1: return MSG_Get("PROGRAM_MOUNT_UMOUNT_NO_VIRTUAL");
 			case 2: return MSG_Get("MSCDEX_ERROR_MULTIPLE_CDROMS");
+			case UnmountRefusedOpenFiles:
+				return MSG_Get("PROGRAM_MOUNT_UMOUNT_FILES_OPEN");
 		}
 		Drives[i_drive] = nullptr;
+		MOUNT::ReleaseSidecar(static_cast<char>('A' + i_drive));
 		mem_writeb(RealToPhysical(dos.tables.mediaid)+i_drive*9,0);
 		if (i_drive == DOS_GetDefaultDrive()) {
 			DOS_SetDrive(ZDRIVE_NUM);
@@ -86,6 +90,7 @@ void AddMountTypeMessages() {
 	MSG_Add("MOUNT_TYPE_CDIMAGE", "CD-ROM image");
 	MSG_Add("MOUNT_TYPE_CDIMAGE_PLURAL", "CD-ROM images");
 	MSG_Add("MOUNT_TYPE_VIRTUAL", "Internal drive");
+	MSG_Add("MOUNT_TYPE_ARCHIVE", "Archive");
 	MSG_Add("MOUNT_TYPE_OVERLAY", "Overlay drive");
 	MSG_Add("MOUNT_TYPE_UNKNOWN", "unknown drive");
 }

@@ -15,6 +15,9 @@
 #if defined(HAVE_SYS_XATTR_H)
 #include <sys/xattr.h>
 #endif
+#if defined(HAVE_SYS_EXTATTR_H)
+#include <sys/extattr.h>
+#endif
 
 #include "dos/dos.h"
 #include "misc/logging.h"
@@ -111,6 +114,13 @@ std_fs::path get_xdg_data_home() noexcept
 	return resolve_home(data_home);
 }
 
+std_fs::path get_xdg_cache_home() noexcept
+{
+	const auto var        = get_env_var("XDG_CACHE_HOME");
+	const auto cache_home = ((var.size() > 0) ? var : "~/.cache");
+	return resolve_home(cache_home);
+}
+
 std::deque<std_fs::path> get_xdg_data_dirs() noexcept
 {
 	const auto var       = get_env_var("XDG_DATA_DIRS");
@@ -152,6 +162,8 @@ constexpr uint8_t XattrWriteMask = 0b0001'0000 | XattrReadMask;
 // We are storing DOS file attributes in Unix extended attributes, using same
 // format as WINE, Samba 3, and DOSEmu 2.
 static const std::string XattrName = "user.DOSATTRIB";
+// FreeBSD keeps the namespace apart from the name (extattr(2)).
+static const std::string ExtattrName = "DOSATTRIB";
 
 constexpr size_t XattrMinLength = 3;
 constexpr size_t XattrMaxLength = 4;
@@ -195,6 +207,12 @@ static std::optional<FatAttributeFlags> get_xattr(const char* path)
 	                             XattrName.c_str(),
 	                             xattr,
 	                             XattrMaxLength);
+#elif defined(HAVE_SYS_EXTATTR_H)
+	const auto length = extattr_get_file(path,
+	                                     EXTATTR_NAMESPACE_USER,
+	                                     ExtattrName.c_str(),
+	                                     xattr,
+	                                     XattrMaxLength);
 #else
 	// Platform doesn't support extended attributes
 	// So we always set a failed return length.
@@ -238,6 +256,15 @@ static bool set_xattr([[maybe_unused]] const char* path,
                                      xattr.c_str(),
                                      xattr.size(),
                                      flags);
+#elif defined(HAVE_SYS_EXTATTR_H)
+	// extattr_set_file answers the byte count, -1 on failure.
+	const auto result = extattr_set_file(path,
+	                                     EXTATTR_NAMESPACE_USER,
+	                                     ExtattrName.c_str(),
+	                                     xattr.c_str(),
+	                                     xattr.size()) < 0
+	                            ? -1
+	                            : 0;
 #else
 	// Platform doesn't support extended attributes
 	// so we always have a failed result code.
@@ -269,6 +296,14 @@ static bool set_xattr([[maybe_unused]] const int file_descriptor,
 	                              xattr.c_str(),
 	                              xattr.size(),
 	                              flags);
+#elif defined(HAVE_SYS_EXTATTR_H)
+	const auto result = extattr_set_fd(file_descriptor,
+	                                   EXTATTR_NAMESPACE_USER,
+	                                   ExtattrName.c_str(),
+	                                   xattr.c_str(),
+	                                   xattr.size()) < 0
+	                            ? -1
+	                            : 0;
 #else
 	// Platform doesn't support extended attributes
 	// so we always have a failed result code.

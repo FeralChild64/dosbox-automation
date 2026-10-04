@@ -271,6 +271,8 @@ bool DOS_SetFileAttr(const char* const name, FatAttributeFlags attr);
 bool DOS_IOCTL(void);
 bool DOS_GetSTDINStatus();
 uint8_t DOS_FindDevice(const char* name);
+// The last component of a DOS_MakeName result, extension aside, is a device.
+bool DOS_NamesDevice(const char* fullname);
 void DOS_SetupDevices();
 void DOS_ClearDrivesAndFiles();
 void DOS_ShutDownDevices();
@@ -388,6 +390,7 @@ static inline uint16_t long2para(uint32_t size) {
 #define DOSERR_REMOVE_CURRENT_DIRECTORY 16
 #define DOSERR_NOT_SAME_DEVICE 17
 #define DOSERR_NO_MORE_FILES 18
+#define DOSERR_DRIVE_NOT_READY 21
 #define DOSERR_LOCK_VIOLATION 33
 #define DOSERR_FILE_ALREADY_EXISTS 80
 

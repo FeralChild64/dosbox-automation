@@ -5,6 +5,9 @@
 // Copyright (C) 2026 dosbox-automation contributors
 
 #include "mount.h"
+#include "dos/archive/descriptor.h"
+#include "dos/archive/head_sniff.h"
+#include "dos/archive/member_path.h"
 #include "mount_common.h"
 #include "mount_policy.h"
 
@@ -116,6 +119,13 @@ void MOUNT::ListMounts()
 			} else {
 				// Render singular drive logic
 				auto type = Drives[d]->GetTypeString();
+				if (const auto archive = ArchiveDriveOf(Drives[d]);
+				    archive && archive->State() !=
+				                       ArchiveMountState::Ready) {
+					type += std::string(":") +
+					        ArchiveDrive::StateName(
+					                archive->State());
+				}
 				auto path = Drives[d]->GetInfo();
 
 				print_row(convert_ansi_markup(
@@ -574,6 +584,9 @@ static std::optional<MountType> parse_mount_type(const std::string s)
 	} else if (s == "overlay") {
 		return MountType::Overlay;
 
+	} else if (s == "archive") {
+		return MountType::Archive;
+
 	} else {
 		return {};
 	}
@@ -617,8 +630,7 @@ std::optional<MOUNT::MountOption> MOUNT::TakeOption(const std::string& name,
 		                      name.c_str());
 		return {};
 	}
-	if (option.present && value_kind == OptionValue::Required &&
-	    !option.value) {
+	if (option.present && value_kind == OptionValue::Required && !option.value) {
 		NOTIFY_DisplayWarning(Notification::Source::Console,
 		                      "MOUNT",
 		                      "PROGRAM_MOUNT_OPTION_NEEDS_VALUE",
@@ -747,6 +759,22 @@ bool MOUNT::ParseArguments(MountParameters& params, bool& explicit_fs,
 	}
 	params.label = label->value.value_or("");
 
+	const auto root = TakeOption("-root", OptionValue::Required);
+	if (!root) {
+		return false;
+	}
+	params.archive_root  = root->value.value_or("");
+	const auto nosidecar = TakeOption("-nosidecar", OptionValue::None);
+	if (!nosidecar) {
+		return false;
+	}
+	params.no_sidecar = nosidecar->present;
+	const auto sidecar = TakeOption("-sidecar", OptionValue::Required);
+	if (!sidecar) {
+		return false;
+	}
+	params.sidecar_path = sidecar->value.value_or("");
+
 	// The geometry strings are interpreted in ParseGeometry once
 	// ProcessPaths has settled the mount type.
 	const auto freesize = TakeOption("-freesize", OptionValue::Required);
@@ -809,7 +837,7 @@ bool MOUNT::ParseGeometry(MountParameters& params)
 		break;
 
 	case MountType::HardDiskImage: break;
-
+	case MountType::Archive: params.mediaid = MediaId::HardDisk; break;
 	default: assertm(false, "Invalid MountType");
 	}
 
@@ -1045,21 +1073,51 @@ std::string MOUNT::GetDosMappedHostPath(const std::string& dos_path) const
 	return "";
 }
 
-static DirMountPolicy GetCurrentDirPolicy()
+// The host path a path argument names: ~ expanded, -pr applied, and a
+// mounted DOS path taken as the host path it maps to (ada-ep2a).
+std::string MOUNT::ResolveHostPath(const std::string& arg,
+                                   const bool relative_to_last_config) const
 {
-	if (WEBSERVER_IsEnabled()) {
+	auto path = ApplyRelativePath(resolve_home(arg).string(),
+	                              relative_to_last_config);
+#if defined(WIN32)
+	// Removing trailing backslash if not root dir so stat will succeed
+	if (path.size() > 3 && path.back() == '\\') {
+		path.pop_back();
+	}
+#endif
+	struct stat test = {};
+	if (stat(path.c_str(), &test) != 0) {
+		const auto mapped = GetDosMappedHostPath(path);
+		if (!mapped.empty() && stat(mapped.c_str(), &test) == 0) {
+			return mapped;
+		}
+	}
+	return path;
+}
+
+DirMountPolicy MOUNT::CurrentDirPolicy()
+{
+	// The same gate as the archive path check: a running webserver sets
+	// the injection flag, the tests set the flag alone.
+	if (WEBSERVER_IsEnabled() || MountPolicy::IsInjectionPossible()) {
 		return DirMountPolicy::WhitelistEnforced;
 	}
 	return DirMountPolicy::OwnerTrusted;
 }
 
-static void ReportMountDenied(const std::string& path, const MountVerdict& verdict)
+void MOUNT::ReportMountDenied(const std::string& path, const MountVerdict& verdict,
+                              const std::string& detail)
 {
 	if (verdict.reason == DenyReason::None) {
 		return;
 	}
 	const auto reason_text = MountPolicy::DenyReasonText(verdict.reason);
-	LOG_WARNING("MOUNT: Blocked '%s' - %s", path.c_str(), reason_text);
+	LOG_WARNING("MOUNT: Blocked '%s' - %s%s%s",
+	            path.c_str(),
+	            reason_text,
+	            detail.empty() ? "" : ": ",
+	            detail.c_str());
 	const std::string message_id = MountPolicy::DenyMessageId(verdict.reason);
 	if (message_id == "PROGRAM_MOUNT_POLICY_REFUSED") {
 		NOTIFY_DisplayWarning(Notification::Source::Console,
@@ -1067,6 +1125,31 @@ static void ReportMountDenied(const std::string& path, const MountVerdict& verdi
 		                      message_id,
 		                      path.c_str(),
 		                      reason_text);
+	} else if (message_id == "PROGRAM_MOUNT_ARCHIVE_REFUSED") {
+		const auto detail_line = detail.empty() ? std::string()
+		                                        : "  " + detail + "\n";
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      message_id,
+		                      path.c_str(),
+		                      reason_text,
+		                      detail_line.c_str());
+	} else if (message_id == "PROGRAM_MOUNT_ARCHIVE_UNSUPPORTED") {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      message_id,
+		                      path.c_str(),
+		                      detail.c_str());
+	} else if (message_id == "PROGRAM_MOUNT_ARCHIVE_SEQUENTIAL" ||
+	           message_id == "PROGRAM_MOUNT_ARCHIVE_CACHE" ||
+	           message_id == "PROGRAM_MOUNT_ARCHIVE_SIDECAR" ||
+	           message_id == "PROGRAM_MOUNT_ARCHIVE_ROOT" ||
+	           message_id == "PROGRAM_MOUNT_SIDECAR_BUSY") {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      message_id,
+		                      path.c_str(),
+		                      detail.c_str());
 	} else {
 		NOTIFY_DisplayWarning(Notification::Source::Console,
 		                      "MOUNT",
@@ -1090,38 +1173,57 @@ static void ReportMountDenied(const std::string& path, const MountVerdict& verdi
 void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
                          bool path_relative_to_last_config)
 {
-	// Expand ~ to home directory and apply relative path logic
-	auto path_arg_1 = ApplyRelativePath(resolve_home(first_path).string(),
-	                                    path_relative_to_last_config);
-
-#if defined(WIN32)
-	// Removing trailing backslash if not root dir so stat will succeed
-	if (path_arg_1.size() > 3 && path_arg_1.back() == '\\') {
-		path_arg_1.pop_back();
-	}
-#endif
+	auto path_arg_1 = ResolveHostPath(first_path, path_relative_to_last_config);
 
 	// Check first path on the host OS
-	struct stat test = {};
-	auto stat_ok     = (stat(path_arg_1.c_str(), &test) == 0);
+	struct stat test   = {};
+	const auto stat_ok = (stat(path_arg_1.c_str(), &test) == 0);
 
-	// If not found on the host, check if it is a mounted DOS path
-	if (!stat_ok) {
-		const auto mapped_host_path = GetDosMappedHostPath(path_arg_1);
-		if (!mapped_host_path.empty() &&
-		    stat(mapped_host_path.c_str(), &test) == 0) {
-			stat_ok = true;
-		}
-	}
-
-	const auto target_is_dir = stat_ok && S_ISDIR(test.st_mode);
+	const auto target_is_dir  = stat_ok && S_ISDIR(test.st_mode);
+	const auto target_is_file = stat_ok && S_ISREG(test.st_mode);
 
 	const auto explicit_image_type = (params.type == MountType::HardDiskImage ||
 	                                  params.type == MountType::CdRomImage ||
 	                                  params.type == MountType::FloppyImage);
+	const auto explicit_archive = params.type == MountType::Archive;
 
 	const auto has_wildcards = path_arg_1.find_first_of("*?") !=
 	                           std::string::npos;
+
+	// An archive is its own kind of source (archive mount design D12):
+	// named by -t archive, or a regular file with a listed extension
+	// whose first bytes carry a known signature.
+	if (explicit_archive && !target_is_file) {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      "PROGRAM_MOUNT_ERROR_2",
+		                      path_arg_1.c_str());
+		params.is_image_mode = false;
+		return;
+	}
+	// A drive number is refused in MountPaths: ParseDrive runs after this.
+	if (target_is_file && !has_wildcards &&
+	    (explicit_archive ||
+	     (!explicit_image_type && ArchiveMount::IsArchiveFile(path_arg_1)))) {
+		params.type          = MountType::Archive;
+		params.is_image_mode = false;
+		params.paths.clear();
+		params.paths.push_back(simplify_path(path_arg_1).string());
+		if (!params.sidecar_path.empty()) {
+			params.sidecar_path = ResolveHostPath(params.sidecar_path,
+			                                      path_relative_to_last_config);
+		}
+		return;
+	}
+	if (params.no_sidecar || !params.sidecar_path.empty() ||
+	    !params.archive_root.empty()) {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      "PROGRAM_MOUNT_ARCHIVE_ONLY_OPTIONS",
+		                      path_arg_1.c_str());
+		params.is_image_mode = false;
+		return;
+	}
 
 	params.is_image_mode = (explicit_image_type || params.is_drive_number ||
 	                        has_wildcards);
@@ -1133,7 +1235,7 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 	}
 
 	// Implicit trigger: First argument exists and is a regular file
-	if (!params.is_image_mode && stat_ok && S_ISREG(test.st_mode)) {
+	if (!params.is_image_mode && target_is_file) {
 		params.is_image_mode = true;
 	}
 
@@ -1291,6 +1393,20 @@ bool MOUNT::MountPaths(MountParameters& params)
 		return false;
 	}
 
+	if (params.type == MountType::Archive) {
+		// ParseDrive has run: a drive number, or -fs none which becomes
+		// one, leaves no letter for the archive drive to register under.
+		if (params.is_drive_number) {
+			NOTIFY_DisplayWarning(Notification::Source::Console,
+			                      "MOUNT",
+			                      "PROGRAM_MOUNT_ARCHIVE_NEEDS_LETTER",
+			                      params.paths.empty() ? "" : params.paths[0].c_str());
+			return false;
+		}
+		// ProcessPaths refused without a path (reported there).
+		return !params.paths.empty() && MountArchive(params);
+	}
+
 	if (params.is_image_mode) {
 		// Validate every image path before any construction. The
 		// validated canonical path replaces the raw string so the
@@ -1321,7 +1437,7 @@ bool MOUNT::MountPaths(MountParameters& params)
 		        std_fs::path(params.paths[0]),
 		        MountPolicy::ConfAnchor(),
 		        MountPolicy::AllowedBases(),
-		        GetCurrentDirPolicy());
+		        CurrentDirPolicy());
 		if (!dir_verdict.allowed) {
 			ReportMountDenied(params.paths[0], dir_verdict);
 			return false;
@@ -1532,6 +1648,9 @@ void MOUNT::Run(void)
 	if (HandleUnmount()) {
 		return;
 	}
+	if (HandleReconnect()) {
+		return;
+	}
 
 	ProcessArguments(cmd);
 }
@@ -1539,7 +1658,10 @@ void MOUNT::Run(void)
 std::optional<MountParameters> MOUNT::ProcessArguments(CommandLine* cmd)
 {
 	// To make it easier injecting arbitrary command lines in the unit tests
-	this->cmd = cmd;
+	if (this->cmd != cmd) {
+		delete this->cmd;
+		this->cmd = cmd;
+	}
 
 	MountParameters params;
 
@@ -1584,6 +1706,13 @@ std::optional<MountParameters> MOUNT::ProcessArguments(CommandLine* cmd)
 	return params;
 }
 
+const char* const MOUNT::ArchiveUnsupportedMessage =
+        "%s cannot be mounted: it uses a compression method that is not\n"
+        "implemented yet (%s).\n"
+        "Please open an issue at\n"
+        "https://github.com/dosbox-automation/dosbox-automation/issues\n"
+        "and attach the archive, or a link to where it can be downloaded.\n";
+
 void MOUNT::AddMessages()
 {
 	AddCommonMountMessages();
@@ -1613,6 +1742,12 @@ void MOUNT::AddMessages()
 	        "  -fs [color=white]FS[reset]          filesystem: [color=light-cyan]fat[reset], [color=light-cyan]iso[reset], or [color=light-cyan]none[reset] (for bootable images)\n"
 	        "  -label [color=white]LABEL[reset]    volume label to assign to the mounted drive\n"
 	        "  -ro             mount as read-only\n"
+	        "  -t [color=light-cyan]archive[reset]      mounts a zip, rar, 7z or tar archive (also detected by\n"
+	        "                  extension); the archive stays as it is, writes go to a sidecar\n"
+	        "  -root [color=white]DIR[reset]       directory inside the archive to use as the drive's root\n"
+	        "  -sidecar [color=white]PATH[reset]  archive mounts: directory for the game's writes (default: saves)\n"
+	        "  -nosidecar      archive mounts: no sidecar, the drive is read-only\n"
+	        "  -reconnect [color=white]DRIVE[reset] reopen an archive mount that reports lost or offline\n"
 	        "\n"
 	        "Directory mount parameters:\n"
 	        "  -freesize [color=white]SIZE[reset]  size (in KB for floppies, in MB for hard disks); sets the\n"
@@ -1640,6 +1775,11 @@ void MOUNT::AddMessages()
 	        "    host OS as a write-layer over the drive. Modified files are stored in [color=light-cyan]PATH[reset],\n"
 	        "    leaving the original drive data unchanged.\n"
 	        "\n"
+	        "  - An archive mount never changes the archive. Writes land in a sidecar\n"
+	        "    directory under the saves directory; delete it to reset the game.\n"
+	        "    Formats that cannot serve one member without unpacking everything\n"
+	        "    (7z, RAR 5, tar) are refused unless archive_sequential = cache is set.\n"
+	        "\n"
 	        "Examples:\n");
 
 	MSG_Add("PROGRAM_MOUNT_HELP_LONG_WIN32",
@@ -1649,7 +1789,8 @@ void MOUNT::AddMessages()
 	        "  [color=light-green]mount[reset] [color=white]2[reset] [color=light-cyan]Win95.img[reset] -t hdd -fs none -chs 304,64,63\n"
 	        "  [color=light-green]mount[reset] [color=white]0[reset] [color=light-cyan]floppy.img[reset] -t floppy -fs none\n"
 	        "  [color=light-green]mount[reset] [color=white]A[reset] [color=light-cyan]floppy*.img[reset] -t floppy\n"
-	        "  [color=light-green]mount[reset] [color=white]A[reset] [color=light-cyan]disk01.img disk02.img[reset] -t floppy\n");
+	        "  [color=light-green]mount[reset] [color=white]A[reset] [color=light-cyan]disk01.img disk02.img[reset] -t floppy\n"
+	        "  [color=light-green]mount[reset] [color=white]C[reset] [color=light-cyan]D:\\Games\\doom.zip[reset]\n");
 
 	MSG_Add("PROGRAM_MOUNT_HELP_LONG_MACOSX",
 	        "  (~ is expanded to your home directory)\n"
@@ -1659,7 +1800,8 @@ void MOUNT::AddMessages()
 	        "  [color=light-green]mount[reset] [color=white]2[reset] [color=light-cyan]Win95.img[reset] -t hdd -fs none -chs 304,64,63\n"
 	        "  [color=light-green]mount[reset] [color=white]0[reset] [color=light-cyan]floppy.img[reset] -t floppy -fs none\n"
 	        "  [color=light-green]mount[reset] [color=white]A[reset] [color=light-cyan]floppy*.img[reset] -t floppy -ro\n"
-	        "  [color=light-green]mount[reset] [color=white]A[reset] [color=light-cyan]disk01.img disk02.img[reset] -t floppy\n");
+	        "  [color=light-green]mount[reset] [color=white]A[reset] [color=light-cyan]disk01.img disk02.img[reset] -t floppy\n"
+	        "  [color=light-green]mount[reset] [color=white]C[reset] [color=light-cyan]~/Games/doom.zip[reset]\n");
 
 	MSG_Add("PROGRAM_MOUNT_HELP_LONG_OTHER",
 	        "  (~ is expanded to your home directory)\n"
@@ -1669,7 +1811,8 @@ void MOUNT::AddMessages()
 	        "  [color=light-green]mount[reset] [color=white]2[reset] [color=light-cyan]Win95.img[reset] -t hdd -fs none -chs 304,64,63\n"
 	        "  [color=light-green]mount[reset] [color=white]0[reset] [color=light-cyan]floppy.img[reset] -t floppy -fs none\n"
 	        "  [color=light-green]mount[reset] [color=white]A[reset] [color=light-cyan]floppy*.img[reset] -t floppy -ro\n"
-	        "  [color=light-green]mount[reset] [color=white]A[reset] [color=light-cyan]disk01.img disk02.img[reset] -t floppy\n");
+	        "  [color=light-green]mount[reset] [color=white]A[reset] [color=light-cyan]disk01.img disk02.img[reset] -t floppy\n"
+	        "  [color=light-green]mount[reset] [color=white]C[reset] [color=light-cyan]~/Games/doom.zip[reset]\n");
 
 	MSG_Add("PROGRAM_MOUNT_CDROMS_FOUND", "CD-ROMs found: %d\n");
 	MSG_Add("PROGRAM_MOUNT_ERROR_1", "Directory or file %s doesn't exist.\n");
@@ -1686,8 +1829,45 @@ void MOUNT::AddMessages()
 	        "%s was refused by the mount policy: a link is in the path.\n"
 	        "Mount the real directory the link points to instead.\n");
 
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_IDENTIFYING", "MOUNT: identifying %s ...\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_ROOT_USED",
+	        "Using %s as the root of the archive.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_UNSUPPORTED", ArchiveUnsupportedMessage);
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_REFUSED",
+	        "%s cannot be mounted as an archive: %s.\n%s");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_SEQUENTIAL",
+	        "%s is a sequential archive (%s): reaching any member unpacks everything\n"
+	        "before it. Set archive_sequential = cache in the [dos] section to unpack\n"
+	        "it into the archive cache once at mount time, or repack it as a zip.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_CACHE",
+	        "%s cannot be mounted: the archive cache is unavailable (%s).\n"
+	        "Check archive_cache_path, the free space and the cache caps in [dos].\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_SIDECAR",
+	        "%s cannot be mounted: its sidecar is unusable (%s).\n"
+	        "Check archive_sidecar_path in [dos] and the sidecar's .source-archive.toml.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_ROOT",
+	        "%s has no directory %s to use as the root.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_RECONNECTED", "Drive %c: reconnected.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_RECONNECT_FAILED",
+	        "Drive %c: reconnect failed: %s.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_NOT_ARCHIVE",
+	        "Drive %c is not an archive mount.\n");
+	MSG_Add("PROGRAM_MOUNT_SIDECAR_BUSY",
+	        "%s cannot be mounted: its sidecar %s is in use by another mount.\n"
+	        "Unmount that drive first, or mount with -nosidecar to read only.\n");
+	MSG_Add("PROGRAM_MOUNT_SIDECAR_REPLACED",
+	        "The archive changed since %s was written; a new sidecar was created.\n"
+	        "Mount with -sidecar to reuse the old one.\n");
+	MSG_Add("PROGRAM_MOUNT_SIDECAR_SKIPPED",
+	        "A sidecar beside the archive (%s) was not used: its directory is not\n"
+	        "allowed for this mount's origin.\n");
+
 	MSG_Add("PROGRAM_MOUNT_ILL_TYPE", "Illegal type %s");
 	MSG_Add("PROGRAM_MOUNT_UNKNOWN_OPTION", "Unknown option: %s\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_NEEDS_LETTER",
+	        "%s: an archive mounts on a drive letter, not a drive number.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_ONLY_OPTIONS",
+	        "%s: -root, -sidecar and -nosidecar apply to archive mounts only.\n");
 	MSG_Add("PROGRAM_MOUNT_REPEATED_OPTION", "Option %s given more than once\n");
 	MSG_Add("PROGRAM_MOUNT_OPTION_NEEDS_VALUE", "Option %s needs a value\n");
 	MSG_Add("PROGRAM_MOUNT_ALREADY_MOUNTED", "Drive %c already mounted with %s\n");
@@ -1698,6 +1878,9 @@ void MOUNT::AddMessages()
 
 	MSG_Add("PROGRAM_MOUNT_UMOUNT_NO_VIRTUAL",
 	        "Virtual Drives can not be unMOUNTed.\n");
+
+	MSG_Add("PROGRAM_MOUNT_UMOUNT_FILES_OPEN",
+	        "Drive %c has open files and stays mounted; close them first.\n");
 
 	MSG_Add("PROGRAM_MOUNT_DRIVEID_ERROR",
 	        "'%c' is not a valid drive identifier.\n");

@@ -452,6 +452,8 @@ check_include_file("stdlib.h"     HAVE_STDLIB_H)
 check_include_file("strings.h"    HAVE_STRINGS_H)
 check_include_file("sys/types.h"  HAVE_SYS_TYPES_H)
 check_include_file("sys/xattr.h"  HAVE_SYS_XATTR_H)
+# FreeBSD's sys/extattr.h needs sys/types.h first (ssize_t).
+check_include_files("sys/types.h;sys/extattr.h" HAVE_SYS_EXTATTR_H)
 
 check_symbol_exists(getpeername  sys/socket.h  HAVE_GETPEERNAME)
 check_symbol_exists(getsockname  sys/socket.h  HAVE_GETSOCKNAME)

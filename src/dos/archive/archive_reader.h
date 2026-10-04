@@ -10,49 +10,9 @@
 #include <string>
 #include <vector>
 
+#include "dos/archive/archive_source.h"
+
 namespace ArchiveMount {
-
-enum class Format { Zip, Rar, Rar5, SevenZip, Tar };
-
-// Whether one member can be reached without inflating the ones before
-// it (design D5): zip through the seekable reader, RAR v4 by header
-// walking; 7z, RAR5 and every tar.* only in one sequential pass.
-enum class Access { PerMember, Sequential };
-
-enum class Error {
-	None,
-	OpenFailed,
-	NotAnArchive,
-	TooLarge, // declared total or one member over the cap
-	TooManyEntries,
-	Encrypted,
-	MultiVolume,
-	SolidUnsupported, // solid RAR v4: libarchive cannot read it at all
-	EntryRejected,    // a name failed the rules; detail names the entry
-	Corrupt,          // libarchive reported damage or a CRC mismatch
-	Changed,          // the archive's size or mtime moved since the index
-	Unsupported, // a member uses a compression method nobody here reads
-	NotFound,    // no entry with that ordinal
-};
-
-const char* ErrorText(Error error);
-
-struct Limits {
-	int64_t max_entries      = 65536;
-	int64_t max_total_bytes  = 4ll * 1024 * 1024 * 1024;
-	int64_t max_member_bytes = 2ll * 1024 * 1024 * 1024;
-};
-
-struct Entry {
-	int ordinal           = 0;  // header index in the archive, from 0
-	std::string utf8_path = {}; // as normalized: separators '/', trimmed
-	std::string dos_path  = {}; // uppercase 8.3 components, backslashes
-	bool is_dir           = false;
-	int64_t size          = 0;
-	int64_t mtime         = 0;
-	bool has_crc          = false;
-	uint32_t crc32        = 0;
-};
 
 class ArchiveReader;
 
@@ -62,33 +22,35 @@ struct OpenResult {
 	std::string detail                    = {};
 };
 
-class ArchiveReader {
+class ArchiveReader final : public ArchiveSource {
 public:
 	static OpenResult Open(const std::filesystem::path& path,
 	                       const Limits& limits);
-	~ArchiveReader();
+	// Over a duplicate of fd, which the caller keeps and may close at
+	// once; name is for log lines only. The duplicate shares the file
+	// offset, so the caller must not read through its own descriptor.
+	static OpenResult Open(int fd, const std::filesystem::path& name,
+	                       const Limits& limits);
+	~ArchiveReader() override;
 	ArchiveReader(const ArchiveReader&)            = delete;
 	ArchiveReader& operator=(const ArchiveReader&) = delete;
 
-	Format GetFormat() const;
-	Access GetAccess() const;
-	const std::vector<Entry>& Entries() const;
-	int64_t TotalBytes() const;
-	int64_t ArchiveLength() const;
-	const std::string& IdentityHash() const;
+	Format GetFormat() const override;
+	Access GetAccess() const override;
+	const std::vector<Entry>& Entries() const override;
+	int64_t TotalBytes() const override;
+	int64_t ArchiveLength() const override;
+	const std::string& IdentityHash() const override;
+	StatPair IndexedStat() const override;
 
 	// One call at a time: every handle shares the archive's file offset
 	// (asserted in debug builds).
-	// Contract: out holds exactly the declared size, or the error says why.
-	Error Materialize(int ordinal, std::vector<uint8_t>& out, std::string* detail);
-	// Contract: target appears whole or not at all (temp name, then rename)
-	// and carries the entry's mtime.
+	Error Materialize(int ordinal, std::vector<uint8_t>& out,
+	                  std::string* detail) override;
 	Error MaterializeToFile(int ordinal, const std::filesystem::path& target,
-	                        std::string* detail);
-	// Contract: one pass, each regular file at directory/<ordinal>; the
-	// only way a sequential format is served.
+	                        std::string* detail) override;
 	Error MaterializeAll(const std::filesystem::path& directory,
-	                     std::string* detail);
+	                     std::string* detail) override;
 
 private:
 	// unique_ptr's deleter needs Impl complete, so the constructor lives

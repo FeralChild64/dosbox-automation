@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -166,9 +167,10 @@ protected:
 
 	static std::optional<MountParameters> Mount(const std::string& command_params)
 	{
-		auto cmd     = new CommandLine("Z:\\MOUNT.COM", command_params);
-		auto program = new MOUNT();
-		return program->ProcessArguments(cmd);
+		// ~Program deletes the command line ProcessArguments adopts.
+		auto program = std::make_unique<MOUNT>();
+		return program->ProcessArguments(
+		        new CommandLine("Z:\\MOUNT.COM", command_params));
 	}
 };
 
@@ -626,18 +628,29 @@ TEST_F(MountTest,
 	EXPECT_EQ(result->sizes[3], 0);
 }
 
-TEST_F(MountTest, DosDrivePathAsSourceIsRejected)
+TEST_F(MountTest, ResolvesPathThroughAlreadyMountedDosDrive)
 {
-	// Upstream resolves a DOS drive source ("J I:\") through
-	// GetDosMappedHostPath's stat fallback and mounts it. The fork's
-	// directory validation sees the raw DOS string, which does not
-	// resolve on the host, and refuses (aug-ep2a tracks mapping the
-	// resolved host path through validation instead).
+	// ada-ep2a: "mount J I:\\" resolves through drive I's host path, and
+	// the validation sees that host path, not the DOS string.
 	const auto base = Mount("I " + P("plain_dir"));
 	ASSERT_TRUE(base.has_value());
 
 	const auto via_dos_path = Mount("J I:\\");
-	EXPECT_FALSE(via_dos_path.has_value());
+	ASSERT_TRUE(via_dos_path.has_value());
+	ASSERT_EQ(via_dos_path->paths.size(), 1u);
+	EXPECT_EQ(std_fs::canonical(via_dos_path->paths[0]),
+	          std_fs::canonical(P("plain_dir")));
+	EXPECT_TRUE(Drives.at(drive_index('J')));
+}
+
+TEST_F(MountTest, IdeFlagDoesNotSwallowTheNextOption)
+{
+	// ada-efmk: "-ide -label FOO" took -label as the value of -ide.
+	const auto result = Mount("3 " + P("bootable.img") +
+	                          " -t hdd -size 512,63,16,100 -ide -label FOO");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_TRUE(result->is_ide);
+	EXPECT_EQ(result->label, "FOO");
 }
 
 TEST_F(MountTest, IdeFlagAsStringValueAlsoSetsIsIde)

@@ -152,6 +152,16 @@ std_fs::path get_xdg_config_home() noexcept;
 
 std_fs::path get_xdg_data_home() noexcept;
 
+/* Get directory for storing user-specific non-essential data files.
+ *
+ * User can change this directory by overriding XDG_CACHE_HOME, otherwise it
+ * defaults to "$HOME/.cache/".
+ *
+ * https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+ */
+
+std_fs::path get_xdg_cache_home() noexcept;
+
 /* Get directories for searching for data files in addition to the XDG_DATA_HOME
  * directory.
  *

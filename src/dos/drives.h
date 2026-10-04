@@ -7,14 +7,21 @@
 
 #include "dosbox.h"
 
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "config/setup.h"
+#include "dos/archive/archive_cache.h"
+#include "dos/archive/archive_source.h"
+#include "dos/archive/archive_tree.h"
+#include "dos/archive/sidecar_record.h"
 #include "dos/dos.h"
+#include "dos/dos_names.h"
 #include "dos/dos_system.h"
 
 // GCC throws a warning about non-virtual destructor for std::enable_shared_from_this
@@ -26,17 +33,9 @@
 
 void Set_Label(const char* const input, char* const output, bool cdrom);
 std::string To_Label(const char* name);
-std::string generate_8x3(const char *lfn, const unsigned int num, const bool start = false);
 bool filename_not_8x3(const char *n);
 bool filename_not_strict_8x3(const char *n);
 
-struct SfnBasis {
-	char name[9];
-	char ext[4];
-	bool lossy;    // a character was replaced with underscore
-	bool not_8x3;  // the original name does not fit 8.3 unmodified
-};
-SfnBasis sfn_clean_basis(const char* input);
 char *VFILE_Generate_8x3(const char *name, const unsigned int onpos);
 
 class imageDisk; // forward declare
@@ -434,6 +433,212 @@ private:
 	char driveLetter;
 	char discLabel[32];
 };
+
+// The archive after the mount (archive mount design D16): anything but
+// Ready answers DOS error 21 until a reconnect confirms the archive.
+enum class ArchiveMountState { Ready, Changed, Lost, Disconnected };
+
+// A read-only drive over an indexed archive (archive mount design,
+// Phase 2). The source is the in-process reader in tests and the
+// helper client in the engine; members come from memory or the cache.
+class ArchiveDrive final : public DOS_Drive,
+                           public std::enable_shared_from_this<ArchiveDrive> {
+public:
+	struct ReconnectSpec {
+		// A new source on the same path, or null with the detail set.
+		std::function<std::unique_ptr<ArchiveMount::ArchiveSource>(std::string* detail)>
+		        reopen               = {};
+		int64_t backoff_seconds      = 5;
+		std::function<int64_t()> now = {}; // unix seconds; empty: the
+		                                   // system clock
+	};
+	struct Options {
+		// D14: archive_memory_limit, below which a member is inflated
+		// into memory on open; and what the drive keeps of those.
+		int64_t memory_limit_bytes  = 16ll * 1024 * 1024;
+		int64_t memory_retain_bytes = 64ll * 1024 * 1024;
+		// D16: how the drive reopens its archive; MOUNT fills reopen
+		// with the helper client on the validated path.
+		std::optional<ReconnectSpec> reconnect = {};
+		// Removed with the drive, after its source: MOUNT's scratch for
+		// the helper client's in-memory materializations, and the lock
+		// that keeps Cleanup away from it.
+		std::filesystem::path owned_scratch_dir = {};
+		std::shared_ptr<ArchiveMount::FileLock> scratch_lock = {};
+	};
+	struct CreateResult {
+		enum class Failure {
+			None,
+			RootNotFound,
+			TreeInvalid,
+			CacheNeeded,
+			CacheFailed
+		};
+		std::shared_ptr<ArchiveDrive> drive = {};
+		std::string error                   = {};
+		Failure failure                     = Failure::None;
+	};
+	// root_dos_path per D10 ("" for the whole archive); the label is
+	// folded to FAT form; info_text is what MOUNT shows. A sequential
+	// source needs a lease (its one pass runs here); null means no cache.
+	static CreateResult Create(
+	        std::unique_ptr<ArchiveMount::ArchiveSource> source,
+	        std::unique_ptr<ArchiveMount::ArchiveCache::Lease> lease,
+	        std::string_view root_dos_path, std::string_view label,
+	        std::string_view info_text, const Options& options);
+	~ArchiveDrive() override;
+
+	std::unique_ptr<DOS_File> FileOpen(const char* name, uint8_t flags) override;
+	std::unique_ptr<DOS_File> FileCreate(const char* name,
+	                                     FatAttributeFlags attributes) override;
+	bool FileUnlink(const char* name) override;
+	bool RemoveDir(const char* dir) override;
+	bool MakeDir(const char* dir) override;
+	bool TestDir(const char* dir) override;
+	bool FindFirst(const char* dir, DOS_DTA& dta, bool fcb_findfirst) override;
+	bool FindNext(DOS_DTA& dta) override;
+	bool GetFileAttr(const char* name, FatAttributeFlags* attr) override;
+	bool SetFileAttr(const char* name, FatAttributeFlags attr) override;
+	bool Rename(const char* oldname, const char* newname) override;
+	bool AllocationInfo(uint16_t* bytes_sector, uint8_t* sectors_cluster,
+	                    uint16_t* total_clusters,
+	                    uint16_t* free_clusters) override;
+	bool FileExists(const char* name) override;
+	uint8_t GetMediaByte() override;
+	void EmptyCache() override {}
+	bool IsReadOnly() const override
+	{
+		return true;
+	}
+	bool IsRemote() override;
+	bool IsRemovable() override;
+	Bits UnMount() override;
+	const char* GetLabel() override;
+
+	// The search without a DTA: dir and pattern as DOS hands them to
+	// FindFirst ("" is the root; the pattern is NAME.EXT with wildcards,
+	// padded or not). False with the DOS error set when dir is missing.
+	struct Listing {
+		std::string name       = {};
+		uint32_t size          = 0;
+		uint16_t date          = 0;
+		uint16_t time          = 0;
+		FatAttributeFlags attr = {};
+	};
+	bool List(const char* dir, const char* pattern, FatAttributeFlags search_attr,
+	          bool fcb_findfirst, std::vector<Listing>& out);
+
+	struct Allocation {
+		uint16_t bytes_sector   = 512;
+		uint8_t sectors_cluster = 1;
+		uint16_t total_clusters = 0;
+	};
+	// The smallest power-of-two cluster that fits total_bytes into
+	// 65535 clusters; the declared total is reported as used, nothing free.
+	static Allocation ComputeAllocation(int64_t total_bytes);
+	// Uppercase, [A-Z0-9_-] kept and anything else '_', at most 11
+	// bytes; "ARCHIVE" for an empty label.
+	static std::string FoldLabel(std::string_view label);
+
+	ArchiveMountState State() const;
+	// Ready now, after one reconnect attempt when the backoff allows.
+	bool IsReady() override;
+	static const char* StateName(ArchiveMountState state);
+	// One reconnect now, backoff or not; true when the drive is Ready after
+	// it.
+	bool Reconnect(std::string* detail);
+
+	const ArchiveMount::ArchiveSource& Source() const;
+	const ArchiveMount::ArchiveTree& Tree() const;
+	int64_t RetainedMemoryBytes() const;
+
+private:
+	ArchiveDrive();
+	struct Impl;
+	std::unique_ptr<Impl> impl;
+};
+
+// The sidecar union (archive mount design D3, D4, 3.1, 3.2): a read-only
+// lower drive under a localDrive over the sidecar. Reads fall through,
+// writes copy up, deletes and renames of lower entries go into the record.
+class UnionDrive final : public DOS_Drive,
+                         public std::enable_shared_from_this<UnionDrive> {
+public:
+	// sidecar_dir must exist; without a record there, one starts from the
+	// archive's identity. The lower is typed because RemoveDir lists it
+	// without a guest DTA (ArchiveDrive::List).
+	static std::shared_ptr<UnionDrive> Create(std::shared_ptr<ArchiveDrive> lower,
+	                                          const std::filesystem::path& sidecar_dir,
+	                                          char drive_letter,
+	                                          const ArchiveMount::SidecarRecord& identity,
+	                                          std::string* error);
+	~UnionDrive() override;
+
+	std::unique_ptr<DOS_File> FileOpen(const char* name, uint8_t flags) override;
+	std::unique_ptr<DOS_File> FileCreate(const char* name,
+	                                     FatAttributeFlags attributes) override;
+	bool FileUnlink(const char* name) override;
+	bool RemoveDir(const char* dir) override;
+	bool MakeDir(const char* dir) override;
+	bool TestDir(const char* dir) override;
+	bool FindFirst(const char* dir, DOS_DTA& dta, bool fcb_findfirst) override;
+	bool FindNext(DOS_DTA& dta) override;
+	bool GetFileAttr(const char* name, FatAttributeFlags* attr) override;
+	bool SetFileAttr(const char* name, FatAttributeFlags attr) override;
+	bool Rename(const char* oldname, const char* newname) override;
+	bool AllocationInfo(uint16_t* bytes_sector, uint8_t* sectors_cluster,
+	                    uint16_t* total_clusters, uint16_t* free_clusters) override;
+	bool FileExists(const char* name) override;
+	uint8_t GetMediaByte() override;
+	void EmptyCache() override;
+	bool IsReadOnly() const override
+	{
+		return false;
+	}
+	bool IsRemote() override;
+	bool IsRemovable() override;
+	Bits UnMount() override;
+	bool IsReady() override;
+
+	// Moves with every operation that may give a lower file a sidecar
+	// copy; an open handle on a lower file looks again only then.
+	uint64_t SidecarGeneration() const;
+	bool InSidecar(const char* name);
+	const char* GetLabel() override;
+
+	// Writes the record now when it is dirty. Also runs two seconds
+	// after the last change and at unmount.
+	bool Flush(std::string* error);
+	// Every live union's Flush, for quit_func.
+	static void FlushAll();
+	static int LiveUnions();
+
+	const ArchiveMount::SidecarRecord& Record() const;
+	const std::filesystem::path& SidecarDirectory() const;
+	std::shared_ptr<DOS_Drive> Lower() const;
+
+	// A lower file into the sidecar under the same or another DOS name,
+	// date kept, read-only cleared; parents_made gets the directories it
+	// created, shallowest first, so a caller can undo them.
+	bool CopyUp(const char* lower_name, const char* upper_name,
+	            std::vector<std::string>* parents_made = nullptr);
+
+private:
+	UnionDrive();
+	struct Impl;
+	std::unique_ptr<Impl> impl;
+};
+
+// The archive drive behind a mount: the drive itself, or the lower
+// drive of a sidecar union; null for anything else.
+std::shared_ptr<ArchiveDrive> ArchiveDriveOf(const std::shared_ptr<DOS_Drive>& drive);
+
+// UnMount's answer while a DOS file on the drive is open: its handles
+// hold the archive, the cache lease and the sidecar's record.
+constexpr Bits UnmountRefusedOpenFiles = 3;
+
+// Whether any open DOS file belongs to the drive in its slot.
+bool DriveHasOpenFiles(const DOS_Drive* drive);
 
 class VFILE_Block;
 using vfile_block_t = std::shared_ptr<VFILE_Block>;

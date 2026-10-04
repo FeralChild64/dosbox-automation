@@ -2,12 +2,18 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2026 dosbox-automation contributors
 
+#include "dos/dos.h"
+#include "dos/dos_system.h"
 #include "misc/support.h"
 #include "utils/fs_utils.h"
+
+#include "test_temp_dir.h"
 
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 namespace {
@@ -146,5 +152,36 @@ TEST(GetFileNameFromPath, FailDueToEmptyPath)
 	EXPECT_EQ(get_file_name_from_path(input), expected);
 }
 
+
+
+#if !defined(WIN32)
+// The DOS attribute store on POSIX hosts: xattr on Linux and macOS,
+// extattr on FreeBSD (ada-425p). Hidden has no host-permission fallback,
+// so it proves the store itself.
+TEST(LocalDriveAttributes, HiddenRoundTripsThroughTheHostStore)
+{
+	const auto dir = TestTempDir::MakeUnique("fs_attr_");
+	ASSERT_FALSE(dir.empty());
+	const auto file = (dir / "a.txt").string();
+	std::ofstream(file) << "a";
+	FatAttributeFlags hidden = {};
+	hidden.hidden            = true;
+	EXPECT_EQ(local_drive_set_attributes(file.c_str(), hidden), DOSERR_NONE);
+	FatAttributeFlags back = {};
+	EXPECT_EQ(local_drive_get_attributes(file.c_str(), back), DOSERR_NONE);
+	EXPECT_TRUE(back.hidden);
+	EXPECT_FALSE(back.read_only);
+	FatAttributeFlags ro = {};
+	ro.read_only         = true;
+	EXPECT_EQ(local_drive_set_attributes(file.c_str(), ro), DOSERR_NONE);
+	EXPECT_EQ(local_drive_get_attributes(file.c_str(), back), DOSERR_NONE);
+	EXPECT_TRUE(back.read_only);
+	EXPECT_FALSE(back.hidden);
+	std::error_code ec = {};
+	std::filesystem::permissions(file, std::filesystem::perms::owner_write,
+	                             std::filesystem::perm_options::add, ec);
+	std::filesystem::remove_all(dir, ec);
+}
+#endif
 
 } // namespace

@@ -4,6 +4,7 @@
 #ifndef DOSBOX_ARCHIVE_ENTRY_NAMES_H
 #define DOSBOX_ARCHIVE_ENTRY_NAMES_H
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -43,6 +44,10 @@ std::optional<SplitPath> SplitEntryPath(std::string_view utf8_path,
 // sfn_clean_basis upcases and replaces the FAT-illegal characters, and a
 // name that does not fit, or a number above 1, gets the ~number tail.
 std::string FoldComponent(std::string_view utf8_component, unsigned int number);
+
+// DOS_PATHLENGTH from dos/dos_system.h, which this library cannot include
+// (it pulls in the engine); archive_entry_names_tests asserts they agree.
+constexpr size_t DosPathLength = 80;
 
 // Unique 8.3 names per directory. DOS paths are uppercase with
 // backslashes; the root's children have no leading backslash.

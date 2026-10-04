@@ -31,3 +31,45 @@ of `l` as data/level1.dat, `hello` as readme.txt, all dated 1990-01-01):
 No solid RAR4 without encryption exists in the house; the solid flag
 is read from the main header before libarchive opens the file, so the
 combined fixture exercises that check.
+
+# PKZIP 1.x fixtures (legacy/)
+
+libarchive indexes shrink (method 1) and implode (method 6) members but
+cannot decode them, and no current tool writes them, so these two zips
+were made by PKZIP 1.10 itself, running under dosbox-automation.
+
+The inputs are ours: `legacy/make_inputs.py` writes them into
+`legacy/inputs/` from a fixed seed, every file dated 1990-03-15 12:00 UTC.
+Run it again and the bytes are the same.
+
+| Here | Tool | Command |
+|---|---|---|
+| legacy/SHRUNK.ZIP | PKZIP 1.10 (03-15-90), `PKZ110.EXE` from the archive.org item `pctoday_disk2`, md5 4d1a65b76ef4914b4932ba15c252fd4e | `pkzip -es SHRUNK.ZIP TINY.TXT SMALL.TXT LARGE.TXT SMALL.BIN LARGE.BIN EMPTY.DAT` |
+| legacy/IMPLODED.ZIP | the same | `pkzip -ex IMPLODED.ZIP TINY.TXT SMALL.TXT LARGE.TXT SMALL.BIN LARGE.BIN EMPTY.DAT` |
+
+Both ran 2026-10-04 under dosbox-automation 0.85.1 (6d100), headless,
+with `TZ=UTC` and `keyboard_layout = us`, from a `mount c .` of a work
+directory holding `PKZIP.EXE` and the inputs. Info-ZIP's `unzip -t`
+passes both, so PKWARE's encoder and Info-ZIP's decoder agree on every
+member before our tests use them.
+
+What PKZIP chose, from `zipinfo`:
+
+| Member | SHRUNK.ZIP | IMPLODED.ZIP |
+|---|---|---|
+| TINY.TXT (200) | shrunk | shrunk (PKZIP shrinks anything under 320 bytes) |
+| SMALL.TXT (3000) | shrunk | imploded, 4K window, 2 trees |
+| LARGE.TXT (60000) | shrunk | imploded, 8K window, 3 trees |
+| SMALL.BIN (3000) | shrunk | imploded, 4K window, 2 trees |
+| LARGE.BIN (60000) | shrunk | imploded, 4K window, 2 trees |
+| EMPTY.DAT (0) | stored | stored |
+
+PKZIP 1.10 does not write the other two implode variants (4K with three
+trees, 8K with two). A probe with text from 8 to 120 KiB and binary up to
+300 KiB gave only 8K/3 for larger text and 4K/2 for everything else, so
+those two combinations are covered by the decoder's hostile tests and by
+reading the code, not by a vector.
+
+sha256:
+- SHRUNK.ZIP 5c11a0f06c05e24c133eb5998b805689cb20c6d4a9bd76b6e6d7bbd93b2833bf
+- IMPLODED.ZIP 2b20ad0598115abca3de64b7195f5f2549ae6c4a0c898423d565c201990a9171

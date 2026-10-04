@@ -23,6 +23,9 @@
 #include "config/config.h"
 #include "config/setup.h"
 #include "debugger/debugger.h"
+#include "dos/archive/archive_helper_client.h"
+#include "dos/drives.h"
+#include "dos/programs/mount.h"
 #include "dos/dos_locale.h"
 #include "gui/mapper.h"
 #include "gui/render/render.h"
@@ -536,6 +539,9 @@ static void maybe_create_resource_directories()
 
 static void quit_func()
 {
+	UnionDrive::FlushAll();
+	// A helper also exits on EOF once we are gone; this ends it now.
+	ArchiveMount::ArchiveHelperClient::KillAll();
 	GFX_Quit();
 #ifdef WIN32
 	restore_console_encoding();
@@ -692,6 +698,7 @@ int main(int argc, char* argv[])
 
 		GFX_InitSdl();
 		DOSBOX_InitModules();
+		MOUNT::ArchiveCacheStartup();
 		GFX_InitAndStartGui();
 
 		// All subsystems' hotkeys need to be registered at this point

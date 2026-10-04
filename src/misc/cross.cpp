@@ -190,6 +190,48 @@ static std_fs::path get_or_create_config_dir()
 
 #endif // get_or_create_config_dir()
 
+std_fs::path get_cache_dir()
+{
+#if defined(MACOSX)
+	return resolve_home("~/Library/Caches/" DOSBOX_PROJECT_NAME);
+#elif defined(WIN32)
+	const auto xdg_cache_home = get_env_var("XDG_CACHE_HOME");
+	if (!xdg_cache_home.empty()) {
+		return std_fs::path(xdg_cache_home) / DOSBOX_PROJECT_NAME;
+	}
+	char appdata_path[MAX_PATH] = {0};
+	BOOL success = SHGetSpecialFolderPath(nullptr, appdata_path,
+	                                      CSIDL_LOCAL_APPDATA, 1);
+	if (!success || appdata_path[0] == 0) {
+		success = SHGetSpecialFolderPath(nullptr, appdata_path, CSIDL_APPDATA, 1);
+	}
+	return std_fs::path(appdata_path) / DOSBOX_PROJECT_NAME / "cache";
+#else
+	return get_xdg_cache_home() / DOSBOX_PROJECT_NAME;
+#endif
+}
+
+std_fs::path get_data_dir()
+{
+#if defined(MACOSX)
+	return resolve_home("~/Library/Application Support/" DOSBOX_PROJECT_NAME);
+#elif defined(WIN32)
+	const auto xdg_data_home = get_env_var("XDG_DATA_HOME");
+	if (!xdg_data_home.empty()) {
+		return std_fs::path(xdg_data_home) / DOSBOX_PROJECT_NAME;
+	}
+	char appdata_path[MAX_PATH] = {0};
+	BOOL success = SHGetSpecialFolderPath(nullptr, appdata_path,
+	                                      CSIDL_LOCAL_APPDATA, 1);
+	if (!success || appdata_path[0] == 0) {
+		success = SHGetSpecialFolderPath(nullptr, appdata_path, CSIDL_APPDATA, 1);
+	}
+	return std_fs::path(appdata_path) / DOSBOX_PROJECT_NAME;
+#else
+	return get_xdg_data_home() / DOSBOX_PROJECT_NAME;
+#endif
+}
+
 static std_fs::path cached_config_dir = {};
 
 void init_config_dir()

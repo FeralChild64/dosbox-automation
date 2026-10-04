@@ -107,19 +107,27 @@ libdir="$stage/$name/bin/lib"
 mkdir -p "$libdir"
 
 bundled=0
-while read -r soname arrow path _; do
-    [ "$arrow" = "=>" ] && [ -n "$path" ] || continue
-    if [ "$path" = "not" ]; then
-        echo "error: $soname does not resolve; check the build prefix" >&2
+# The engine starts the archive helper from its own directory.
+for binary in dosbox-automation dosbox-automation-archive-helper; do
+    if [ ! -x "$stage/$name/bin/$binary" ]; then
+        echo "error: $binary missing from the install stage" >&2
         exit 1
     fi
-    case "$path" in
-        /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*) continue ;;
-    esac
-    cp -L --preserve=timestamps "$path" "$libdir/$soname"
-    echo "bundled $soname from $path"
-    bundled=$((bundled + 1))
-done < <(LD_LIBRARY_PATH="$search_path" ldd "$stage/$name/bin/dosbox-automation")
+    while read -r soname arrow path _; do
+        [ "$arrow" = "=>" ] && [ -n "$path" ] || continue
+        if [ "$path" = "not" ]; then
+            echo "error: $soname does not resolve; check the build prefix" >&2
+            exit 1
+        fi
+        case "$path" in
+            /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*) continue ;;
+        esac
+        [ -e "$libdir/$soname" ] && continue
+        cp -L --preserve=timestamps "$path" "$libdir/$soname"
+        echo "bundled $soname from $path"
+        bundled=$((bundled + 1))
+    done < <(LD_LIBRARY_PATH="$search_path" ldd "$stage/$name/bin/$binary")
+done
 
 if [ "$bundled" -eq 0 ]; then
     rmdir "$libdir"

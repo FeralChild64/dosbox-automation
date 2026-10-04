@@ -31,7 +31,10 @@ struct StoredEntry {
 	// The local header offset the central directory claims, when it is
 	// to lie (two records at one offset).
 	std::optional<uint64_t> central_offset = {};
+	// General purpose bits beyond utf8 and encryption (implode's 1 and 2).
+	uint16_t extra_flags = 0;
 	// What the local header says when it disagrees with the directory.
+	std::optional<uint16_t> local_flags  = {};
 	std::optional<uint32_t> local_crc    = {};
 	std::optional<uint16_t> local_method = {};
 	std::optional<uint32_t> local_csize  = {};
@@ -93,10 +96,11 @@ inline std::vector<uint8_t> MakeStoredZip(const std::vector<StoredEntry>& entrie
 	for (const auto& e : entries) {
 		offsets.push_back(out.size());
 		const uint16_t flags = static_cast<uint16_t>(
-		        (e.utf8_flag ? 0x800 : 0) | (e.encrypted_flag ? 0x1 : 0));
+		        (e.utf8_flag ? 0x800 : 0) | (e.encrypted_flag ? 0x1 : 0) |
+		        e.extra_flags);
 		put32(out, 0x04034b50u);
 		put16(out, 20);
-		put16(out, flags);
+		put16(out, e.local_flags.value_or(flags));
 		put16(out, e.local_method.value_or(e.method));
 		put16(out, 0);
 		put16(out, 0x21); // time, date (1980-01-01)
@@ -124,7 +128,8 @@ inline std::vector<uint8_t> MakeStoredZip(const std::vector<StoredEntry>& entrie
 	for (const auto i : order) {
 		const auto& e        = entries[i];
 		const uint16_t flags = static_cast<uint16_t>(
-		        (e.utf8_flag ? 0x800 : 0) | (e.encrypted_flag ? 0x1 : 0));
+		        (e.utf8_flag ? 0x800 : 0) | (e.encrypted_flag ? 0x1 : 0) |
+		        e.extra_flags);
 		const uint64_t usize = e.declared_size.value_or(e.data.size());
 		const bool needs_zip64_extra = zip64 || usize > 0xffffffffu;
 		put32(out, 0x02014b50u);
