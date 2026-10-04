@@ -2015,7 +2015,8 @@ Used by: loguru, PDCurses, sha256, decoders (dr_flac, dr_mp3, dr_wav, stb_vorbis
   loguru         Lightweight logging library
                  Public domain
 
-  sha256         SHA-256 (B-Con crypto-algorithms)
+  sha256         SHA-256 (B-Con crypto-algorithms); local change: WORD casts in
+                 sha256_transform's message schedule (signed shift, ada-ca3s)
                  Brad Conte, released into the public domain free of
                  any restrictions (the repository's README)
                  https://github.com/B-Con/crypto-algorithms

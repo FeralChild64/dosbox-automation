@@ -1,0 +1,11 @@
+diff --git a/src/audio/alsa/SDL_alsa_audio.c b/src/audio/alsa/SDL_alsa_audio.c
+--- a/src/audio/alsa/SDL_alsa_audio.c
++++ b/src/audio/alsa/SDL_alsa_audio.c
+@@ -292,6 +292,7 @@
+                 }
+             }
+         }
++        ALSA_snd_device_name_free_hint(hints);
+     }
+ 
+     if (!ALSA_device_prefix) {

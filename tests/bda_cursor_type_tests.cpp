@@ -6,6 +6,7 @@
 
 #include "dosbox_test_fixture.h"
 #include "hardware/memory.h"
+#include "hardware/video/vga.h"
 #include "ints/int10.h"
 
 namespace {
@@ -15,7 +16,20 @@ namespace {
 // switching to EGA/VGA graphics modes. Some TSRs check this
 // word to distinguish text from graphics mode.
 
-class BdaCursorType : public DOSBoxTestFixture {};
+// A mode set clears video memory, which the base fixture never allocates.
+class BdaCursorType : public DOSBoxTestFixture {
+protected:
+	void SetUp() override
+	{
+		DOSBoxTestFixture::SetUp();
+		VGA_Init();
+	}
+	void TearDown() override
+	{
+		VGA_Destroy();
+		DOSBoxTestFixture::TearDown();
+	}
+};
 
 TEST_F(BdaCursorType, text_mode_sets_cursor_shape)
 {
