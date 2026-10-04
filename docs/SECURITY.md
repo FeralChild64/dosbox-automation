@@ -40,6 +40,11 @@ webserver an attack surface by design. The short version:
 - Every MOUNT, BOOT, and drive-swap path is validated before a drive is
   constructed: paths must resolve, symlink components are rejected, system
   directories are blocked, and disk images must pass structural validation.
+  The files a CD image names itself, a cue sheet's FILE lines and an
+  mds's mdf, must sit directly beside the image: a name with a directory
+  or drive in it counts only by its last component, matched without
+  regard to case in the image's own directory, and links, dot-named
+  files and device names are refused.
   The blocked directories come from one table with a row per host OS
   (Linux, Windows, macOS, FreeBSD, NetBSD, OpenBSD, DragonFly), checked
   against the canonical path. On the Unix rows a mount is refused when

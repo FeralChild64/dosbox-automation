@@ -14,6 +14,7 @@ target_link_libraries(dosboxcommon PUBLIC archivereader)
 
 target_sources(dosboxcommon PRIVATE
   cdrom.cpp
+  cd_companion.cpp
   cdrom_image.cpp
   dos.cpp
   dos_classes.cpp

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2019-2025 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_CDROM_H
 #define DOSBOX_CDROM_H
@@ -355,7 +356,6 @@ private:
 
 	// Private functions for cue sheet processing
 	bool  LoadCueSheet(const char *cuefile);
-	bool  GetRealFileName(std::string& filename, std::string& pathname);
 	bool  GetCueKeyword(std::string &keyword, std::istream &in);
 	bool  GetCueFrame(uint32_t &frames, std::istream &in);
 	bool  GetCueString(std::string &str, std::istream &in);

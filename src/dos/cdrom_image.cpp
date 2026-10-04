@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 // #define DEBUG 1
 
@@ -26,6 +27,7 @@
 #endif
 
 #include "audio/channel_names.h"
+#include "dos/cd_companion.h"
 #include "config/setup.h"
 #include "dos/drives.h"
 #include "utils/fs_utils.h"
@@ -1395,12 +1397,23 @@ bool CDROM_Interface_Image::LoadMdsFile(const char *mds_filename)
 			LOG_ERR("CDROM: Missing MDF filename");
 			return false;
 		}
+		auto mdf_name = mdf_filename.u8string();
 		if (mdf_filename == "*.mdf") {
-			mdf_filename = mds_path;
-			mdf_filename.replace_extension("mdf");
-		} else {
-			mdf_filename = mds_path.parent_path() / mdf_filename;
+			mdf_name = mds_path.stem().u8string() + u8".mdf";
 		}
+		const auto mdf_text = std::string(mdf_name.begin(), mdf_name.end());
+		auto why            = std::string();
+		const auto companion = CdCompanion::Resolve(mds_path, mdf_text, &why);
+		if (!companion) {
+			LOG_ERR("CDROM: MDF '%s' refused: %s", mdf_text.c_str(), why.c_str());
+			return false;
+		}
+		if (companion->rewritten) {
+			LOG_MSG("CDROM: MDF '%s' taken as %s",
+			        mdf_text.c_str(),
+			        companion->path.string().c_str());
+		}
+		mdf_filename = companion->path;
 		if (const auto iter = track_map.find(mdf_filename); iter != track_map.end()) {
 			track.file = iter->second;
 		} else {
@@ -1436,9 +1449,6 @@ bool CDROM_Interface_Image::LoadCueSheet(const char *cuefile)
 	int track_number;
 	bool success;
 	bool canAddTrack = false;
-	char tmp[MAX_FILENAME_LENGTH];  // dirname can change its argument
-	safe_strcpy(tmp, cuefile);
-	std::string pathname(dirname(tmp));
 	std::ifstream in;
 	in.open(to_native_path(cuefile), std::ios::in);
 	if (in.fail()) {
@@ -1512,22 +1522,36 @@ bool CDROM_Interface_Image::LoadCueSheet(const char *cuefile)
 
 			std::string filename;
 			GetCueString(filename, line);
-			GetRealFileName(filename, pathname);
 			std::string type;
 			GetCueKeyword(type, line);
 
 			bool error = true;
-			if (type == "BINARY") {
-				track.file = std::make_shared<BinaryFile>(
-				        filename, error);
+			auto why   = std::string();
+			const auto companion = CdCompanion::Resolve(
+			        to_native_path(cuefile), filename, &why);
+			if (!companion) {
+				LOG_ERR("CDROM: Cue FILE '%s' refused: %s",
+				        filename.c_str(),
+				        why.c_str());
 			} else {
-				track.file = std::make_shared<AudioFile>(
-				        filename.c_str(), error);
-				/**
-				 *  SDL_Sound first tries using a decoder having a matching
-				 *  registered extension as the filename, and then falls back to
-				 *  trying each decoder before finally giving up.
-				 */
+				if (companion->rewritten) {
+					LOG_MSG("CDROM: Cue FILE '%s' taken as %s",
+					        filename.c_str(),
+					        companion->path.string().c_str());
+				}
+				filename = companion->path.string();
+				if (type == "BINARY") {
+					track.file = std::make_shared<BinaryFile>(
+					        filename, error);
+				} else {
+					track.file = std::make_shared<AudioFile>(
+					        filename.c_str(), error);
+					/**
+					 *  SDL_Sound first tries using a decoder having a matching
+					 *  registered extension as the filename, and then falls back to
+					 *  trying each decoder before finally giving up.
+					 */
+				}
 			}
 			if (error) { //-V547
 				success = false;
@@ -1650,46 +1674,6 @@ bool CDROM_Interface_Image::HasDataTrack() const
 	return false;
 }
 
-
-bool CDROM_Interface_Image::GetRealFileName(std::string &filename, std::string &pathname)
-{
-	// check if file exists
-	if (local_drive_path_exists(filename.c_str())) {
-		return true;
-	}
-
-	// Check if file with path relative to cue file exists.
-	// Consider the possibility that the filename has a windows directory
-	// seperator or case-insensitive path (inside the CUE file) which is common
-	// for some commercial rereleases of DOS games using DOSBox.
-	const std::string cue_file_entry = (pathname + CROSS_FILESPLIT + filename);
-	const std::string tmpstr = to_native_path(cue_file_entry);
-
-	if (local_drive_path_exists(tmpstr.c_str())) {
-		filename = tmpstr;
-		return true;
-	}
-
-	// finally check if file is in a dosbox local drive
-	char fullname[CROSS_LEN];
-	char tmp[CROSS_LEN];
-	safe_strcpy(tmp, filename.c_str());
-	uint8_t drive;
-	if (!DOS_MakeName(tmp, fullname, &drive)) {
-		return false;
-	}
-
-	const auto ldp = std::dynamic_pointer_cast<localDrive>(Drives.at(drive));
-	if (ldp) {
-		const std::string host_filename = ldp->MapDosToHostFilename(fullname);
-		if (local_drive_path_exists(host_filename.c_str())) {
-			filename = host_filename;
-			return true;
-		}
-	}
-
-	return false;
-}
 
 bool CDROM_Interface_Image::GetCueKeyword(std::string& keyword, std::istream& in)
 {

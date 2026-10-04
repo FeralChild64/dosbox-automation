@@ -66,6 +66,7 @@ add_executable(dosbox_tests
     bit_view_tests.cpp
     bitops_tests.cpp
     cache_dir_tests.cpp
+    cd_companion_tests.cpp
     child_process_tests.cpp
     cmd_move_tests.cpp
     drive_archive_tests.cpp
