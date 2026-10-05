@@ -11,6 +11,7 @@
 #include "dos/archive/archive_lock.h"
 #include "dos/archive/archive_tree.h"
 #include "dos/archive/head_sniff.h"
+#include "dos/archive/member_path.h"
 #include "dos/archive/sidecar_locator.h"
 #include "dos/archive/sidecar_record.h"
 #include "dos/drives.h"
@@ -390,7 +391,12 @@ bool MOUNT::MountArchive(MountParameters& params)
 		return false;
 	}
 	const auto resolved = verdict.verdict.resolved;
-	params.paths[0]     = resolved.string();
+	// Plan 4b: a single-image container mounts as its image, never as a drive.
+	if (ArchiveMount::IsSingleImageContainer(resolved)) {
+		ReportSidecarDenied(raw, DenyReason::NotAnArchive, "a single image: mount it as the image");
+		return false;
+	}
+	params.paths[0] = resolved.string();
 	WriteOut(MSG_Get("PROGRAM_MOUNT_ARCHIVE_IDENTIFYING"),
 	         resolved.filename().string().c_str());
 

@@ -655,10 +655,13 @@ if (OPT_ZLIB_NG AND NOT VCPKG_TOOLCHAIN)
     set(ZMBV_ZLIB_TARGET zlib-ng)
   endif()
 endif()
+# The ISZ reader (plan 4b) needs the standard inflate API in every mode,
+# beside a native zlib-ng for ZMBV.
+find_package(ZLIB REQUIRED)
 if (NOT C_ZLIB_NG)
-  find_package(ZLIB REQUIRED)
   set(ZMBV_ZLIB_TARGET ZLIB::ZLIB)
 endif()
+find_package(BZip2 REQUIRED)
 
 # Archive mounts (ada-xke9) through libarchive: 3.4.0 first has the RAR 5.0
 # reader and AlmaLinux 8 ships 3.3.3, so alma8 takes the vcpkg port. Homebrew's

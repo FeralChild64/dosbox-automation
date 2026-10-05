@@ -179,6 +179,23 @@ TEST(HelperProtocol, IndexReplyRoundTrips)
 	EXPECT_FALSE(out.entries[1].has_crc);
 }
 
+// The format byte leads the reply; anything past the last format is refused.
+TEST(HelperProtocol, TheFormatByteEndsAtTheLastFormat)
+{
+	auto in     = IndexReply{};
+	in.identity = std::string(64, 'c');
+	for (const auto format : {Format::Raw, Format::Isz}) {
+		in.format = format;
+		auto out  = IndexReply{};
+		ASSERT_TRUE(DecodeIndexReply(EncodeIndexReply(in), out));
+		EXPECT_EQ(out.format, format);
+	}
+	auto bytes = EncodeIndexReply(in);
+	bytes[0]   = static_cast<uint8_t>(static_cast<uint8_t>(Format::Isz) + 1);
+	auto out   = IndexReply{};
+	EXPECT_FALSE(DecodeIndexReply(bytes, out));
+}
+
 static size_t EntryCountOffset(const std::vector<uint8_t>& bytes)
 {
 	auto r         = Reader(bytes);

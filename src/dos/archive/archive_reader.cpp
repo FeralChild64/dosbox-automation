@@ -11,7 +11,9 @@
 #include "dos/archive/entry_names.h"
 #include "dos/archive/exclusive_file.h"
 #include "dos/archive/head_sniff.h"
+#include "dos/archive/isz_image.h"
 #include "dos/archive/legacy_zip.h"
+#include "dos/archive/member_path.h"
 #include "dos/archive/rar4_headers.h"
 #include "dos/archive/zip_central_directory.h"
 #include "utils/checks.h"
@@ -138,9 +140,10 @@ const FilterSet& probe_filters()
 		};
 		using Decoders       = ZipCentralDirectory::Decoders;
 		const Probe probes[] = {
-		        { "gzip",  archive_read_support_filter_gzip,          nullptr},
+		        { "gzip",  archive_read_support_filter_gzip,  &Decoders::gzip},
 		        {"bzip2", archive_read_support_filter_bzip2, &Decoders::bzip2},
 		        {   "xz",    archive_read_support_filter_xz,    &Decoders::xz},
+		        { "lzma",  archive_read_support_filter_lzma,    &Decoders::xz},
 		        { "zstd",  archive_read_support_filter_zstd,  &Decoders::zstd}
                 };
 		auto result = FilterSet{};
@@ -165,15 +168,15 @@ const FilterSet& probe_filters()
 	return set;
 }
 
-void register_filters(struct archive* a)
+std::optional<ZipCentralDirectory::Decoders> decoders_for_tests = {};
+
+const ZipCentralDirectory::Decoders& host_decoders()
 {
-	for (const auto support : probe_filters().usable) {
-		support(a);
-	}
+	return decoders_for_tests ? *decoders_for_tests : probe_filters().decoders;
 }
 
-// A filter libarchive would run as an external program is not usable, so
-// nothing is registered and the open answers NotAnArchive.
+// A filter libarchive would run as an external program is never registered;
+// Open refuses such a head as Unsupported before it gets here.
 void register_one_filter(struct archive* a, const HeadKind kind)
 {
 	int (*support)(struct archive*) = nullptr;
@@ -183,6 +186,7 @@ void register_one_filter(struct archive* a, const HeadKind kind)
 		support = archive_read_support_filter_bzip2;
 		break;
 	case HeadKind::Xz: support = archive_read_support_filter_xz; break;
+	case HeadKind::Lzma: support = archive_read_support_filter_lzma; break;
 	case HeadKind::Zstd: support = archive_read_support_filter_zstd; break;
 	default: return;
 	}
@@ -192,11 +196,42 @@ void register_one_filter(struct archive* a, const HeadKind kind)
 	}
 }
 
+// The first block of a compressed stream: libarchive's tar reader bids on
+// a block of zeros, the start of every ISO and of a blank boot sector, so
+// only a tar header by its checksum keeps a compressed image name a tar.
+bool decompressed_head_is_tar(const int fd, const HeadKind kind)
+{
+	auto handle = Handle{};
+	handle.a    = archive_read_new();
+	archive_read_support_format_raw(handle.a);
+	register_one_filter(handle.a, kind);
+	handle.fd                = duplicate_at_start(fd);
+	struct archive_entry* ae = nullptr;
+	if (handle.fd < 0 ||
+	    archive_read_open_fd(handle.a, handle.fd, ReadBlockBytes) != ARCHIVE_OK ||
+	    archive_read_next_header(handle.a, &ae) != ARCHIVE_OK) {
+		return false;
+	}
+	std::array<uint8_t, HeadBytes> block = {};
+	size_t got                           = 0;
+	while (got < block.size()) {
+		const auto n = archive_read_data(handle.a,
+		                                 block.data() + got,
+		                                 block.size() - got);
+		if (n <= 0) {
+			break;
+		}
+		got += static_cast<size_t>(n);
+	}
+	return SniffHead(std::span<const uint8_t>(block.data(), got)).kind ==
+	       HeadKind::Tar;
+}
+
 // One read handle over a dup of the kept descriptor (design 1.6); the
 // dups share one offset, so only one handle reads at a time. The head
 // picks the reader: a zip end record in a RAR's tail outbids libarchive.
 HandleStatus open_handle(const int fd, const HeadKind kind, const bool cd_found,
-                         Handle& handle, std::string* detail)
+                         const bool raw_allowed, Handle& handle, std::string* detail)
 {
 	handle.a = archive_read_new();
 	switch (kind) {
@@ -213,10 +248,17 @@ HandleStatus open_handle(const int fd, const HeadKind kind, const bool cd_found,
 	case HeadKind::Bzip2:
 	case HeadKind::Xz:
 	case HeadKind::Zstd:
-		// A compressed stream holds a tar or nothing we mount (D12).
-		archive_read_support_format_tar(handle.a);
-		register_one_filter(handle.a, kind);
+	case HeadKind::Lzma:
+		// A compressed stream holds a tar or nothing we mount (D12), or
+		// one image when its name and its first block say so (plan 4b).
+		if (raw_allowed) {
+			archive_read_support_format_raw(handle.a);
+		} else {
+			archive_read_support_format_tar(handle.a);
+		}
 		break;
+	// The ISZ reader is ours; libarchive reads no ISZ.
+	case HeadKind::Isz: break;
 	case HeadKind::Unknown:
 		archive_read_support_format_zip_seekable(handle.a);
 		if (!cd_found) {
@@ -227,12 +269,8 @@ HandleStatus open_handle(const int fd, const HeadKind kind, const bool cd_found,
 		}
 		break;
 	}
-	switch (kind) {
-	case HeadKind::Gzip:
-	case HeadKind::Bzip2:
-	case HeadKind::Xz:
-	case HeadKind::Zstd: break;
-	default: register_filters(handle.a); break;
+	for (const auto filter : FiltersForHead(kind)) {
+		register_one_filter(handle.a, filter);
 	}
 	// Where copyfile.h exists libarchive hides __MACOSX entries by
 	// default; every host must walk the same set for the pairing to hold.
@@ -290,6 +328,7 @@ std::optional<Format> format_of(struct archive* a)
 	case ARCHIVE_FORMAT_ZIP: return Format::Zip;
 	case ARCHIVE_FORMAT_RAR: return Format::Rar;
 	case ARCHIVE_FORMAT_RAR_V5: return Format::Rar5;
+	case ARCHIVE_FORMAT_RAW: return Format::Raw;
 	case ARCHIVE_FORMAT_7ZIP: return Format::SevenZip;
 	case ARCHIVE_FORMAT_TAR: return Format::Tar;
 	default: return {};
@@ -300,7 +339,9 @@ Access access_of(const Format format)
 {
 	switch (format) {
 	case Format::Zip:
-	case Format::Rar: return Access::PerMember;
+	case Format::Rar:
+	case Format::Raw:
+	case Format::Isz: return Access::PerMember;
 	case Format::Rar5:
 	case Format::SevenZip:
 	case Format::Tar: return Access::Sequential;
@@ -403,7 +444,9 @@ int64_t identity_time_of(const Format format, const int64_t mtime,
 	case Format::Rar: return stored_dos_time;
 	case Format::Rar5:
 	case Format::SevenZip:
-	case Format::Tar: return mtime;
+	case Format::Tar:
+	case Format::Raw:
+	case Format::Isz: return mtime;
 	}
 	return mtime;
 }
@@ -432,6 +475,9 @@ struct ArchiveReader::Impl {
 	// Shrink and implode members by ordinal: libarchive walks them,
 	// legacy_zip decodes them (ada-unr8).
 	std::unordered_map<int, ZipCentralDirectory::Record> legacy = {};
+	// Plan 4b: the ISZ reader's image, or the raw reader's permission.
+	std::optional<Isz::Image> isz = {};
+	bool raw_allowed              = false;
 	// Every handle shares one file offset, so two calls at once would
 	// interleave their reads; the guard makes a second caller fail loudly.
 	std::atomic<bool> in_use = false;
@@ -538,15 +584,19 @@ struct ArchiveReader::Impl {
 			return Error::Corrupt;
 		};
 		std::vector<uint8_t> local = {};
-		if (ZipCentralDirectory::ReadRange(file.fd, rec.local_header_offset, 30, local) !=
+		if (ZipCentralDirectory::ReadRange(
+		            file.fd, rec.local_header_offset, 30, local) !=
 		    ZipCentralDirectory::Error::None) {
 			return say("cannot read the local header");
 		}
 		const auto start = rec.local_header_offset + 30 +
-		                   static_cast<uint64_t>(local[26] | (local[27] << 8)) +
-		                   static_cast<uint64_t>(local[28] | (local[29] << 8));
+		                   static_cast<uint64_t>(local[26] |
+		                                         (local[27] << 8)) +
+		                   static_cast<uint64_t>(local[28] |
+		                                         (local[29] << 8));
 		std::vector<uint8_t> data = {};
-		switch (ZipCentralDirectory::ReadRange(file.fd, start, rec.compressed_size, data)) {
+		switch (ZipCentralDirectory::ReadRange(
+		        file.fd, start, rec.compressed_size, data)) {
 		case ZipCentralDirectory::Error::None: break;
 		case ZipCentralDirectory::Error::Truncated:
 			return say("member data runs past the end of the archive");
@@ -556,7 +606,8 @@ struct ArchiveReader::Impl {
 			           " bytes)");
 		}
 		size_t pos                     = 0;
-		const LegacyZip::Source source = [&](uint8_t* buffer, const size_t capacity) {
+		const LegacyZip::Source source = [&](uint8_t* buffer,
+		                                     const size_t capacity) {
 			const auto n = std::min(capacity, data.size() - pos);
 			if (n > 0) {
 				std::memcpy(buffer, data.data() + pos, n);
@@ -565,7 +616,8 @@ struct ArchiveReader::Impl {
 			return n;
 		};
 		uint32_t crc              = 0;
-		const LegacyZip::Sink out = [&](const uint8_t* bytes, const size_t size) {
+		const LegacyZip::Sink out = [&](const uint8_t* bytes,
+		                                const size_t size) {
 			crc = LegacyZip::Crc32(crc, bytes, size);
 			return sink(bytes, size);
 		};
@@ -663,7 +715,7 @@ struct ArchiveReader::Impl {
 
 	Error seek_to(Handle& handle, const int ordinal, std::string* detail) const
 	{
-		if (open_handle(file.fd, kind, format == Format::Zip, handle, detail) !=
+		if (open_handle(file.fd, kind, format == Format::Zip, raw_allowed, handle, detail) !=
 		    HandleStatus::Ok) {
 			return Error::OpenFailed;
 		}
@@ -696,6 +748,37 @@ struct ArchiveReader::Impl {
 		}
 	}
 };
+
+bool FilterDecodable(const HeadKind kind, const ZipCentralDirectory::Decoders& decoders)
+{
+	switch (kind) {
+	case HeadKind::Gzip: return decoders.gzip;
+	case HeadKind::Bzip2: return decoders.bzip2;
+	case HeadKind::Xz:
+	case HeadKind::Lzma: return decoders.xz;
+	case HeadKind::Zstd: return decoders.zstd;
+	default: return true;
+	}
+}
+
+std::vector<HeadKind> FiltersForHead(const HeadKind head)
+{
+	switch (head) {
+	case HeadKind::Gzip:
+	case HeadKind::Bzip2:
+	case HeadKind::Xz:
+	case HeadKind::Lzma:
+	case HeadKind::Zstd: return {head};
+	case HeadKind::Isz: return {};
+	default:
+		return {HeadKind::Gzip, HeadKind::Bzip2, HeadKind::Xz, HeadKind::Zstd};
+	}
+}
+
+void SetDecodersForTests(const std::optional<ZipCentralDirectory::Decoders> decoders)
+{
+	decoders_for_tests = decoders;
+}
 
 const char* ErrorText(const Error error)
 {
@@ -772,8 +855,88 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 	if (!StatDescriptor(impl.file.fd, impl.indexed_stat)) {
 		return fail(Error::OpenFailed, "fstat failed");
 	}
+	const auto finish = [&] {
+		auto listing = std::vector<ArchiveIdentity::ListingEntry>{};
+		for (size_t i = 0; i < impl.entries.size(); ++i) {
+			const auto& e = impl.entries[i];
+			if (!e.is_dir) {
+				listing.push_back({e.utf8_path,
+				                   e.size,
+				                   impl.identity_times[i],
+				                   e.has_crc,
+				                   e.crc32});
+			}
+		}
+		impl.identity = ArchiveIdentity::Hash(listing,
+		                                      impl.indexed_stat.size);
+		result.reader = std::move(reader);
+		return std::move(result);
+	};
+
 	const auto head = read_head(impl.file.fd);
 	impl.kind       = SniffHead(head.view()).kind;
+	if (!FilterDecodable(impl.kind, host_decoders())) {
+		return fail(Error::Unsupported,
+		            std::string("no built-in ") + HeadKindName(impl.kind) +
+		                    " decoder on this host");
+	}
+	const auto filter_head = impl.kind == HeadKind::Gzip ||
+	                         impl.kind == HeadKind::Bzip2 ||
+	                         impl.kind == HeadKind::Xz ||
+	                         impl.kind == HeadKind::Zstd;
+	// D13.1: the name decides here as in the engine, which never decodes.
+	const bool image_name = filter_head &&
+	                        IsCompressedImageName(PathToUtf8(name.filename()));
+	if (image_name && decompressed_head_is_tar(impl.file.fd, impl.kind)) {
+		return fail(Error::NotAnArchive,
+		            "a tar under a compressed image name; a tar archive "
+		            "needs a .tar name");
+	}
+	impl.raw_allowed = image_name;
+
+	// Plan 4b: an ISZ is one ISO from our own reader; libarchive never
+	// sees the file. D13.3 names it after the container.
+	if (impl.kind == HeadKind::Isz) {
+		auto parsed = Isz::Parse(impl.file.fd,
+		                         impl.indexed_stat.size,
+		                         limits.max_member_bytes);
+		if (parsed.error != Error::None) {
+			return fail(parsed.error, parsed.detail);
+		}
+		const auto utf8_name = PathToUtf8(name.stem()) + ".iso";
+		auto rejection       = ArchiveNames::Rejection::None;
+		const auto split = ArchiveNames::SplitEntryPath(utf8_name, &rejection);
+		if (!split || split->is_dir || split->components.size() != 1) {
+			return fail(Error::EntryRejected,
+			            "'" + utf8_name + "': " +
+			                    ArchiveNames::RejectionText(rejection));
+		}
+		auto names     = ArchiveNames::DosNameTable{};
+		const auto dos = names.Assign("", split->components[0]);
+		if (!dos) {
+			return fail(Error::EntryRejected,
+			            "'" + utf8_name + "': no free 8.3 name");
+		}
+		const auto size = static_cast<int64_t>(parsed.image.total_bytes);
+		if (size > limits.max_total_bytes) {
+			return fail(Error::TooLarge,
+			            "declared total over " +
+			                    std::to_string(limits.max_total_bytes) +
+			                    " bytes");
+		}
+		auto entry       = Entry{};
+		entry.ordinal    = 0;
+		entry.utf8_path  = split->components[0];
+		entry.dos_path   = *dos;
+		entry.size       = size;
+		entry.mtime      = impl.indexed_stat.mtime;
+		impl.format      = Format::Isz;
+		impl.access      = access_of(Format::Isz);
+		impl.total_bytes = size;
+		impl.add(entry, identity_time_of(Format::Isz, entry.mtime, 0));
+		impl.isz = std::move(parsed.image);
+		return finish();
+	}
 	if (impl.kind == HeadKind::Rar4) {
 		if (const auto rar_flags = rar4_main_flags(head)) {
 			if (*rar_flags & Rar4FlagVolume) {
@@ -887,7 +1050,8 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 	}
 	auto handle = Handle{};
 	auto detail = std::string();
-	switch (open_handle(impl.file.fd, impl.kind, cd_found, handle, &detail)) {
+	switch (open_handle(
+	        impl.file.fd, impl.kind, cd_found, impl.raw_allowed, handle, &detail)) {
 	case HandleStatus::Ok: break;
 	case HandleStatus::DescriptorFailed:
 		return fail(Error::OpenFailed, detail);
@@ -999,8 +1163,8 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 			}
 			utf8_name       = ZipCentralDirectory::DecodeName(rec);
 			stored_dos_time = rec.dos_datetime;
-			if (!ZipCentralDirectory::MethodReadable(
-			            rec.method, probe_filters().decoders)) {
+			if (!ZipCentralDirectory::MethodReadable(rec.method,
+			                                         host_decoders())) {
 				return fail(Error::Unsupported,
 				            "'" + utf8_name + "': ZIP method " +
 				                    std::to_string(rec.method) + " (" +
@@ -1027,6 +1191,13 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 			crc = rar4.files[static_cast<size_t>(ordinal)].crc32;
 			stored_dos_time =
 			        rar4.files[static_cast<size_t>(ordinal)].dos_time;
+		} else if (impl.format == Format::Raw) {
+			if (ordinal > 0) {
+				return fail(Error::Corrupt,
+				            "a raw stream with a second entry");
+			}
+			// D13.3: disk1.img.xz holds disk1.img.
+			utf8_name = PathToUtf8(name.stem());
 		} else {
 			const auto* name = archive_entry_pathname_utf8(ae);
 			if (!name) {
@@ -1066,6 +1237,35 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 		if (impl.format == Format::Zip && !entry.is_dir) {
 			entry.size = static_cast<int64_t>(
 			        zip_records[static_cast<size_t>(ordinal)].uncompressed_size);
+		}
+		if (impl.format == Format::Raw) {
+			// D13.2: a raw entry declares no size; this one bounded
+			// pass counts it, and the member's time is the
+			// container's (D13.3).
+			std::vector<uint8_t> block(ReadBlockBytes);
+			int64_t counted = 0;
+			while (true) {
+				const auto got = archive_read_data(handle.a,
+				                                   block.data(),
+				                                   block.size());
+				if (got < 0) {
+					return fail(Error::Corrupt,
+					            error_text_or(handle.a,
+					                          "read failed"));
+				}
+				if (got == 0) {
+					break;
+				}
+				counted += got;
+				if (counted > limits.max_member_bytes) {
+					return fail(Error::TooLarge,
+					            "'" + utf8_name + "': over " +
+					                    std::to_string(limits.max_member_bytes) +
+					                    " bytes");
+				}
+			}
+			entry.size  = counted;
+			entry.mtime = impl.indexed_stat.mtime;
 		}
 		if (entry.size < 0) {
 			return fail(Error::TooLarge,
@@ -1204,20 +1404,7 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 		                    std::to_string(walked));
 	}
 
-	auto listing = std::vector<ArchiveIdentity::ListingEntry>{};
-	for (size_t i = 0; i < impl.entries.size(); ++i) {
-		const auto& e = impl.entries[i];
-		if (!e.is_dir) {
-			listing.push_back({e.utf8_path,
-			                   e.size,
-			                   impl.identity_times[i],
-			                   e.has_crc,
-			                   e.crc32});
-		}
-	}
-	impl.identity = ArchiveIdentity::Hash(listing, impl.indexed_stat.size);
-	result.reader = std::move(reader);
-	return result;
+	return finish();
 }
 
 Format ArchiveReader::GetFormat() const
@@ -1265,7 +1452,22 @@ Error ArchiveReader::Materialize(const int ordinal, std::vector<uint8_t>& out,
 		}
 		return Error::NotFound;
 	}
-	if (const auto legacy = impl->legacy.find(ordinal); legacy != impl->legacy.end()) {
+	if (impl->isz) {
+		const auto read = Isz::ReadAll(
+		        impl->file.fd,
+		        *impl->isz,
+		        [&](const uint8_t* data, const size_t size) {
+			        out.insert(out.end(), data, data + size);
+			        return true;
+		        },
+		        detail);
+		if (read != Error::None) {
+			out.clear();
+		}
+		return read;
+	}
+	if (const auto legacy = impl->legacy.find(ordinal);
+	    legacy != impl->legacy.end()) {
 		const auto read = impl->read_legacy(
 		        legacy->second,
 		        *entry,
@@ -1310,10 +1512,23 @@ Error ArchiveReader::MaterializeToFile(const int ordinal,
 		}
 		return Error::NotFound;
 	}
-	if (const auto legacy = impl->legacy.find(ordinal); legacy != impl->legacy.end()) {
+	if (impl->isz) {
 		return impl->write_member(
 		        [&](const Impl::ByteSink& sink) {
-			        return impl->read_legacy(legacy->second, *entry, sink, detail);
+			        return Isz::ReadAll(impl->file.fd, *impl->isz, sink, detail);
+		        },
+		        *entry,
+		        target,
+		        detail);
+	}
+	if (const auto legacy = impl->legacy.find(ordinal);
+	    legacy != impl->legacy.end()) {
+		return impl->write_member(
+		        [&](const Impl::ByteSink& sink) {
+			        return impl->read_legacy(legacy->second,
+			                                 *entry,
+			                                 sink,
+			                                 detail);
 		        },
 		        *entry,
 		        target,
@@ -1349,9 +1564,26 @@ Error ArchiveReader::MaterializeAll(const std::filesystem::path& directory,
 		}
 		return Error::OpenFailed;
 	}
+	if (impl->isz) {
+		const auto* entry = impl->find(0);
+		if (!entry) {
+			return Error::NotFound;
+		}
+		return impl->write_member(
+		        [&](const Impl::ByteSink& sink) {
+			        return Isz::ReadAll(impl->file.fd, *impl->isz, sink, detail);
+		        },
+		        *entry,
+		        directory / "0",
+		        detail);
+	}
 	auto handle = Handle{};
-	if (open_handle(impl->file.fd, impl->kind, impl->format == Format::Zip, handle, detail) !=
-	    HandleStatus::Ok) {
+	if (open_handle(impl->file.fd,
+	                impl->kind,
+	                impl->format == Format::Zip,
+	                impl->raw_allowed,
+	                handle,
+	                detail) != HandleStatus::Ok) {
 		return Error::OpenFailed;
 	}
 	struct archive_entry* ae = nullptr;

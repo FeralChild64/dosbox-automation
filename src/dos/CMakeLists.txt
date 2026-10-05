@@ -68,6 +68,7 @@ target_sources(dosboxcommon PRIVATE
   programs/more_output.cpp
   programs/mount.cpp
   programs/mount_archive.cpp
+  programs/archive_images.cpp
   programs/mount_common.cpp
   programs/mount_policy.cpp
   programs/mount_policy_system_paths.cpp

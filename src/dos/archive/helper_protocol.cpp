@@ -21,7 +21,7 @@ namespace ArchiveHelper {
 namespace {
 
 constexpr auto LastError  = static_cast<uint8_t>(ArchiveMount::Error::Timeout);
-constexpr auto LastFormat = static_cast<uint8_t>(ArchiveMount::Format::Tar);
+constexpr auto LastFormat = static_cast<uint8_t>(ArchiveMount::Format::Isz);
 constexpr auto LastAccess = static_cast<uint8_t>(ArchiveMount::Access::Sequential);
 
 // ordinal, two string counts, is_dir, size, mtime, has_crc, crc32

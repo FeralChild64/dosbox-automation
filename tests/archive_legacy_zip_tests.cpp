@@ -130,7 +130,10 @@ const Member& Largest(const std::vector<Member>& ms, const uint16_t method)
 		}
 	}
 	EXPECT_NE(best, nullptr) << "no member with method " << method;
-	return best ? *best : ms.front();
+	// A missing fixture fails the caller's asserts; it never reads past
+	// an empty list.
+	static const Member none = {};
+	return best ? *best : none;
 }
 
 const LegacyZip::Sink Discard = [](const uint8_t*, size_t) { return true; };

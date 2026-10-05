@@ -2536,7 +2536,8 @@ source tree.
   libjpeg-turbo  JPEG codec (frame export)
                  License: IJG AND BSD-3-Clause AND Zlib
 
-  zlib           Compression library (libpng, ZMBV capture)
+  zlib           Compression library (libpng, ZMBV capture, libarchive,
+                 the ISZ reader)
                  License: Zlib
 
   zlib-ng        Faster deflate for the ZMBV capture encoder: vcpkg
@@ -2555,6 +2556,21 @@ source tree.
   asio           Asynchronous I/O library (standalone, non-Boost)
                  Copyright (c) 2003-2024 Christopher M. Kohlhoff
                  License: BSL-1.0
+
+  bzip2          bzip2 decompression (the ISZ reader, libarchive)
+                 Copyright (c) 1996-2019 Julian R Seward
+                 https://sourceware.org/bzip2/
+                 License: bzip2-1.0.6 (BSD-style)
+
+  liblzma        xz and legacy lzma decompression (libarchive), from
+                 XZ Utils by Lasse Collin and the XZ Utils contributors
+                 https://tukaani.org/xz/
+                 License: 0BSD (public domain in releases before 5.6)
+
+  zstd           Zstandard decompression (libarchive)
+                 Copyright (c) Meta Platforms, Inc. and affiliates
+                 https://facebook.github.io/zstd/
+                 License: BSD-3-Clause OR GPL-2.0-only (used under BSD-3-Clause)
 
   libarchive     Archive reading for archive mounts (zip, RAR, 7z, tar)
                  Copyright (c) 2003-2024 Tim Kientzle and libarchive contributors

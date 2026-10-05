@@ -35,23 +35,18 @@ namespace {
 namespace fs = std::filesystem;
 using namespace ArchiveMount;
 using ArchiveFixtures::FileEntry;
+using ArchiveFixtures::Filter;
+using ArchiveFixtures::IszChunk;
+using ArchiveFixtures::IszOptions;
 using ArchiveFixtures::Kind;
 using ArchiveFixtures::MakeStoredZip;
+using ArchiveFixtures::MinimalIso;
+using ArchiveFixtures::MtimeOf;
 using ArchiveFixtures::StoredEntry;
 using ArchiveFixtures::WriteArchive;
+using ArchiveFixtures::WriteCompressed;
+using ArchiveFixtures::WriteIsz;
 using ArchiveFixtures::ZipOptions;
-
-int64_t MtimeOf(const fs::path& path)
-{
-#if defined(WIN32)
-	struct _stat64 st = {};
-	_wstat64(path.wstring().c_str(), &st);
-#else
-	struct stat st = {};
-	stat(path.c_str(), &st);
-#endif
-	return static_cast<int64_t>(st.st_mtime);
-}
 
 const Entry* EntryNamed(const ArchiveReader& reader, const std::string& utf8_path)
 {
@@ -80,25 +75,6 @@ std::string Read(ArchiveReader& reader, const int ordinal)
 	auto detail              = std::string();
 	EXPECT_EQ(reader.Materialize(ordinal, out, &detail), Error::None) << detail;
 	return std::string(out.begin(), out.end());
-}
-
-// Writes bytes as one gzip stream (libarchive's raw writer).
-void GzipTo(const fs::path& path, const std::vector<uint8_t>& bytes)
-{
-	struct archive* a = archive_write_new();
-	ASSERT_EQ(archive_write_set_format_raw(a), ARCHIVE_OK);
-	ASSERT_EQ(archive_write_add_filter_gzip(a), ARCHIVE_OK);
-	ASSERT_EQ(archive_write_open_filename(a, path.string().c_str()), ARCHIVE_OK);
-	struct archive_entry* ae = archive_entry_new();
-	archive_entry_set_pathname(ae, "data");
-	archive_entry_set_filetype(ae, AE_IFREG);
-	archive_entry_set_size(ae, static_cast<la_int64_t>(bytes.size()));
-	ASSERT_EQ(archive_write_header(a, ae), ARCHIVE_OK);
-	ASSERT_EQ(archive_write_data(a, bytes.data(), bytes.size()),
-	          static_cast<la_ssize_t>(bytes.size()));
-	archive_entry_free(ae);
-	ASSERT_EQ(archive_write_close(a), ARCHIVE_OK);
-	archive_write_free(a);
 }
 
 // 3.4.0 is the first release with the RAR 5.0 reader (libarchive NEWS,
@@ -183,9 +159,10 @@ TEST_F(ArchiveReaderTest, ClassifiesSevenZipAndTarAsSequential)
 	EXPECT_FALSE(seven.reader->Entries()[0].has_crc);
 
 	for (const auto& [name, kind] : {
-	             std::pair{ "g.tar.gz",  Kind::TarGz},
-	             std::pair{ "g.tar.xz",  Kind::TarXz},
-	             std::pair{"g.tar.zst", Kind::TarZst}
+	             std::pair{  "g.tar.gz",   Kind::TarGz},
+	             std::pair{  "g.tar.xz",   Kind::TarXz},
+	             std::pair{ "g.tar.zst",  Kind::TarZst},
+	             std::pair{"g.tar.lzma", Kind::TarLzma}
         }) {
 		auto tar = ArchiveReader::Open(Built(name, kind, Game()), limits);
 		ASSERT_EQ(tar.error, Error::None) << name << ": " << tar.detail;
@@ -193,6 +170,17 @@ TEST_F(ArchiveReaderTest, ClassifiesSevenZipAndTarAsSequential)
 		EXPECT_EQ(tar.reader->GetAccess(), Access::Sequential) << name;
 		EXPECT_EQ(tar.reader->Entries().size(), 4u) << name;
 	}
+}
+
+TEST_F(ArchiveReaderTest, AnLzmaStreamWithoutATarIsNotAnArchive)
+{
+	const auto path = tmp_dir / "notes.lzma";
+	auto error      = std::string();
+	ASSERT_TRUE(WriteCompressed(path, Filter::Lzma, std::string(4096, 'n'), &error))
+	        << error;
+	auto opened = ArchiveReader::Open(path, limits);
+	EXPECT_EQ(opened.error, Error::NotAnArchive) << opened.detail;
+	EXPECT_FALSE(opened.reader);
 }
 
 TEST_F(ArchiveReaderTest, OpensATarMadeFromTheCurrentDirectory)
@@ -918,6 +906,274 @@ TEST_F(ArchiveReaderTest, IdentityIsStableAcrossOpensAndMovesWithContent)
 	EXPECT_NE(first.reader->IdentityHash(), other.reader->IdentityHash());
 }
 
+// A 1.44 MB floppy's bytes with a pattern per sector, so a misplaced
+// block shows.
+std::string FloppyPattern(const char seed)
+{
+	std::string image(1474560, '\0');
+	for (size_t i = 0; i < image.size(); ++i) {
+		image[i] = static_cast<char>(
+		        (i / 512 * 13 + i + static_cast<size_t>(seed)) & 0xff);
+	}
+	return image;
+}
+
+std::string SlurpFile(const fs::path& path)
+{
+	std::ifstream in(path, std::ios::binary);
+	return {std::istreambuf_iterator<char>(in),
+	        std::istreambuf_iterator<char>()};
+}
+
+// Plan 4b D13.1-D13.3: the name decides, the size is counted, the member
+// is named after the file and stamped with its mtime.
+TEST_F(ArchiveReaderTest, ACompressedImageNameOpensAsOneMemberNamedAfterTheFile)
+{
+	const auto image = FloppyPattern('a');
+	for (const auto& [filter, ext] : {
+	             std::pair{ Filter::Gzip,  "gz"},
+	             std::pair{   Filter::Xz,  "xz"},
+	             std::pair{ Filter::Zstd, "zst"},
+	             std::pair{Filter::Bzip2, "bz2"}
+        }) {
+		const auto path = tmp_dir / (std::string("disk1.img.") + ext);
+		ASSERT_TRUE(WriteCompressed(path, filter, image)) << ext;
+		auto opened = ArchiveReader::Open(path, limits);
+		ASSERT_EQ(opened.error, Error::None) << ext << ": " << opened.detail;
+		EXPECT_EQ(opened.reader->GetFormat(), Format::Raw) << ext;
+		EXPECT_EQ(opened.reader->GetAccess(), Access::PerMember) << ext;
+		ASSERT_EQ(opened.reader->Entries().size(), 1u) << ext;
+		const auto& e = opened.reader->Entries()[0];
+		EXPECT_EQ(e.ordinal, 0);
+		EXPECT_EQ(e.utf8_path, "disk1.img") << ext;
+		EXPECT_EQ(e.dos_path, "DISK1.IMG") << ext;
+		EXPECT_EQ(e.size, static_cast<int64_t>(image.size())) << ext;
+		EXPECT_EQ(e.mtime, MtimeOf(path)) << ext;
+		EXPECT_EQ(opened.reader->TotalBytes(),
+		          static_cast<int64_t>(image.size()));
+		EXPECT_TRUE(Read(*opened.reader, 0) == image) << ext;
+	}
+}
+
+// libarchive's tar reader bids on a block of zeros (an empty archive's
+// end), which is how an ISO's system area and a blank boot sector begin.
+TEST_F(ArchiveReaderTest, ACompressedImageThatBeginsWithZerosIsStillOneImage)
+{
+	std::string floppy(327680, '\0');
+	floppy[512]    = '\xFF';
+	const auto iso = MinimalIso();
+	for (const auto& [name, bytes] : {
+	             std::pair{std::string("blank.img.gz"), floppy},
+	             std::pair{ std::string("game.iso.xz"),    iso}
+        }) {
+		const auto filter = name.ends_with(".gz") ? Filter::Gzip
+		                                          : Filter::Xz;
+		ASSERT_TRUE(WriteCompressed(tmp_dir / name, filter, bytes));
+		auto opened = ArchiveReader::Open(tmp_dir / name, limits);
+		ASSERT_EQ(opened.error, Error::None) << name << ": " << opened.detail;
+		EXPECT_EQ(opened.reader->GetFormat(), Format::Raw) << name;
+		ASSERT_EQ(opened.reader->Entries().size(), 1u) << name;
+		EXPECT_EQ(opened.reader->Entries()[0].size,
+		          static_cast<int64_t>(bytes.size()));
+		EXPECT_TRUE(Read(*opened.reader, 0) == bytes) << name;
+	}
+}
+
+TEST_F(ArchiveReaderTest, ACompressedStreamWithoutAnImageNameIsStillTarOrNothing)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteCompressed(tmp_dir / "notes.txt.gz", Filter::Gzip, "hello", &error))
+	        << error;
+	auto notes = ArchiveReader::Open(tmp_dir / "notes.txt.gz", limits);
+	EXPECT_EQ(notes.error, Error::NotAnArchive) << notes.detail;
+	auto tar = ArchiveReader::Open(Built("set.tar.gz", Kind::TarGz, Game()),
+	                               limits);
+	ASSERT_EQ(tar.error, Error::None) << tar.detail;
+	EXPECT_EQ(tar.reader->GetFormat(), Format::Tar);
+}
+
+// D13.1: the name decides, in the engine (which never decodes, D15) and here
+// alike; a tar under an image name is refused with the reason.
+TEST_F(ArchiveReaderTest, ATarNamedLikeACompressedImageIsRefused)
+{
+	auto opened = ArchiveReader::Open(Built("set.img.gz", Kind::TarGz, Game()),
+	                                  limits);
+	EXPECT_EQ(opened.error, Error::NotAnArchive) << opened.detail;
+	EXPECT_NE(opened.detail.find("tar"), std::string::npos) << opened.detail;
+	EXPECT_FALSE(opened.reader);
+}
+
+TEST(FilterDecodable, FollowsTheDecodersTheHostHas)
+{
+	using ZipCentralDirectory::Decoders;
+	const auto none = Decoders{false, false, false, false};
+	for (const auto kind :
+	     {HeadKind::Gzip, HeadKind::Bzip2, HeadKind::Xz, HeadKind::Lzma, HeadKind::Zstd}) {
+		EXPECT_TRUE(FilterDecodable(kind, Decoders{})) << HeadKindName(kind);
+		EXPECT_FALSE(FilterDecodable(kind, none)) << HeadKindName(kind);
+	}
+	auto no_xz = Decoders{};
+	no_xz.xz   = false;
+	EXPECT_FALSE(FilterDecodable(HeadKind::Lzma, no_xz));
+	EXPECT_TRUE(FilterDecodable(HeadKind::Zstd, no_xz));
+	auto no_gzip = Decoders{};
+	no_gzip.gzip = false;
+	EXPECT_FALSE(FilterDecodable(HeadKind::Gzip, no_gzip));
+	EXPECT_TRUE(FilterDecodable(HeadKind::Bzip2, no_gzip));
+	for (const auto kind : {HeadKind::Zip,
+	                        HeadKind::Rar4,
+	                        HeadKind::Rar5,
+	                        HeadKind::SevenZip,
+	                        HeadKind::Tar,
+	                        HeadKind::Isz,
+	                        HeadKind::Unknown}) {
+		EXPECT_TRUE(FilterDecodable(kind, none)) << HeadKindName(kind);
+	}
+}
+
+TEST(FiltersForHead, LzmaBidsOnlyOnAHeadTheSniffCalledLzma)
+{
+	for (const auto head :
+	     {HeadKind::Gzip, HeadKind::Bzip2, HeadKind::Xz, HeadKind::Lzma, HeadKind::Zstd}) {
+		EXPECT_EQ(FiltersForHead(head), std::vector<HeadKind>{head})
+		        << HeadKindName(head);
+	}
+	EXPECT_TRUE(FiltersForHead(HeadKind::Isz).empty());
+	const auto with_magic = std::vector<HeadKind>{HeadKind::Gzip,
+	                                              HeadKind::Bzip2,
+	                                              HeadKind::Xz,
+	                                              HeadKind::Zstd};
+	for (const auto head : {HeadKind::Zip,
+	                        HeadKind::Rar4,
+	                        HeadKind::Rar5,
+	                        HeadKind::SevenZip,
+	                        HeadKind::Tar,
+	                        HeadKind::Unknown}) {
+		EXPECT_EQ(FiltersForHead(head), with_magic) << HeadKindName(head);
+	}
+}
+
+// Without the decoder the raw reader would serve the compressed bytes as
+// the image, and the tar reader would answer with no reason at all.
+TEST_F(ArchiveReaderTest, AStreamTheHostCannotDecodeIsUnsupported)
+{
+	auto no_zstd = ZipCentralDirectory::Decoders{};
+	no_zstd.zstd = false;
+	ASSERT_TRUE(WriteCompressed(tmp_dir / "disk1.img.zst",
+	                            Filter::Zstd,
+	                            FloppyPattern('z')));
+	const auto tar = Built("game.tar.zst", Kind::TarZst, Game());
+	SetDecodersForTests(no_zstd);
+	const auto image = ArchiveReader::Open(tmp_dir / "disk1.img.zst", limits);
+	const auto as_tar = ArchiveReader::Open(tar, limits);
+	SetDecodersForTests(std::nullopt);
+	EXPECT_EQ(image.error, Error::Unsupported) << image.detail;
+	EXPECT_NE(image.detail.find("zstd"), std::string::npos) << image.detail;
+	EXPECT_FALSE(image.reader);
+	EXPECT_EQ(as_tar.error, Error::Unsupported) << as_tar.detail;
+	EXPECT_NE(as_tar.detail.find("zstd"), std::string::npos) << as_tar.detail;
+	EXPECT_EQ(ArchiveReader::Open(tmp_dir / "disk1.img.zst", limits).error,
+	          Error::None);
+}
+
+TEST_F(ArchiveReaderTest, ACompressedImageOverTheMemberCapIsTooLarge)
+{
+	auto capped             = limits;
+	capped.max_member_bytes = 1024;
+	ASSERT_TRUE(WriteCompressed(tmp_dir / "big.img.xz",
+	                            Filter::Xz,
+	                            std::string(4096, 'x')));
+	auto opened = ArchiveReader::Open(tmp_dir / "big.img.xz", capped);
+	EXPECT_EQ(opened.error, Error::TooLarge) << opened.detail;
+	EXPECT_FALSE(opened.reader);
+}
+
+TEST_F(ArchiveReaderTest, AnIszOpensAsOneIsoAndMaterializesByteForByte)
+{
+	const auto iso = MinimalIso() + std::string(64 * 1024, 'q');
+	for (const auto kind : {IszChunk::Zlib, IszChunk::Bzip2, IszChunk::Stored}) {
+		const auto path = tmp_dir / "Game Disc.isz";
+		ASSERT_TRUE(WriteIsz(path, iso, kind));
+		auto opened = ArchiveReader::Open(path, limits);
+		ASSERT_EQ(opened.error, Error::None) << opened.detail;
+		EXPECT_EQ(opened.reader->GetFormat(), Format::Isz);
+		EXPECT_EQ(opened.reader->GetAccess(), Access::PerMember);
+		ASSERT_EQ(opened.reader->Entries().size(), 1u);
+		const auto& e = opened.reader->Entries()[0];
+		EXPECT_EQ(e.utf8_path, "Game Disc.iso");
+		EXPECT_EQ(e.dos_path, "GAMEDI~1.ISO");
+		EXPECT_EQ(e.size, static_cast<int64_t>(iso.size()));
+		EXPECT_EQ(e.mtime, MtimeOf(path));
+		EXPECT_TRUE(Read(*opened.reader, 0) == iso);
+		const auto target = tmp_dir / "out.iso";
+		auto detail       = std::string();
+		ASSERT_EQ(opened.reader->MaterializeToFile(0, target, &detail),
+		          Error::None)
+		        << detail;
+		EXPECT_TRUE(SlurpFile(target) == iso);
+		EXPECT_EQ(MtimeOf(target), MtimeOf(path));
+		fs::remove(target);
+	}
+}
+
+TEST_F(ArchiveReaderTest, AnEncryptedOrSegmentedIszIsRefusedByReason)
+{
+	auto enc     = IszOptions{};
+	enc.password = 2;
+	ASSERT_TRUE(WriteIsz(tmp_dir / "e.isz", MinimalIso(), IszChunk::Stored, enc));
+	EXPECT_EQ(ArchiveReader::Open(tmp_dir / "e.isz", limits).error,
+	          Error::Encrypted);
+	auto seg     = IszOptions{};
+	seg.seg_offs = 48;
+	ASSERT_TRUE(WriteIsz(tmp_dir / "s.isz", MinimalIso(), IszChunk::Stored, seg));
+	EXPECT_EQ(ArchiveReader::Open(tmp_dir / "s.isz", limits).error,
+	          Error::MultiVolume);
+}
+
+// D2's identity for a container: the listing (name, size, the container's
+// date) and the container's length, not a hash of the content.
+TEST_F(ArchiveReaderTest, TheIdentityOfAContainerFollowsItsListingAndLength)
+{
+	fs::create_directories(tmp_dir / "a");
+	fs::create_directories(tmp_dir / "b");
+	fs::create_directories(tmp_dir / "c");
+	const auto a = tmp_dir / "a" / "disk1.img.xz";
+	const auto b = tmp_dir / "b" / "disk1.img.xz";
+	const auto c = tmp_dir / "c" / "disk1.img.xz";
+	ASSERT_TRUE(WriteCompressed(a, Filter::Xz, FloppyPattern('a')));
+	ASSERT_TRUE(WriteCompressed(b, Filter::Xz, FloppyPattern('a')));
+	ASSERT_TRUE(WriteCompressed(c, Filter::Xz, std::string(1474560, 'c')));
+	for (const auto& p : {a, b, c}) {
+		fs::last_write_time(p, fs::last_write_time(a));
+	}
+	auto open_a = ArchiveReader::Open(a, limits);
+	auto open_b = ArchiveReader::Open(b, limits);
+	auto open_c = ArchiveReader::Open(c, limits);
+	ASSERT_TRUE(open_a.reader && open_b.reader && open_c.reader) << open_a.detail;
+	EXPECT_EQ(open_a.reader->IdentityHash(), open_b.reader->IdentityHash());
+	EXPECT_NE(open_a.reader->IdentityHash(), open_c.reader->IdentityHash());
+}
+
+TEST_F(ArchiveReaderTest, MaterializeAllWritesTheLoneMemberAsOrdinalZero)
+{
+	const auto floppy = FloppyPattern('m');
+	ASSERT_TRUE(WriteCompressed(tmp_dir / "disk.ima.gz", Filter::Gzip, floppy));
+	const auto iso = MinimalIso();
+	ASSERT_TRUE(WriteIsz(tmp_dir / "cd.isz", iso, IszChunk::Zlib));
+	for (const auto& [name, bytes] : {
+	             std::pair{std::string("disk.ima.gz"), floppy},
+	             std::pair{     std::string("cd.isz"),    iso}
+        }) {
+		auto opened = ArchiveReader::Open(tmp_dir / name, limits);
+		ASSERT_EQ(opened.error, Error::None) << name << ": " << opened.detail;
+		const auto out = tmp_dir / ("all-" + name);
+		auto detail    = std::string();
+		ASSERT_EQ(opened.reader->MaterializeAll(out, &detail), Error::None)
+		        << detail;
+		EXPECT_TRUE(SlurpFile(out / "0") == bytes) << name;
+	}
+}
+
 class ArchiveMaterializeTest : public ArchiveReaderTest {
 protected:
 	std::vector<uint8_t> big = {};
@@ -949,6 +1205,18 @@ protected:
 		return -1;
 	}
 };
+
+// The cut lands in big.bin's data, past the first header, so the walk
+// meets it; a cut inside the first header fails libarchive's open.
+TEST_F(ArchiveMaterializeTest, ATruncatedTarLzmaIsCorrupt)
+{
+	const auto path = Built("cut.tar.lzma", Kind::TarLzma, WithBig());
+	const auto full = fs::file_size(path);
+	fs::resize_file(path, full / 2);
+	auto opened = ArchiveReader::Open(path, limits);
+	EXPECT_EQ(opened.error, Error::Corrupt) << opened.detail;
+	EXPECT_FALSE(opened.reader);
+}
 
 TEST_F(ArchiveMaterializeTest, ReadsADeflatedMemberIntoMemory)
 {
@@ -1198,7 +1466,12 @@ TEST_F(RarFixtureTest, AGzipOfARarIsNotAnArchive)
 	auto bytes = std::vector<uint8_t>(std::istreambuf_iterator<char>(in),
 	                                  std::istreambuf_iterator<char>());
 	const auto path = tmp_dir / "rar.gz";
-	GzipTo(path, bytes);
+	auto error      = std::string();
+	ASSERT_TRUE(WriteCompressed(path,
+	                            Filter::Gzip,
+	                            std::string(bytes.begin(), bytes.end()),
+	                            &error))
+	        << error;
 	auto opened = ArchiveReader::Open(path, limits);
 	EXPECT_TRUE(opened.error == Error::NotAnArchive ||
 	            opened.error == Error::Corrupt)
@@ -1361,7 +1634,8 @@ TEST_F(ArchiveReaderTest, ReaderIsAnArchiveSourceAndReportsItsStatPair)
 }
 
 // PKZIP 1.x shrink and implode (ada-unr8): the reader serves these members
-// itself; the fixtures and their inputs are described in tests/files/archives/README.md.
+// itself; the fixtures and their inputs are described in
+// tests/files/archives/README.md.
 namespace {
 
 const fs::path LegacyDir = fs::path("tests/files/archives/legacy");
@@ -1369,7 +1643,8 @@ const fs::path LegacyDir = fs::path("tests/files/archives/legacy");
 std::vector<uint8_t> SlurpBytes(const fs::path& path)
 {
 	std::ifstream in(path, std::ios::binary);
-	return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+	return {std::istreambuf_iterator<char>(in),
+	        std::istreambuf_iterator<char>()};
 }
 
 class LegacyZipReaderTest : public ArchiveReaderTest {};
@@ -1394,7 +1669,8 @@ TEST_F(LegacyZipReaderTest, PkzipArchivesIndexAndEveryMemberMatchesItsInput)
 		for (const auto& e : opened.reader->Entries()) {
 			std::vector<uint8_t> out = {};
 			auto detail              = std::string();
-			ASSERT_EQ(opened.reader->Materialize(e.ordinal, out, &detail), Error::None)
+			ASSERT_EQ(opened.reader->Materialize(e.ordinal, out, &detail),
+			          Error::None)
 			        << zip << " " << e.utf8_path << ": " << detail;
 			EXPECT_EQ(out, SlurpBytes(LegacyDir / "inputs" / e.utf8_path))
 			        << zip << " " << e.utf8_path;
@@ -1409,9 +1685,11 @@ TEST_F(LegacyZipReaderTest, MaterializeToFileWritesTheMemberWithItsDate)
 	for (const auto& e : opened.reader->Entries()) {
 		auto detail       = std::string();
 		const auto target = tmp_dir / e.utf8_path;
-		ASSERT_EQ(opened.reader->MaterializeToFile(e.ordinal, target, &detail), Error::None)
+		ASSERT_EQ(opened.reader->MaterializeToFile(e.ordinal, target, &detail),
+		          Error::None)
 		        << e.utf8_path << ": " << detail;
-		EXPECT_EQ(SlurpBytes(target), SlurpBytes(LegacyDir / "inputs" / e.utf8_path));
+		EXPECT_EQ(SlurpBytes(target),
+		          SlurpBytes(LegacyDir / "inputs" / e.utf8_path));
 		EXPECT_EQ(MtimeOf(target), e.mtime) << e.utf8_path;
 	}
 }
@@ -1427,7 +1705,8 @@ TEST_F(LegacyZipReaderTest, ADamagedImplodedMemberFailsWithoutAFile)
 	for (const auto& rec : cd.records) {
 		if (rec.raw_name == "LARGE.TXT") {
 			const auto at = static_cast<size_t>(rec.local_header_offset);
-			const auto start = at + 30 + (bytes[at + 26] | (bytes[at + 27] << 8)) +
+			const auto start = at + 30 +
+			                   (bytes[at + 26] | (bytes[at + 27] << 8)) +
 			                   (bytes[at + 28] | (bytes[at + 29] << 8));
 			bytes[start + rec.compressed_size / 2] ^= 0x10;
 			flipped = true;
@@ -1443,9 +1722,12 @@ TEST_F(LegacyZipReaderTest, ADamagedImplodedMemberFailsWithoutAFile)
 		}
 		std::vector<uint8_t> out = {};
 		auto detail              = std::string();
-		EXPECT_EQ(opened.reader->Materialize(e.ordinal, out, &detail), Error::Corrupt) << detail;
+		EXPECT_EQ(opened.reader->Materialize(e.ordinal, out, &detail),
+		          Error::Corrupt)
+		        << detail;
 		const auto target = tmp_dir / "out" / "LARGE.TXT";
-		EXPECT_EQ(opened.reader->MaterializeToFile(e.ordinal, target, &detail), Error::Corrupt)
+		EXPECT_EQ(opened.reader->MaterializeToFile(e.ordinal, target, &detail),
+		          Error::Corrupt)
 		        << detail;
 		EXPECT_FALSE(fs::exists(target));
 	}
@@ -1457,20 +1739,22 @@ TEST_F(LegacyZipReaderTest, ReadRangeLeavesTheCallersOffsetAlone)
 	ASSERT_GE(fd, 0);
 	ASSERT_EQ(SeekDescriptor(fd, 17, SEEK_SET), 17);
 	std::vector<uint8_t> out = {};
-	EXPECT_EQ(ZipCentralDirectory::ReadRange(fd, 0, 4, out), ZipCentralDirectory::Error::None);
+	EXPECT_EQ(ZipCentralDirectory::ReadRange(fd, 0, 4, out),
+	          ZipCentralDirectory::Error::None);
 	EXPECT_EQ(out, (std::vector<uint8_t>{'P', 'K', 3, 4}));
 	EXPECT_EQ(SeekDescriptor(fd, 0, SEEK_CUR), 17);
-	EXPECT_EQ(ZipCentralDirectory::ReadRange(fd, fs::file_size(LegacyDir / "SHRUNK.ZIP") - 2, 4, out),
+	EXPECT_EQ(ZipCentralDirectory::ReadRange(
+	                  fd, fs::file_size(LegacyDir / "SHRUNK.ZIP") - 2, 4, out),
 	          ZipCentralDirectory::Error::Truncated);
 	CloseDescriptor(fd);
 }
 
 TEST_F(LegacyZipReaderTest, ReduceStaysUnsupportedAndNamesTheMethod)
 {
-	StoredEntry e = {};
-	e.name        = "A.TXT";
-	e.data        = "hello";
-	e.method      = 2;
+	StoredEntry e   = {};
+	e.name          = "A.TXT";
+	e.data          = "hello";
+	e.method        = 2;
 	const auto path = Raw("reduced.zip", MakeStoredZip({e}));
 	auto opened     = ArchiveReader::Open(path, limits);
 	EXPECT_EQ(opened.error, Error::Unsupported);
@@ -1488,13 +1772,16 @@ TEST_F(LegacyZipReaderTest, AWrongCrcFailsAMemberThatDecodes)
 	// header (APPNOTE 4.3.7, 4.3.12); flip its low bit in both.
 	size_t patched = 0;
 	for (size_t i = 0; i + 46 <= bytes.size(); ++i) {
-		const bool local   = bytes[i] == 'P' && bytes[i + 1] == 'K' && bytes[i + 2] == 3 && bytes[i + 3] == 4;
-		const bool central = bytes[i] == 'P' && bytes[i + 1] == 'K' && bytes[i + 2] == 1 && bytes[i + 3] == 2;
+		const bool local = bytes[i] == 'P' && bytes[i + 1] == 'K' &&
+		                   bytes[i + 2] == 3 && bytes[i + 3] == 4;
+		const bool central = bytes[i] == 'P' && bytes[i + 1] == 'K' &&
+		                     bytes[i + 2] == 1 && bytes[i + 3] == 2;
 		const size_t name_at = local ? 26 : 28;
 		const size_t head    = local ? 30 : 46;
 		if ((local || central) &&
 		    std::string(reinterpret_cast<const char*>(&bytes[i + head]),
-		                bytes[i + name_at] | (bytes[i + name_at + 1] << 8)) == "LARGE.TXT") {
+		                bytes[i + name_at] | (bytes[i + name_at + 1]
+		                                      << 8)) == "LARGE.TXT") {
 			bytes[i + (local ? 14 : 16)] ^= 1;
 			++patched;
 		}
@@ -1506,7 +1793,7 @@ TEST_F(LegacyZipReaderTest, AWrongCrcFailsAMemberThatDecodes)
 	for (const auto& e : opened.reader->Entries()) {
 		std::vector<uint8_t> out = {};
 		auto detail              = std::string();
-		const auto read          = opened.reader->Materialize(e.ordinal, out, &detail);
+		const auto read = opened.reader->Materialize(e.ordinal, out, &detail);
 		if (e.utf8_path == "LARGE.TXT") {
 			EXPECT_EQ(read, Error::Corrupt);
 			EXPECT_NE(detail.find("CRC"), std::string::npos) << detail;

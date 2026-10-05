@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include "archive_fixtures.h"
 #include "dos/dos.h"
 #include "dosbox_test_fixture.h"
 #include "ints/bios_disk.h"
@@ -91,6 +92,25 @@ TEST_F(DriveSwapTest, ResolveRelativeUnderRoot)
 
 	const auto resolved = DriveSwap::ResolveImagePath("disk2.img", anchor, {root});
 	EXPECT_EQ(resolved, root / "disk2.img");
+}
+
+TEST_F(DriveSwapTest, ResolveRelativeMemberUnderRoot)
+{
+	const auto root = CreateDir("images");
+	auto error      = std::string();
+	ASSERT_TRUE(ArchiveFixtures::WriteArchive(root / "game.zip",
+	                                          ArchiveFixtures::Kind::ZipStored,
+	                                          {
+	                                                  {"disk2.img",
+	                                                   std::string(4096, 'x')}
+        },
+	                                          nullptr,
+	                                          &error))
+	        << error;
+	const auto resolved = DriveSwap::ResolveImagePath("game.zip/disk2.img",
+	                                                  {},
+	                                                  {root});
+	EXPECT_EQ(resolved, root / "game.zip/disk2.img");
 }
 
 TEST_F(DriveSwapTest, ResolveAnchorWinsOverRoot)

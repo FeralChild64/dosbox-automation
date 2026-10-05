@@ -18,8 +18,11 @@
 #endif
 
 using ArchiveFixtures::FileEntry;
+using ArchiveFixtures::Filter;
 using ArchiveFixtures::Kind;
 using ArchiveFixtures::WriteArchive;
+using ArchiveFixtures::WriteBytes;
+using ArchiveFixtures::WriteCompressed;
 using namespace ArchiveMount;
 
 namespace {
@@ -43,6 +46,27 @@ protected:
 		                         &error))
 		        << error;
 		std::ofstream(tmp / "games" / "fake.zip") << "not an archive";
+		// Plan 4b: the single-image containers and two that are not.
+		ASSERT_TRUE(WriteArchive(tmp / "games" / "game.imz",
+		                         Kind::ZipDeflate,
+		                         {
+		                                 {"DISK1.IMA", std::string(4096, 'b')}
+                }));
+		ASSERT_TRUE(WriteCompressed(tmp / "games" / "disk.img.xz",
+		                            Filter::Xz,
+		                            std::string(4096, 'c')));
+		ASSERT_TRUE(WriteCompressed(tmp / "games" / "notes.txt.gz",
+		                            Filter::Gzip,
+		                            "hello"));
+		ASSERT_TRUE(WriteArchive(tmp / "games" / "game.tar.gz",
+		                         Kind::TarGz,
+		                         {
+		                                 {"A.TXT", "a"}
+                }));
+		// The sniff reads the signature only (EZB ISZ spec v1.00, 3.1).
+		auto isz = std::vector<uint8_t>{'I', 's', 'Z', '!'};
+		isz.resize(64, 0);
+		WriteBytes(tmp / "games" / "cd.isz", isz);
 	}
 	void TearDown() override
 	{
@@ -100,6 +124,109 @@ TEST_F(MemberPathTest, IsArchiveFileWantsExtensionAndSignature)
 	EXPECT_FALSE(IsArchiveFile(P("game.dat")));
 }
 
+// The legacy LZMA_Alone tar (plan 4b, Task 2b); .tlz is lzip's, not ours.
+TEST_F(MemberPathTest, ATarLzmaIsAnArchiveFile)
+{
+	ASSERT_TRUE(WriteArchive(P("old.tar.lzma"), Kind::TarLzma, {{"A.TXT", "a"}}));
+	EXPECT_TRUE(IsArchiveFile(P("old.tar.lzma")));
+	fs::copy_file(P("old.tar.lzma"), P("UPPER.TAR.LZMA"));
+	EXPECT_TRUE(IsArchiveFile(P("UPPER.TAR.LZMA")));
+	fs::copy_file(P("old.tar.lzma"), P("old.tlz"));
+	EXPECT_FALSE(IsArchiveFile(P("old.tlz")));
+}
+
+TEST(CompressedImageName, RecognisesAnImageExtensionUnderACompressionOne)
+{
+	EXPECT_TRUE(IsCompressedImageName("disk1.img.xz"));
+	EXPECT_TRUE(IsCompressedImageName("GAME.ISO.ZST"));
+	EXPECT_TRUE(IsCompressedImageName("a/b/boot.ima.gz"));
+	EXPECT_TRUE(IsCompressedImageName("x.dsk.bz2"));
+	EXPECT_TRUE(IsCompressedImageName("disk.1440.gz"));
+	EXPECT_FALSE(IsCompressedImageName("game.tar.gz"));
+	EXPECT_FALSE(IsCompressedImageName("notes.txt.gz"));
+	EXPECT_FALSE(IsCompressedImageName("disk1.img"));
+	EXPECT_FALSE(IsCompressedImageName(".img.xz"));
+	EXPECT_FALSE(IsCompressedImageName("disk1.img.lzma"));
+	EXPECT_FALSE(IsCompressedImageName("img.xz"));
+}
+
+// Only the ASCII suffix matters; Windows must not run the name through the
+// narrow code page, where these bytes do not convert.
+TEST(ContainerKindByName, NamesThePromisedHead)
+{
+	EXPECT_EQ(ContainerKindByName("a/game.imz"), HeadKind::Zip);
+	EXPECT_EQ(ContainerKindByName("CD.ISZ"), HeadKind::Isz);
+	EXPECT_EQ(ContainerKindByName("disk1.img.xz"), HeadKind::Xz);
+	EXPECT_EQ(ContainerKindByName("boot.ima.GZ"), HeadKind::Gzip);
+	EXPECT_EQ(ContainerKindByName("x.dsk.bz2"), HeadKind::Bzip2);
+	EXPECT_EQ(ContainerKindByName("game.iso.zst"), HeadKind::Zstd);
+	EXPECT_FALSE(ContainerKindByName("game.zip"));
+	EXPECT_FALSE(ContainerKindByName("game.tar.gz"));
+	EXPECT_FALSE(ContainerKindByName(".imz"));
+}
+
+TEST(CompressedImageName, AnyBytesMayComeBeforeTheSuffix)
+{
+	EXPECT_TRUE(IsCompressedImageName("\xe3\x83\x87\xe3\x82\xa3.iso.xz"));
+	EXPECT_TRUE(IsCompressedImageName("\xff\xfe.img.gz"));
+	EXPECT_TRUE(IsCompressedImageName("d\xc3\xafsk\\boot.ima.zst"));
+	EXPECT_FALSE(IsCompressedImageName("\xe3\x83\x87.txt.gz"));
+}
+
+TEST_F(MemberPathTest, AContainerWithANameOutsideAsciiIsALoneMember)
+{
+	const auto path = tmp / "games" /
+	                  fs::path(u8"\u30c7\u30a3\u30b9\u30af.img.xz");
+	ASSERT_TRUE(WriteCompressed(path, Filter::Xz, std::string(4096, 'd')));
+	EXPECT_TRUE(IsSingleImageContainer(path));
+	const auto lone = LoneImageMember(path);
+	ASSERT_TRUE(lone);
+	EXPECT_TRUE(lone->lone);
+}
+
+TEST_F(MemberPathTest, AnArchiveWithANameOutsideAsciiIsAnArchiveFile)
+{
+	const auto path = tmp / "games" / fs::path(u8"\u30b2\u30fc\u30e0.zip");
+	fs::copy_file(tmp / "games" / "game.zip", path);
+	EXPECT_TRUE(IsArchiveFile(path));
+}
+
+TEST_F(MemberPathTest, AContainerFileIsALoneMember)
+{
+	for (const auto* name : {"game.imz", "disk.img.xz", "cd.isz"}) {
+		const auto lone = LoneImageMember(P(name));
+		ASSERT_TRUE(lone) << name;
+		EXPECT_EQ(lone->archive, fs::path(P(name)));
+		EXPECT_TRUE(lone->member.empty());
+		EXPECT_TRUE(lone->lone);
+	}
+	EXPECT_FALSE(LoneImageMember(P("game.zip")));
+	EXPECT_FALSE(LoneImageMember(P("notes.txt.gz")));
+	EXPECT_FALSE(LoneImageMember(P("nosuch.imz")));
+	EXPECT_FALSE(LoneImageMember(P("game.tar.gz")));
+}
+
+// The name and the head must agree: a renamed file is not a container.
+TEST_F(MemberPathTest, AContainerNameOverTheWrongHeadIsNotAContainer)
+{
+	fs::copy_file(P("game.zip"), P("zip.isz"));
+	fs::copy_file(P("cd.isz"), P("isz.imz"));
+	fs::copy_file(P("game.tar.gz"), P("tar.img.xz"));
+	fs::copy_file(P("fake.zip"), P("text.img.gz"));
+	for (const auto* name : {"zip.isz", "isz.imz", "tar.img.xz", "text.img.gz"}) {
+		EXPECT_FALSE(IsSingleImageContainer(P(name))) << name;
+	}
+}
+
+TEST_F(MemberPathTest, AnArchiveFileIsNotAContainerAndAContainerIsNotAnArchive)
+{
+	EXPECT_FALSE(IsArchiveFile(P("game.imz")));
+	EXPECT_FALSE(IsArchiveFile(P("cd.isz")));
+	EXPECT_FALSE(IsArchiveFile(P("disk.img.xz")));
+	EXPECT_FALSE(IsSingleImageContainer(P("game.zip")));
+	EXPECT_FALSE(IsSingleImageContainer(P("game.tar.gz")));
+}
+
 std::vector<Entry> Index()
 {
 	auto file = [](int ordinal, const char* utf8, const char* dos) {
@@ -127,6 +254,9 @@ TEST_F(MemberPathTest, IsArchiveFileDoesNotWaitOnAFifo)
 	const auto fifo = tmp / "games" / "pipe.zip";
 	ASSERT_EQ(mkfifo(fifo.c_str(), 0600), 0);
 	EXPECT_FALSE(IsArchiveFile(fifo));
+	const auto lone_fifo = tmp / "games" / "pipe.img.xz";
+	ASSERT_EQ(mkfifo(lone_fifo.c_str(), 0600), 0);
+	EXPECT_FALSE(IsSingleImageContainer(lone_fifo));
 }
 #endif
 

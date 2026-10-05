@@ -12,7 +12,7 @@
 
 namespace ArchiveMount {
 
-enum class Format { Zip, Rar, Rar5, SevenZip, Tar };
+enum class Format { Zip, Rar, Rar5, SevenZip, Tar, Raw, Isz };
 
 // Whether one member can be reached without inflating the ones before
 // it (design D5): zip through the seekable reader, RAR v4 by header

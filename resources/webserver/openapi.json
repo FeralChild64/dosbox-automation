@@ -2519,7 +2519,7 @@
           },
           "image": {
             "type": "string",
-            "description": "Path to the disk image. A relative path resolves against the conf anchor, then each configured image root; the first existing file wins."
+            "description": "Path to the disk image. A relative path resolves against the conf anchor, then each configured image root; the first existing file wins. An image inside an archive is named by its path through the archive, `games/game.zip/disks/disk2.img`; the archive itself must lie under an image root, and the image is copied once into the game's sidecar, where its writes stay. A compressed single image, `disk2.img.xz`, `game.imz` or `game.isz`, is named by its own path and served the same way."
           }
         }
       },

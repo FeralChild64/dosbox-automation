@@ -48,7 +48,9 @@ add_executable(dosbox_tests
     archive_exclusive_file_tests.cpp
     archive_helper_client_tests.cpp
     archive_helper_protocol_tests.cpp
+    archive_images_tests.cpp
     archive_identity_tests.cpp
+    archive_isz_tests.cpp
     archive_legacy_zip_tests.cpp
     archive_lock_tests.cpp
     archive_member_path_tests.cpp

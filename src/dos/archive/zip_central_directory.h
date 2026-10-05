@@ -75,6 +75,7 @@ struct Decoders {
 	bool bzip2 = true;
 	bool xz    = true; // also lzma
 	bool zstd  = true;
+	bool gzip = true; // the stream filter only; deflate members need no flag
 };
 
 // APPNOTE 4.4.5: stored and deflate always; bzip2 (12), lzma (14), xz

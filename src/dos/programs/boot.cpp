@@ -23,6 +23,8 @@
 #include "misc/cross.h"
 #include "misc/video.h"
 #include "more_output.h"
+#include "dos/archive/member_path.h"
+#include "dos/programs/archive_images.h"
 #include "mount_policy.h"
 #include "utils/fs_utils.h"
 #include "utils/string_utils.h"
@@ -266,21 +268,48 @@ void BOOT::Run(void)
 			}
 
 			const auto boot_path = resolve_home(temp_line).string();
-			const auto boot_verdict = MountPolicy::ValidateImagePath(
-			        std::filesystem::path(boot_path),
-			        MountOrigin::GuestCommand,
-			        MountPolicy::AllowedImageRoots(),
-			        MountPolicy::ConfAnchor());
-			if (!boot_verdict.allowed) {
-				LOG_WARNING("BOOT: Blocked - policy violation");
-				WriteOut(MSG_Get("PROGRAM_BOOT_IMAGE_NOT_OPEN"),
-				         temp_line.c_str());
-				return;
+			auto resolved        = std::string();
+			const auto member    = local_drive_path_exists(boot_path.c_str())
+			                             ? ArchiveMount::LoneImageMember(boot_path)
+			                             : ArchiveMount::SplitMemberPath(boot_path);
+			if (member) {
+				// Design D7: the image's sidecar copy, the archive
+				// judged by the policy inside Resolve.
+				ArchiveImages::Request request = {};
+				request.member                 = *member;
+				request.origin                 = MountOrigin::GuestCommand;
+				request.allowed_image_roots    = MountPolicy::AllowedImageRoots();
+				request.conf_anchor            = MountPolicy::ConfAnchor();
+				auto got = ArchiveImages::Resolve(request);
+				if (!got.resolved ||
+				    !MountPolicy::ValidateDiskImageStructure(
+				            got.resolved->host_file)) {
+					LOG_WARNING("BOOT: Blocked - %s",
+					            got.resolved ? "not a disk image"
+					                         : MountPolicy::DenyReasonText(
+					                                   got.verdict.reason));
+					WriteOut(MSG_Get("PROGRAM_BOOT_IMAGE_NOT_OPEN"),
+					         temp_line.c_str());
+					return;
+				}
+				resolved = got.resolved->host_file.string();
+				member_holds.push_back(got.resolved->hold);
+			} else {
+				const auto boot_verdict = MountPolicy::ValidateImagePath(
+				        std::filesystem::path(boot_path),
+				        MountOrigin::GuestCommand,
+				        MountPolicy::AllowedImageRoots(),
+				        MountPolicy::ConfAnchor());
+				if (!boot_verdict.allowed) {
+					LOG_WARNING("BOOT: Blocked - policy violation");
+					WriteOut(MSG_Get("PROGRAM_BOOT_IMAGE_NOT_OPEN"),
+					         temp_line.c_str());
+					return;
+				}
+				// Use the validated canonical path, not the raw
+				// user string. Same principle as drive.cpp.
+				resolved = boot_verdict.resolved.string();
 			}
-
-			// Use the validated canonical path, not the raw
-			// user string. Same principle as drive.cpp.
-			const auto& resolved = boot_verdict.resolved.string();
 
 			uint32_t rombytesize;
 			FILE* usefile = getFSFile(resolved.c_str(),
@@ -601,6 +630,7 @@ void BOOT::Run(void)
 
 void BOOT::NotifyBooting()
 {
+	ArchiveImages::KeepForBoot(std::move(member_holds));
 	DOS_NotifyBooting();
 	TITLEBAR_NotifyBooting();
 	MOUSE_NotifyBooting();
@@ -620,7 +650,9 @@ void BOOT::AddMessages()
 	        "\n"
 	        "Parameters:\n"
 	        "  [color=white]DRIVE[reset]      drive to boot from, must be [color=white]A:[reset], [color=white]C:[reset], or [color=white]D:[reset]\n"
-	        "  [color=light-cyan]IMAGEFILE[reset]  one or more floppy images, separated by spaces\n"
+	        "  [color=light-cyan]IMAGEFILE[reset]  one or more floppy images, separated by spaces;\n"
+	        "             an image inside an archive is named through it: game.zip/boot.img\n"
+	        "             a compressed single image boots as that image: boot.img.gz\n"
 	        "\n"
 	        "Notes:\n"
 	        "  A DOS drive letter must have been mounted previously with [color=light-green]imgmount[reset] command.\n"

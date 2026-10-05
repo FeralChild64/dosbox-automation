@@ -23,6 +23,7 @@ struct Result {
 // Resolve a relative image path against the policy roots: conf anchor
 // first, then each allowed image root, first existing hit wins. Absolute
 // paths and misses pass through unchanged; validation rejects them later.
+// A path that walks into an archive (design D7) counts as existing.
 std::filesystem::path ResolveImagePath(
         const std::filesystem::path& image_path,
         const std::filesystem::path& conf_anchor,

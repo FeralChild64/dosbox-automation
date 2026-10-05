@@ -22,13 +22,14 @@ add_library(archivereader STATIC
   legacy_zip.cpp
   random_name.cpp
   helper_protocol.cpp
+  isz_image.cpp
   rar4_headers.cpp
   sidecar_locator.cpp
   sidecar_record.cpp
   zip_central_directory.cpp
 )
 target_link_libraries(archivereader
-  PUBLIC project_headers augra-log LibArchive::LibArchive
+  PUBLIC project_headers augra-log LibArchive::LibArchive ZLIB::ZLIB BZip2::BZip2
   PRIVATE sha256
 )
 # The engine gets NOMINMAX from dosbox_config.h, which this library does not

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "mount_common.h"
+#include "dos/programs/archive_images.h"
 
 #include "ints/bios_disk.h"
 #include "dos/drives.h"
@@ -52,6 +53,7 @@ std::string UnmountHelper(char umount)
 		imageDiskList[i_drive] = nullptr;
 	}
 
+	ArchiveImages::Release(i_drive);
 	return MSG_Get("PROGRAM_MOUNT_UMOUNT_SUCCESS");
 }
 

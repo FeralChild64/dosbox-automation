@@ -8,6 +8,8 @@
 #include "dos/archive/descriptor.h"
 #include "dos/archive/head_sniff.h"
 #include "dos/archive/member_path.h"
+#include "dos/programs/archive_images.h"
+#include "dos/programs/mount_archive_internal.h"
 #include "mount_common.h"
 #include "mount_policy.h"
 
@@ -192,10 +194,14 @@ void MOUNT::WriteMountStatus(const std::string& image_type,
                              const std::vector<std::string>& images,
                              char drive_letter, bool readonly)
 {
-	const size_t term_width = INT10_GetTextColumns();
-	constexpr auto Indent   = "  ";
-	const auto indent_size  = strlen(Indent);
-	std::string images_str  = {};
+	constexpr auto Indent  = "  ";
+	const auto indent_size = strlen(Indent);
+	// No text mode yet (the tests, a mount before INT 10h ran) reports no
+	// columns; truncate_path asserts on a width that is not positive.
+	const size_t columns   = INT10_GetTextColumns();
+	const auto path_width  = static_cast<int>(
+                (columns > indent_size ? columns : size_t{80}) - indent_size);
+	std::string images_str = {};
 
 	if (images.size() == 1) {
 		// If only one image, don't add newlines and just write in one
@@ -213,7 +219,7 @@ void MOUNT::WriteMountStatus(const std::string& image_type,
 			assert(!image.empty());
 			images_str = images_str.append(
 			        std::string(Indent) +
-			        truncate_path(image, term_width - indent_size) +
+			        truncate_path(image, path_width) +
 			        std::string("\n"));
 		}
 		WriteOut(MSG_Get("PROGRAM_MOUNT_RESULT"),
@@ -1158,6 +1164,38 @@ void MOUNT::ReportMountDenied(const std::string& path, const MountVerdict& verdi
 	}
 }
 
+// The first image's type from its name's extension and its host file's
+// size; a floppy-sized .img, .ima or .dsk is a floppy.
+static void detect_image_type(const std::string& name,
+                              const std::string& host_file, MountParameters& params)
+{
+	struct stat t2 = {};
+	if (stat(host_file.c_str(), &t2) != 0 || !S_ISREG(t2.st_mode)) {
+		return;
+	}
+	auto ext = name.substr(name.find_last_of('.') + 1);
+	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+	if (ext == "iso" || ext == "cue" || ext == "bin" || ext == "mds" ||
+	    ext == "ccd") {
+		params.type   = MountType::CdRomImage;
+		params.fstype = MountFileSystemType::Iso;
+	} else if (ext == "vhd") {
+		params.type = MountType::HardDiskImage;
+	} else if (ext == "vfd" || ext == "flp" || ext == "360" || ext == "720" ||
+	           ext == "1200" || ext == "1440") {
+		params.type = MountType::FloppyImage;
+	} else if (ext == "img" || ext == "ima" || ext == "dsk") {
+		const auto file_size_kb = static_cast<uint32_t>(t2.st_size / 1024);
+		const auto& geometries  = BIOS_GetDiskGeometryList();
+		const bool is_floppy    = std::ranges::any_of(
+                        geometries, [file_size_kb](const DiskGeometry& geo) {
+	                        return geo.ksize == file_size_kb;
+                        });
+		params.type = is_floppy ? MountType::FloppyImage
+		                        : MountType::HardDiskImage;
+	}
+}
+
 // Process paths and prepare (mutate) the passed `MountParameters` for
 // mounting. This includes resolving host paths, wildcard path arguments,
 // auto-detecting mount types, and determining whether we're dealing with
@@ -1190,6 +1228,18 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 	const auto has_wildcards = path_arg_1.find_first_of("*?") !=
 	                           std::string::npos;
 
+	// Design D7: a path that does not exist but walks into an archive
+	// names an image inside it.
+	const auto first_member = (!stat_ok && !has_wildcards)
+	                                ? ArchiveMount::SplitMemberPath(path_arg_1)
+	                                : std::nullopt;
+	// Plan 4b: a single-image container (game.imz, disk1.img.xz, game.isz)
+	// is a member path of its own; -sidecar and -nosidecar apply to it.
+	const auto first_lone = (target_is_file && !has_wildcards && !explicit_archive)
+	                              ? ArchiveMount::LoneImageMember(path_arg_1)
+	                              : std::nullopt;
+	const auto names_member = first_member.has_value() || first_lone.has_value();
+
 	// An archive is its own kind of source (archive mount design D12):
 	// named by -t archive, or a regular file with a listed extension
 	// whose first bytes carry a known signature.
@@ -1215,8 +1265,8 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 		}
 		return;
 	}
-	if (params.no_sidecar || !params.sidecar_path.empty() ||
-	    !params.archive_root.empty()) {
+	if (!params.archive_root.empty() ||
+	    (!names_member && (params.no_sidecar || !params.sidecar_path.empty()))) {
 		NOTIFY_DisplayWarning(Notification::Source::Console,
 		                      "MOUNT",
 		                      "PROGRAM_MOUNT_ARCHIVE_ONLY_OPTIONS",
@@ -1225,8 +1275,13 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 		return;
 	}
 
+	if (names_member && !params.sidecar_path.empty()) {
+		params.sidecar_path = ResolveHostPath(params.sidecar_path,
+		                                      path_relative_to_last_config);
+	}
+
 	params.is_image_mode = (explicit_image_type || params.is_drive_number ||
-	                        has_wildcards);
+	                        has_wildcards || first_member.has_value());
 
 	// If the target is a directory, it is a directory mount,
 	// even if -t floppy was specified (legacy MOUNT behavior).
@@ -1249,6 +1304,27 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 			// Expand ~, then apply relative path logic
 			cur_arg = ApplyRelativePath(resolve_home(cur_arg).string(),
 			                            path_relative_to_last_config);
+
+			if (const auto lone = ArchiveMount::LoneImageMember(cur_arg)) {
+				if (!AddArchiveMember(*lone, cur_arg, params)) {
+					params.paths.clear();
+					params.member_holds.clear();
+					params.is_image_mode = false;
+					return;
+				}
+				continue;
+			}
+			if (!local_drive_path_exists(cur_arg.c_str())) {
+				if (const auto member = ArchiveMount::SplitMemberPath(cur_arg)) {
+					if (!AddArchiveMember(*member, cur_arg, params)) {
+						params.paths.clear();
+						params.member_holds.clear();
+						params.is_image_mode = false;
+						return;
+					}
+					continue;
+				}
+			}
 
 			// Resolve virtual drive letters to host paths first
 			const auto mapped_path = GetDosMappedHostPath(cur_arg);
@@ -1295,51 +1371,9 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 			// Auto-detect type from FIRST valid file if generic "dir"
 			if (params.paths.empty() &&
 			    params.type == MountType::Directory) {
-				struct stat t2 = {};
-
-				if (stat(loop_final_path.c_str(), &t2) == 0 &&
-				    S_ISREG(t2.st_mode)) {
-
-					auto ext = loop_final_path.substr(
-					        loop_final_path.find_last_of('.') + 1);
-
-					std::transform(ext.begin(),
-					               ext.end(),
-					               ext.begin(),
-					               ::tolower);
-
-					if (ext == "iso" || ext == "cue" ||
-					    ext == "bin" || ext == "mds" ||
-					    ext == "ccd") {
-
-						params.type = MountType::CdRomImage;
-						params.fstype = MountFileSystemType::Iso;
-
-					} else if (ext == "vhd") {
-						params.type = MountType::HardDiskImage;
-					} else if (ext == "vfd" || ext == "flp" ||
-					           ext == "360" || ext == "720" ||
-					           ext == "1200" || ext == "1440") {
-						params.type = MountType::FloppyImage;
-					} else if (ext == "img" ||
-					           ext == "ima" || ext == "dsk") {
-						const auto file_size_kb =
-						        static_cast<uint32_t>(
-						                t2.st_size / 1024);
-						const auto& geometries =
-						        BIOS_GetDiskGeometryList();
-						const bool is_floppy = std::ranges::any_of(
-						        geometries,
-						        [file_size_kb](
-						                const DiskGeometry& geo) {
-							        return geo.ksize ==
-							               file_size_kb;
-						        });
-						params.type = is_floppy
-						                    ? MountType::FloppyImage
-						                    : MountType::HardDiskImage;
-					}
-				}
+				detect_image_type(loop_final_path,
+				                  loop_final_path,
+				                  params);
 			}
 
 			// Shortest equivalent form, which can be RELATIVE;
@@ -1370,6 +1404,42 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 			                      path_arg_1.c_str());
 		}
 	}
+}
+
+// Design D7: one image inside an archive becomes the host file the image
+// code opens; its hold travels in params until the mount registers it.
+bool MOUNT::AddArchiveMember(const ArchiveMount::MemberPath& member,
+                             const std::string& typed, MountParameters& params)
+{
+	// A locked engine opens nothing; MountPaths refuses with its message.
+	if (MountPolicy::IsLocked()) {
+		params.paths.push_back(typed);
+		return true;
+	}
+	ArchiveImages::Request request = {};
+	request.member                 = member;
+	request.origin                 = MountOrigin::GuestCommand;
+	request.read_only              = params.roflag || params.no_sidecar;
+	request.sidecar_path           = params.sidecar_path;
+	request.allowed_image_roots    = MountPolicy::AllowedImageRoots();
+	request.conf_anchor            = MountPolicy::ConfAnchor();
+	WriteOut(MSG_Get("PROGRAM_MOUNT_ARCHIVE_IDENTIFYING"),
+	         member.archive.filename().string().c_str());
+	auto result = ArchiveImages::Resolve(request);
+	if (!result.resolved) {
+		ReportMountDenied(typed, result.verdict, result.detail);
+		return false;
+	}
+	const auto host = result.resolved->host_file.string();
+	if (params.paths.empty() && params.type == MountType::Directory) {
+		detect_image_type(result.resolved->member_name, host, params);
+	}
+	if (request.read_only) {
+		params.roflag = true;
+	}
+	params.paths.push_back(host);
+	params.member_holds[host] = std::move(result.resolved->hold);
+	return true;
 }
 
 bool MOUNT::MountPaths(MountParameters& params)
@@ -1414,6 +1484,17 @@ bool MOUNT::MountPaths(MountParameters& params)
 		// would be re-resolved against the cwd at every later open
 		// (aug-fuay; boot.cpp and drive_swap.cpp already do this).
 		for (auto& img_path : params.paths) {
+			if (params.member_holds.contains(img_path)) {
+				// The archive passed the policy in ProcessPaths; this is
+				// the engine's own copy, judged by its structure only.
+				if (!MountPolicy::ValidateDiskImageStructure(img_path)) {
+					ReportMountDenied(img_path,
+					                  MountArchiveInternal::Denied(
+					                          DenyReason::NotADiskImage));
+					return false;
+				}
+				continue;
+			}
 			const auto img_verdict = MountPolicy::ValidateImagePath(
 			        std_fs::path(img_path),
 			        MountOrigin::GuestCommand,
@@ -1429,6 +1510,16 @@ bool MOUNT::MountPaths(MountParameters& params)
 		const auto success = MountImage(params);
 		if (success && params.type == MountType::FloppyImage) {
 			incrementFDD();
+		}
+		if (success && !params.member_holds.empty()) {
+			std::vector<std::shared_ptr<ArchiveImages::Hold>> holds = {};
+			for (auto& [path, hold] : params.member_holds) {
+				holds.push_back(hold);
+			}
+			const int index = params.is_drive_number
+			                        ? params.drive - '0'
+			                        : drive_index(params.drive);
+			ArchiveImages::Keep(index, std::move(holds));
 		}
 
 	} else {
@@ -1744,6 +1835,10 @@ void MOUNT::AddMessages()
 	        "  -ro             mount as read-only\n"
 	        "  -t [color=light-cyan]archive[reset]      mounts a zip, rar, 7z or tar archive (also detected by\n"
 	        "                  extension); the archive stays as it is, writes go to a sidecar\n"
+	        "                  An image inside an archive is named through it:\n"
+	        "                  game.zip/disks/disk1.img\n"
+	        "                  A compressed single image mounts as that image:\n"
+	        "                  disk1.img.xz, game.imz, game.isz\n"
 	        "  -root [color=white]DIR[reset]       directory inside the archive to use as the drive's root\n"
 	        "  -sidecar [color=white]PATH[reset]  archive mounts: directory for the game's writes (default: saves)\n"
 	        "  -nosidecar      archive mounts: no sidecar, the drive is read-only\n"
@@ -1779,6 +1874,9 @@ void MOUNT::AddMessages()
 	        "    directory under the saves directory; delete it to reset the game.\n"
 	        "    Formats that cannot serve one member without unpacking everything\n"
 	        "    (7z, RAR 5, tar) are refused unless archive_sequential = cache is set.\n"
+	        "\n"
+	        "  - A floppy or hard-disk image taken from an archive is copied once into\n"
+	        "    the game's sidecar and written there; -ro or -nosidecar use the cache.\n"
 	        "\n"
 	        "Examples:\n");
 

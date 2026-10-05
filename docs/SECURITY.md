@@ -89,6 +89,22 @@ webserver an attack surface by design. The short version:
   decoded by our port of Info-ZIP's decoders, inside the same helper
   process, stopped at the member's declared size and checked against its
   CRC-32.
+  An image named inside an archive (`game.zip/disks/disk1.img`) takes
+  the policy on the archive's host path, whitelist and all; the file the
+  image code then opens is the engine's own copy. A CD image is served
+  from the cache; a floppy or hard-disk image is copied once into the
+  game's sidecar under `.images`, where its writes stay, and that copy is
+  locked to one engine at a time. A cue sheet from an archive is
+  rewritten so every `FILE` line names a member's cached file beside it;
+  a cue that names anything else refuses the mount.
+  A compressed single image (`disk1.img.xz`, `game.imz`, `game.isz`) is
+  served the same way, as the one member of its file. libarchive reads
+  the xz, gzip, bzip2 and zstd forms as one image only when the file name
+  and the first bytes agree, and only where it decodes that format
+  itself; a stream it cannot decode, or a tar under an image name, is
+  refused. Our own ISZ reader checks the header, the chunk table and
+  every chunk length against the file before it decodes anything, and it
+  refuses encrypted and segmented ISZ files.
 - Lua scripts run sandboxed: no filesystem or process access, bytecode
   rejected, dangerous globals removed, instruction and pattern-complexity
   limits against runaway scripts.

@@ -27,6 +27,8 @@ enum class HeadKind {
 	Bzip2,
 	Xz,
 	Zstd,
+	Isz,
+	Lzma,
 };
 
 struct HeadSniff {

@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <tuple>
 
 #include "archive_fixtures.h"
 #include "dos/archive/archive_reader.h"
@@ -20,8 +21,12 @@
 using namespace std::chrono;
 using namespace ArchiveMount;
 using ArchiveFixtures::FileEntry;
+using ArchiveFixtures::Filter;
+using ArchiveFixtures::IszChunk;
 using ArchiveFixtures::Kind;
 using ArchiveFixtures::WriteArchive;
+using ArchiveFixtures::WriteCompressed;
+using ArchiveFixtures::WriteIsz;
 namespace fs = std::filesystem;
 
 // ada-e88p, 2026-09-30: a sequential format inflates the whole stream,
@@ -43,12 +48,18 @@ TEST(ArchiveHelperClock, SequentialFormatsAreClockedByTheCapAndPerMemberByTheFil
 	// Requests: a member's own size for a per-member format, the
 	// archive's declared total for a sequential one (the walk to the
 	// member is the work, whatever the member's size).
-	EXPECT_EQ(RequestBudget(options, Access::PerMember, 2ll << 30, 3ll << 30),
+	EXPECT_EQ(RequestBudget(options, Format::Zip, Access::PerMember, 2ll << 30, 3ll << 30),
 	          milliseconds(30000 + 131072));
-	EXPECT_EQ(RequestBudget(options, Access::Sequential, 5, 2ll << 30),
+	EXPECT_EQ(RequestBudget(options, Format::Tar, Access::Sequential, 5, 2ll << 30),
+	          milliseconds(30000 + 262144));
+	// A raw image.bz2 or an ISZ of bzip2 chunks decodes its member whole:
+	// the sequential rate, over the member's own size.
+	EXPECT_EQ(RequestBudget(options, Format::Raw, Access::PerMember, 2ll << 30, 2ll << 30),
+	          milliseconds(30000 + 262144));
+	EXPECT_EQ(RequestBudget(options, Format::Isz, Access::PerMember, 2ll << 30, 2ll << 30),
 	          milliseconds(30000 + 262144));
 	options.sequential_bytes_per_ms = 0;
-	EXPECT_EQ(RequestBudget(options, Access::Sequential, 5, 2ll << 30),
+	EXPECT_EQ(RequestBudget(options, Format::Tar, Access::Sequential, 5, 2ll << 30),
 	          milliseconds(30000));
 }
 
@@ -192,6 +203,35 @@ TEST_F(ArchiveHelperClientTest, MaterializeToFileWritesTheWholeMember)
 	EXPECT_EQ(client->MaterializeToFile(0, target, &detail), Error::None)
 	        << detail;
 	EXPECT_EQ(fs::file_size(target), 12345u);
+}
+
+// Plan 4b: the helper serves the single-image containers with the same
+// reader, so the index and the bytes match the in-process ones.
+TEST_F(ArchiveHelperClientTest, ContainersComeThroughTheHelper)
+{
+	std::string floppy(368640, '\0');
+	for (size_t i = 0; i < floppy.size(); ++i) {
+		floppy[i] = static_cast<char>((i / 512 + i) & 0xff);
+	}
+	const auto iso = ArchiveFixtures::MinimalIso() + std::string(65536, 'i');
+	ASSERT_TRUE(WriteCompressed(tmp_dir / "disk1.img.xz", Filter::Xz, floppy));
+	ASSERT_TRUE(WriteIsz(tmp_dir / "game.isz", iso, IszChunk::Bzip2));
+	for (const auto& [name, bytes, format] :
+	     {std::tuple{std::string("disk1.img.xz"), floppy, Format::Raw},
+	      std::tuple{std::string("game.isz"), iso, Format::Isz}}) {
+		auto client = OpenOk(tmp_dir / name);
+		ASSERT_TRUE(client) << name;
+		EXPECT_EQ(client->GetFormat(), format) << name;
+		ASSERT_EQ(client->Entries().size(), 1u) << name;
+		EXPECT_TRUE(Read(*client, 0) == bytes) << name;
+		const auto target = tmp_dir / ("out-" + name);
+		auto detail       = std::string();
+		ASSERT_EQ(client->MaterializeToFile(0, target, &detail), Error::None) << detail;
+		std::ifstream in(target, std::ios::binary);
+		const auto written = std::string(std::istreambuf_iterator<char>(in),
+		                                 std::istreambuf_iterator<char>());
+		EXPECT_TRUE(written == bytes) << name;
+	}
 }
 
 TEST_F(ArchiveHelperClientTest, MaterializeAllServesASequentialFormat)

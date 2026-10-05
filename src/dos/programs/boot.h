@@ -8,6 +8,13 @@
 #include "dos/programs.h"
 #include "dosbox.h"
 
+#include <memory>
+#include <vector>
+
+namespace ArchiveImages {
+class Hold;
+}
+
 class BOOT final : public Program {
 public:
 	BOOT()
@@ -33,6 +40,10 @@ private:
 
 	void DisableUmbXmsEms();
 	void NotifyBooting();
+
+	// Design D7: what keeps the booted images' host files valid; handed to
+	// the registry once the boot is under way.
+	std::vector<std::shared_ptr<ArchiveImages::Hold>> member_holds = {};
 };
 
 #endif // DOSBOX_PROGRAM_BOOT_H

@@ -8,16 +8,21 @@
 #include "dos/archive/archive_cache.h"
 #include "dos/archive/archive_helper_client.h"
 #include "dos/archive/archive_reader.h"
+#include "dos/drive_swap.h"
 #include "dos/drives.h"
+#include "dos/programs/archive_images.h"
+#include "dos/programs/boot.h"
 #include "dos/programs/mount_common.h"
 #include "dos/programs/mount_policy.h"
 #include "dosbox_test_fixture.h"
+#include "ints/bios_disk.h"
 #include "misc/cross.h"
 #include "test_temp_dir.h"
 #include "utils/env_utils.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -25,9 +30,17 @@
 #include <string>
 #include <vector>
 
+// The shell's copy of a program's full command line (shell_misc.cpp).
+extern std::string full_arguments;
+
 using ArchiveFixtures::FileEntry;
+using ArchiveFixtures::Filter;
+using ArchiveFixtures::IszChunk;
 using ArchiveFixtures::Kind;
+using ArchiveFixtures::MinimalIso;
 using ArchiveFixtures::WriteArchive;
+using ArchiveFixtures::WriteCompressed;
+using ArchiveFixtures::WriteIsz;
 
 namespace {
 
@@ -49,6 +62,35 @@ std::vector<FileEntry> Game()
 	        {"game/doom.exe", std::string(3000, 'x')},
 	        {"game/data/", "", true},
 	        {"game/data/level.wad", std::string(5000, 'w')},
+	        {"game/readme.txt", "hello"},
+	};
+}
+
+// A 320K DOS 1.x floppy: fatDrive synthesizes the BPB from the media byte
+// (two one-sector FATs, so the root directory starts at sector 3), with a
+// volume label entry first in the root.
+std::string FloppyBytes(const std::string& label)
+{
+	std::string img(327680, '\0');
+	img[512]              = '\xFF';
+	constexpr size_t Root = 3 * 512;
+	img.replace(Root, 11, label + std::string(11 - label.size(), ' '));
+	img[Root + 11] = '\x08';
+	return img;
+}
+
+std::vector<FileEntry> Images()
+{
+	return {
+	        {"disks/", "", true},
+	        {"disks/disk1.img", FloppyBytes("DISKONE")},
+	        {"disks/disk2.img", FloppyBytes("DISKTWO")},
+	        {"cd/", "", true},
+	        {"cd/game.iso", MinimalIso()},
+	        {"cd/track.bin", MinimalIso()},
+	        {"cd/game.cue",
+	         "FILE \"track.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n"},
+	        {"game/", "", true},
 	        {"game/readme.txt", "hello"},
 	};
 }
@@ -86,11 +128,13 @@ protected:
 	}
 	void TearDown() override
 	{
-		for (char d : {'D', 'E', 'F'}) {
+		for (char d : {'A', 'D', 'E', 'F'}) {
 			if (Drives.at(drive_index(d))) {
 				UnmountHelper(d);
 			}
 		}
+		ArchiveImages::ReleaseAllForTests();
+		imageDiskList.fill(nullptr);
 		MountPolicy::verdict_hook            = nullptr;
 		MountPolicy::drive_construction_hook = nullptr;
 		ArchiveMount::SetHelperPathOverride({});
@@ -593,6 +637,317 @@ TEST_F(MountArchiveTest, ArchiveOptionsOnADirectoryMountAreRefused)
 	EXPECT_FALSE(Drives.at(drive_index('D')));
 }
 
+TEST_F(MountArchiveTest, AFloppyInsideAnArchiveMountsFromItsSidecarCopy)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto result = Mount("A " + (zip / "disks" / "disk1.img").string());
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::FloppyImage);
+	ASSERT_NE(Drives.at(0), nullptr);
+	EXPECT_NE(Drives.at(0)->GetInfoString().find(".images"), std::string::npos)
+	        << Drives.at(0)->GetInfoString();
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 1u);
+	UnmountHelper('A');
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 0u);
+}
+
+TEST_F(MountArchiveTest, AnIsoInsideAnArchiveMountsAsACdDrive)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	ASSERT_TRUE(Mount("D " + zip.string() + "/cd/game.iso").has_value());
+	EXPECT_NE(std::dynamic_pointer_cast<isoDrive>(Drives.at(drive_index('D'))),
+	          nullptr);
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(drive_index('D')), 1u);
+}
+
+TEST_F(MountArchiveTest, ACueInsideAnArchiveMountsThroughTheRewrite)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	ASSERT_TRUE(Mount("D " + zip.string() + "/cd/game.cue").has_value());
+	EXPECT_NE(std::dynamic_pointer_cast<isoDrive>(Drives.at(drive_index('D'))),
+	          nullptr);
+}
+
+TEST_F(MountArchiveTest, TwoFloppiesFromOneArchiveFormASwapSet)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img " +
+	                  zip.string() + "/disks/disk2.img")
+	                    .has_value());
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
+}
+
+TEST_F(MountArchiveTest, AnArchiveDriveAndAnImageFromItMountSideBySide)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	ASSERT_TRUE(Mount("E " + zip.string()).has_value());
+	ASSERT_NE(UnionAt('E'), nullptr);
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img").has_value());
+	EXPECT_NE(Drives.at(0), nullptr);
+}
+
+TEST_F(MountArchiveTest, AReadOnlyImageMountMakesNoSidecarCopy)
+{
+	const auto zip    = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto result = Mount("A " + zip.string() + "/disks/disk1.img -ro");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_TRUE(result->roflag);
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+}
+
+TEST_F(MountArchiveTest, NoSidecarOnAnImageMemberMeansReadOnly)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto result = Mount("A " + zip.string() + "/disks/disk1.img -nosidecar");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_TRUE(result->roflag);
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+}
+
+TEST_F(MountArchiveTest, RootIsRefusedWithAMemberPath)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	EXPECT_FALSE(
+	        Mount("A " + zip.string() + "/disks/disk1.img -root disks").has_value());
+	EXPECT_EQ(Drives.at(0), nullptr);
+	EXPECT_FALSE(std_fs::exists(tmp / "cache" / "scratch"));
+}
+
+TEST_F(MountArchiveTest, AMissingMemberIsRefusedWithItsReason)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	EXPECT_FALSE(Mount("A " + zip.string() + "/disks/disk9.img").has_value());
+	EXPECT_EQ(Drives.at(0), nullptr);
+	const bool seen = std::any_of(verdicts.begin(), verdicts.end(), [](const auto& v) {
+		return v.second.reason == DenyReason::ArchiveMemberNotFound;
+	});
+	EXPECT_TRUE(seen);
+}
+
+TEST_F(MountArchiveTest, AMemberThatIsNoDiskImageIsRefused)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	EXPECT_FALSE(
+	        Mount("A " + zip.string() + "/game/readme.txt -t floppy").has_value());
+	EXPECT_EQ(Drives.at(0), nullptr);
+}
+
+TEST_F(MountArchiveTest, EveryMemberConstructionFollowsAnAllowedVerdict)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	constructed.clear();
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img").has_value());
+	ASSERT_TRUE(Mount("D " + zip.string() + "/cd/game.cue").has_value());
+	ASSERT_FALSE(constructed.empty());
+	for (const auto& path : constructed) {
+		std::error_code ec   = {};
+		const auto canonical = std_fs::canonical(path, ec);
+		const bool allowed   = std::any_of(
+                        verdicts.begin(), verdicts.end(), [&](const auto& v) {
+                                return v.second.allowed &&
+                                       v.second.resolved == canonical;
+                        });
+		EXPECT_TRUE(allowed)
+		        << "constructed without allowed verdict: " << path;
+	}
+}
+
+TEST_F(MountArchiveTest, BootRefusesAMissingMemberAndHoldsNothing)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto args = zip.string() + "/disks/none.img";
+	auto boot       = std::make_unique<BOOT>();
+	delete boot->cmd;
+	boot->cmd = new CommandLine("BOOT", args);
+	// Run swaps a line over 100 characters for the shell's copy.
+	full_arguments = args;
+	boot->Run();
+	EXPECT_EQ(imageDiskList.at(0), nullptr);
+	const bool seen = std::any_of(verdicts.begin(), verdicts.end(), [](const auto& v) {
+		return v.second.reason == DenyReason::ArchiveMemberNotFound;
+	});
+	EXPECT_TRUE(seen);
+}
+
+// Plan 4b: a single-image container on the command line is its image.
+TEST_F(MountArchiveTest, AnImzMountsItsFloppyFromTheSidecar)
+{
+	const auto imz = tmp / "game.imz";
+	ASSERT_TRUE(WriteArchive(imz, Kind::ZipDeflate, {{"DISK1.IMA", FloppyBytes("DISKONE")}}));
+	const auto result = Mount("A " + imz.string());
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::FloppyImage);
+	ASSERT_NE(Drives.at(0), nullptr);
+	EXPECT_NE(Drives.at(0)->GetInfoString().find(".images"), std::string::npos)
+	        << Drives.at(0)->GetInfoString();
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 1u);
+}
+
+TEST_F(MountArchiveTest, ACompressedImageMountsFromTheSidecar)
+{
+	const auto xz = tmp / "disk1.img.xz";
+	ASSERT_TRUE(WriteCompressed(xz, Filter::Xz, FloppyBytes("DISKONE")));
+	const auto result = Mount("A " + xz.string());
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::FloppyImage);
+	ASSERT_NE(Drives.at(0), nullptr);
+	EXPECT_NE(Drives.at(0)->GetInfoString().find(".images"), std::string::npos)
+	        << Drives.at(0)->GetInfoString();
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
+}
+
+TEST_F(MountArchiveTest, AnIszMountsAsACdDrive)
+{
+	const auto isz = tmp / "game.isz";
+	ASSERT_TRUE(WriteIsz(isz, MinimalIso(), IszChunk::Zlib));
+	ASSERT_TRUE(Mount("D " + isz.string()).has_value());
+	EXPECT_NE(std::dynamic_pointer_cast<isoDrive>(Drives.at(drive_index('D'))), nullptr);
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(drive_index('D')), 1u);
+}
+
+TEST_F(MountArchiveTest, AContainerAsAnArchiveDriveIsRefused)
+{
+	const auto imz = tmp / "game.imz";
+	ASSERT_TRUE(WriteArchive(imz, Kind::ZipDeflate, {{"DISK1.IMA", FloppyBytes("DISKONE")}}));
+	EXPECT_FALSE(Mount("E " + imz.string() + " -t archive").has_value());
+	EXPECT_EQ(Drives.at(drive_index('E')), nullptr);
+	const bool seen = std::any_of(verdicts.begin(), verdicts.end(), [](const auto& v) {
+		return v.second.reason == DenyReason::NotAnArchive;
+	});
+	EXPECT_TRUE(seen);
+}
+
+TEST_F(MountArchiveTest, RootIsRefusedOnAContainer)
+{
+	const auto xz = tmp / "disk1.img.xz";
+	ASSERT_TRUE(WriteCompressed(xz, Filter::Xz, FloppyBytes("DISKONE")));
+	EXPECT_FALSE(Mount("A " + xz.string() + " -root disks").has_value());
+	EXPECT_EQ(Drives.at(0), nullptr);
+}
+
+TEST_F(MountArchiveTest, NoSidecarOnAContainerMeansReadOnly)
+{
+	const auto xz = tmp / "disk1.img.xz";
+	ASSERT_TRUE(WriteCompressed(xz, Filter::Xz, FloppyBytes("DISKONE")));
+	const auto result = Mount("A " + xz.string() + " -nosidecar");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_TRUE(result->roflag);
+	EXPECT_NE(Drives.at(0), nullptr);
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+}
+
+TEST_F(MountArchiveTest, TheSwapTakesACompressedImage)
+{
+	const auto one = tmp / "disk1.img.xz";
+	const auto two = tmp / "disk2.img.gz";
+	ASSERT_TRUE(WriteCompressed(one, Filter::Xz, FloppyBytes("DISKONE")));
+	ASSERT_TRUE(WriteCompressed(two, Filter::Gzip, FloppyBytes("DISKTWO")));
+	ASSERT_TRUE(Mount("A " + one.string()).has_value());
+	const auto result = DriveSwap::Swap('A', two, false, {}, {std_fs::canonical(tmp)});
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
+}
+
+TEST_F(MountArchiveTest, TheSwapTakesAMemberAndKeepsTheSetHeld)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img").has_value());
+	const auto result = DriveSwap::Swap('A',
+	                                    zip.string() + "/disks/disk2.img",
+	                                    false,
+	                                    {},
+	                                    {std_fs::canonical(tmp)});
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_NE(Drives.at(0)->GetInfoString().find("DISK2.IMG"), std::string::npos);
+	// The label is read on mount and must be read on a swap as well.
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
+	UnmountHelper('A');
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 0u);
+}
+
+TEST_F(MountArchiveTest, TheSwapBackToAMemberReusesItsHold)
+{
+	const auto zip  = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto one  = zip.string() + "/disks/disk1.img";
+	const auto two  = zip.string() + "/disks/disk2.img";
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + one).has_value());
+	ASSERT_TRUE(DriveSwap::Swap('A', two, false, {}, root).ok);
+	const auto back = DriveSwap::Swap('A', one, false, {}, root);
+	ASSERT_TRUE(back.ok) << back.error;
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
+	ASSERT_TRUE(DriveSwap::Swap('A', two, false, {}, root).ok);
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
+}
+
+TEST_F(MountArchiveTest, TheSwapBackToACompressedImageReusesItsHold)
+{
+	const auto one = tmp / "disk1.img.xz";
+	const auto two = tmp / "disk2.img.gz";
+	ASSERT_TRUE(WriteCompressed(one, Filter::Xz, FloppyBytes("DISKONE")));
+	ASSERT_TRUE(WriteCompressed(two, Filter::Gzip, FloppyBytes("DISKTWO")));
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + one.string()).has_value());
+	ASSERT_TRUE(DriveSwap::Swap('A', two, false, {}, root).ok);
+	const auto back = DriveSwap::Swap('A', one, false, {}, root);
+	ASSERT_TRUE(back.ok) << back.error;
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
+}
+
+TEST_F(MountArchiveTest, AnImageAnotherDriveHoldsIsRefusedAsBusy)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto one = zip.string() + "/disks/disk1.img";
+	ASSERT_TRUE(Mount("A " + one).has_value());
+	const auto result =
+	        DriveSwap::Swap('B', one, false, {}, {std_fs::canonical(tmp)});
+	EXPECT_FALSE(result.ok);
+	EXPECT_NE(result.error.find("in use by another mount"), std::string::npos)
+	        << result.error;
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(1), 0u);
+}
+
+TEST_F(MountArchiveTest, TheSwapRefusesAMissingMemberWithTheReason)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img").has_value());
+	const auto result = DriveSwap::Swap('A',
+	                                    zip.string() + "/disks/none.img",
+	                                    false,
+	                                    {},
+	                                    {std_fs::canonical(tmp)});
+	EXPECT_FALSE(result.ok);
+	EXPECT_NE(result.error.find("no such member"), std::string::npos)
+	        << result.error;
+}
+
+TEST_F(MountArchiveTest, TheSwapAppliesTheWhitelistToTheArchive)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img").has_value());
+	const auto elsewhere = TestTempDir::MakeUnique("swap_root_");
+	const auto result    = DriveSwap::Swap(
+                'A', zip.string() + "/disks/disk2.img", false, {}, {elsewhere});
+	EXPECT_FALSE(result.ok);
+	std::error_code ec = {};
+	std_fs::remove_all(elsewhere, ec);
+}
+
+TEST_F(MountArchiveTest, ALockedEngineOpensNoArchiveForAMember)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	MountPolicy::Lock(); // one-way: this case runs alone through ctest
+	EXPECT_FALSE(Mount("A " + zip.string() + "/disks/disk1.img").has_value());
+	EXPECT_FALSE(std_fs::exists(tmp / "cache"));
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+}
+
 } // namespace
 
 TEST_F(MountArchiveTest, AnUnsupportedMethodSaysSoAndAsksForTheArchive)
@@ -606,4 +961,3 @@ TEST_F(MountArchiveTest, AnUnsupportedMethodSaysSoAndAsksForTheArchive)
 	EXPECT_NE(text.find("attach the archive"), std::string::npos) << text;
 	EXPECT_NE(text.find("link"), std::string::npos) << text;
 }
-

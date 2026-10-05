@@ -101,10 +101,11 @@ std::chrono::milliseconds OpenBudget(const ArchiveHelperClient::Options& options
                                      int64_t on_disk_bytes, const Limits& limits);
 
 // A request's clock from the archive's class: the member's declared
-// size for per-member formats, the declared total for sequential ones.
+// size for per-member formats, the declared total for sequential ones. A
+// raw stream or an ISZ decodes its one member whole, at the sequential rate.
 std::chrono::milliseconds RequestBudget(const ArchiveHelperClient::Options& options,
-                                        Access access, int64_t declared_bytes,
-                                        int64_t total_bytes);
+                                        Format format, Access access,
+                                        int64_t declared_bytes, int64_t total_bytes);
 
 } // namespace ArchiveMount
 

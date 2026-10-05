@@ -1501,6 +1501,41 @@ TEST_F(MountPolicyTest, ArchivePathSequentialIsRefusedUnlessAllowed)
 	EXPECT_TRUE(allowed.verdict.allowed);
 }
 
+// Plan 4b: one compressed image is one pass for one member, so the
+// sequential refusal does not apply when the name and the head agree.
+TEST_F(MountPolicyTest, ArchivePathSequentialPassesForACompressedImage)
+{
+	const auto image = tmp_dir / "disk1.img.xz";
+	ASSERT_TRUE(ArchiveFixtures::WriteCompressed(image,
+	                                             ArchiveFixtures::Filter::Xz,
+	                                             std::string(4096, 'd')));
+	const auto img = MountPolicy::ValidateArchivePath(
+	        image, MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_TRUE(img.verdict.allowed);
+	EXPECT_EQ(img.sniff.kind, ArchiveMount::HeadKind::Xz);
+
+	const auto isz = tmp_dir / "cd.isz";
+	ASSERT_TRUE(ArchiveFixtures::WriteIsz(isz,
+	                                      ArchiveFixtures::MinimalIso(),
+	                                      ArchiveFixtures::IszChunk::Zlib));
+	const auto cd = MountPolicy::ValidateArchivePath(
+	        isz, MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_TRUE(cd.verdict.allowed);
+	EXPECT_EQ(cd.sniff.kind, ArchiveMount::HeadKind::Isz);
+
+	const auto txz = BuiltArchive(tmp_dir, "game.tar.xz", ArchiveFixtures::Kind::TarXz);
+	EXPECT_EQ(MountPolicy::ValidateArchivePath(txz, MountOrigin::GuestCommand, {}, {}, false)
+	                  .verdict.reason,
+	          DenyReason::ArchiveSequential);
+	// A tar.gz renamed to an xz image name: the head is not what the name says.
+	const auto tgz      = BuiltArchive(tmp_dir, "set.tar.gz", ArchiveFixtures::Kind::TarGz);
+	const auto disguise = tmp_dir / "set.img.xz";
+	std::filesystem::copy_file(tgz, disguise);
+	EXPECT_EQ(MountPolicy::ValidateArchivePath(disguise, MountOrigin::GuestCommand, {}, {}, false)
+	                  .verdict.reason,
+	          DenyReason::ArchiveSequential);
+}
+
 TEST_F(MountPolicyTest, ArchivePathRunsTheHostStepsBeforeTheSniff)
 {
 	const auto zip = BuiltArchive(tmp_dir,

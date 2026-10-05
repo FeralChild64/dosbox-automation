@@ -44,11 +44,16 @@ def screen(client) -> str:
 
 
 def wait_text(client, needle, timeout=15.0):
+    """Waits for needle on the screen, also where a long path pushed it
+    across the 80-column wrap (the raw rows joined end to end)."""
     deadline = time.monotonic() + timeout
     text = ""
     while time.monotonic() < deadline:
-        text = screen(client)
-        if needle in text:
+        r = client.screen_text()
+        assert r.status_code == 200, r.text
+        rows = r.json()["text"].split("\n")
+        text = "\n".join(row.rstrip() for row in rows)
+        if needle in text or needle in "".join(rows):
             return text
         time.sleep(0.2)
     raise AssertionError(f"{needle!r} not found:\n{text}")

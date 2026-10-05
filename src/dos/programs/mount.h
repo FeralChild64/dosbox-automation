@@ -8,13 +8,20 @@
 
 #include "dos/dos.h"
 #include "dos/programs.h"
+#include "dos/archive/member_path.h"
 #include "dos/programs/mount_policy.h"
 #include "shell/command_line.h"
 
 #include <array>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace ArchiveImages {
+class Hold;
+}
 
 enum class MountType {
 	FloppyImage,
@@ -65,6 +72,9 @@ struct MountParameters {
 	                               // D10's rule
 	bool no_sidecar = false;       // D1: no sidecar, read-only
 	std::string sidecar_path = ""; // -sidecar PATH, else D2 decides
+	// Design D7: host file of each image named inside an archive, with
+	// what keeps it valid until the mount registers it.
+	std::map<std::string, std::shared_ptr<ArchiveImages::Hold>> member_holds = {};
 };
 
 class MOUNT final : public Program {
@@ -142,6 +152,8 @@ private:
 	void ProcessPaths(const std::string first_path, MountParameters& params,
 	                  bool path_relative_to_last_config);
 
+	bool AddArchiveMember(const ArchiveMount::MemberPath& member,
+	                      const std::string& typed, MountParameters& params);
 	bool MountPaths(MountParameters& params);
 
 	void MountLocal(MountParameters& params, const std::string& local_path);

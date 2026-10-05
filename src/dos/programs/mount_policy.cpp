@@ -43,6 +43,7 @@
 
 #include "mount_policy.h"
 #include "dos/archive/descriptor.h"
+#include "dos/archive/member_path.h"
 
 #include "mount_policy_system_paths.h"
 
@@ -771,8 +772,11 @@ ArchiveVerdict ValidateArchivePath(
 				out.verdict.allowed = false;
 				out.verdict.reason  = DenyReason::NotAnArchive;
 			} else if (!sequential_allowed && out.sniff.access &&
-			           *out.sniff.access ==
-			                   ArchiveMount::Access::Sequential) {
+			           *out.sniff.access == ArchiveMount::Access::Sequential &&
+			           // Plan 4b: one compressed image is one pass
+			           // for one member.
+			           ArchiveMount::ContainerKindByName(
+			                   out.verdict.resolved) != out.sniff.kind) {
 				out.verdict.allowed = false;
 				out.verdict.reason = DenyReason::ArchiveSequential;
 			}

@@ -7,14 +7,27 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "dos/archive/archive_source.h"
+#include "dos/archive/head_sniff.h"
+#include "dos/archive/zip_central_directory.h"
 
 namespace ArchiveMount {
 
 class ArchiveReader;
+
+// D12: a compressed stream opens only where this host's libarchive decodes
+// its filter itself; a head that needs no filter always does.
+bool FilterDecodable(HeadKind kind, const ZipCentralDirectory::Decoders& decoders);
+// The filters that may bid on a head: a compressed head its own; any other
+// head those with a magic, never lzma, whose bid has none (an lzma stream
+// sniffs as Lzma); an ISZ none.
+std::vector<HeadKind> FiltersForHead(HeadKind head);
+// Stands in for the host's decoders, for tests of a host that lacks one.
+void SetDecodersForTests(std::optional<ZipCentralDirectory::Decoders> decoders);
 
 struct OpenResult {
 	std::unique_ptr<ArchiveReader> reader = {};

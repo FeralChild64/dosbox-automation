@@ -21,6 +21,7 @@
 #include "dos/archive/descriptor.h"
 #include "dos/archive/head_sniff.h"
 #include "dos/archive/helper_protocol.h"
+#include "dos/archive/member_path.h"
 #include "misc/child_process.h"
 #include "misc/support.h"
 #include "utils/checks.h"
@@ -43,16 +44,6 @@ namespace {
 
 constexpr auto LogComponent = "archive";
 constexpr auto QuitGrace    = std::chrono::seconds(2);
-
-std::string path_to_utf8(const std::filesystem::path& p)
-{
-#if defined(WIN32)
-	const auto u8 = p.u8string();
-	return std::string(u8.begin(), u8.end());
-#else
-	return p.string();
-#endif
-}
 
 bool read_whole(const std::filesystem::path& p, const int64_t expected,
                 std::vector<uint8_t>& out)
@@ -177,10 +168,15 @@ std::chrono::milliseconds OpenBudget(const ArchiveHelperClient::Options& options
 }
 
 std::chrono::milliseconds RequestBudget(const ArchiveHelperClient::Options& options,
-                                        const Access access,
+                                        const Format format, const Access access,
                                         const int64_t declared_bytes,
                                         const int64_t total_bytes)
 {
+	if (format == Format::Raw || format == Format::Isz) {
+		return budget_of(options.base_timeout,
+		                 declared_bytes,
+		                 options.sequential_bytes_per_ms);
+	}
 	if (access == Access::PerMember) {
 		return budget_of(options.base_timeout,
 		                 declared_bytes,
@@ -282,14 +278,14 @@ struct ArchiveHelperClient::Impl {
 		child.reset();
 		served    = 0;
 		auto argv = std::vector<std::string>{
-		        path_to_utf8(options.helper_path),
+		        PathToUtf8(options.helper_path),
 		        "--memory-limit-mb",
 		        std::to_string(options.memory_limit_mb)};
 		if (options.test_hooks) {
 			argv.emplace_back("--test-hooks");
 		}
 		auto request   = OpenRequest{};
-		request.path   = path_to_utf8(archive);
+		request.path   = PathToUtf8(archive);
 		request.limits = limits;
 #if defined(WIN32)
 		// SDL spawns with inheritance on, so the child sees this value.
@@ -342,7 +338,7 @@ struct ArchiveHelperClient::Impl {
 		if (first) {
 			augra::log_info(LogComponent,
 			                "archive helper %s, %s",
-			                path_to_utf8(options.helper_path).c_str(),
+			                PathToUtf8(options.helper_path).c_str(),
 			                hello.libarchive_string.c_str());
 		}
 
@@ -692,10 +688,11 @@ Error ArchiveHelperClient::MaterializeToFile(const int ordinal,
 	}
 	auto request     = MaterializeRequest{};
 	request.ordinal  = ordinal;
-	request.target   = path_to_utf8(target);
+	request.target   = PathToUtf8(target);
 	const auto error = impl->StatusRequest(Type::Materialize,
 	                                       EncodeMaterializeRequest(request),
 	                                       RequestBudget(impl->options,
+	                                                     impl->index.format,
 	                                                     impl->index.access,
 	                                                     entry->size,
 	                                                     impl->index.total_bytes),
@@ -713,10 +710,11 @@ Error ArchiveHelperClient::MaterializeAll(const std::filesystem::path& directory
                                           std::string* detail)
 {
 	auto request      = MaterializeAllRequest{};
-	request.directory = path_to_utf8(directory);
+	request.directory = PathToUtf8(directory);
 	const auto error  = impl->StatusRequest(Type::MaterializeAll,
                                                EncodeMaterializeAllRequest(request),
                                                RequestBudget(impl->options,
+                                                             impl->index.format,
                                                              impl->index.access,
                                                              impl->index.total_bytes,
                                                              impl->index.total_bytes),

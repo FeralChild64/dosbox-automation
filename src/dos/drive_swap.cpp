@@ -6,8 +6,10 @@
 
 #include "augra/log.h"
 
+#include "dos/archive/member_path.h"
 #include "dos/dos.h"
 #include "dos/drives.h"
+#include "dos/programs/archive_images.h"
 #include "dos/programs/mount_policy.h"
 #include "ints/bios_disk.h"
 #include "misc/cross.h"
@@ -40,7 +42,8 @@ std::filesystem::path ResolveImagePath(const std::filesystem::path& image_path,
 
 	for (const auto& candidate : candidates) {
 		auto ec = std::error_code();
-		if (std::filesystem::exists(candidate, ec) && !ec) {
+		if ((std::filesystem::exists(candidate, ec) && !ec) ||
+		    ArchiveMount::SplitMemberPath(candidate.string())) {
 			return candidate;
 		}
 	}
@@ -81,30 +84,62 @@ Result Swap(char drive_letter, const std::filesystem::path& image_path,
 	                                             conf_anchor,
 	                                             allowed_image_roots);
 
-	const auto verdict = MountPolicy::ValidateImagePath(resolved_input,
-	                                                    MountOrigin::Api,
-	                                                    allowed_image_roots,
-	                                                    conf_anchor);
-	if (!verdict.allowed) {
-		result.error = "Blocked by mount policy";
-		LOG_WARNING("DRIVE-SWAP: Blocked - policy violation");
-		return result;
+	std::shared_ptr<ArchiveImages::Hold> hold = {};
+	auto resolved_path                        = std::filesystem::path();
+	auto probe                                = std::error_code();
+	const auto member = std::filesystem::exists(resolved_input, probe)
+	                          ? ArchiveMount::LoneImageMember(resolved_input)
+	                          : ArchiveMount::SplitMemberPath(
+	                                    resolved_input.string());
+	if (member) {
+		// Design D7: the archive is judged inside Resolve with API
+		// trust; the file swapped in is the engine's own sidecar copy.
+		ArchiveImages::Request request = {};
+		request.member                 = *member;
+		request.origin                 = MountOrigin::Api;
+		request.allowed_image_roots    = allowed_image_roots;
+		request.conf_anchor            = conf_anchor;
+		request.drive_index            = drv_idx;
+		auto got = ArchiveImages::Resolve(request);
+		if (!got.resolved) {
+			const auto* why = MountPolicy::DenyReasonText(
+			        got.verdict.reason);
+			result.error = std::string("Blocked by mount policy: ") + why;
+			LOG_WARNING("DRIVE-SWAP: Blocked - %s", why);
+			return result;
+		}
+		if (!MountPolicy::ValidateDiskImageStructure(got.resolved->host_file)) {
+			result.error = "Blocked by mount policy: not a recognized disk image";
+			return result;
+		}
+		resolved_path = got.resolved->host_file;
+		hold          = got.resolved->hold;
+	} else {
+		const auto verdict = MountPolicy::ValidateImagePath(resolved_input,
+		                                                    MountOrigin::Api,
+		                                                    allowed_image_roots,
+		                                                    conf_anchor);
+		if (!verdict.allowed) {
+			result.error = "Blocked by mount policy";
+			LOG_WARNING("DRIVE-SWAP: Blocked - policy violation");
+			return result;
+		}
+		// Use the canonical path from validation, not the raw request
+		// string: the object mounted is the object validated.
+		resolved_path = verdict.resolved;
 	}
-
-	// Use the canonical path from validation, not the raw request string.
-	// Mounting the validated object, not re-resolving an untrusted path.
-	const auto& resolved = verdict.resolved.string();
+	const auto resolved = resolved_path.string();
 
 	// std::filesystem rather than stat + S_ISREG: the POSIX macro does
 	// not exist on MSVC, which kept this whole file from building on
 	// Windows.
 	auto ec = std::error_code();
-	if (!std::filesystem::is_regular_file(verdict.resolved, ec) || ec) {
+	if (!std::filesystem::is_regular_file(resolved_path, ec) || ec) {
 		result.error = "File not found";
 		return result;
 	}
 
-	const auto size_bytes = std::filesystem::file_size(verdict.resolved, ec);
+	const auto size_bytes = std::filesystem::file_size(resolved_path, ec);
 	if (ec) {
 		result.error = "File not found";
 		return result;
@@ -147,6 +182,9 @@ Result Swap(char drive_letter, const std::filesystem::path& image_path,
 		                "swapped the raw disk in %c: for '%s'",
 		                'A' + drv_idx,
 		                resolved.c_str());
+		if (hold) {
+			ArchiveImages::Keep(drv_idx, {hold});
+		}
 		result.ok = true;
 		return result;
 	}
@@ -169,6 +207,22 @@ Result Swap(char drive_letter, const std::filesystem::path& image_path,
 		imageDiskList[drv_idx] = new_drive->loadedDisk;
 	}
 
+	// The volume label reaches the drive's cache through a directory
+	// search, as MOUNT does after construction; without it the swapped
+	// disk shows no label.
+	const RealPt saved_dta = dos.dta();
+	dos.dta(dos.tables.tempdta);
+	const char root[7] = {
+	        static_cast<char>('A' + drv_idx), ':', '\\', '*', '.', '*', 0};
+	if (!DOS_FindFirst(root, FatAttributeFlags::Volume)) {
+		LOG_WARNING("DRIVE-SWAP: Unable to find %c drive's volume label",
+		            'A' + drv_idx);
+	}
+	dos.dta(saved_dta);
+
+	if (hold) {
+		ArchiveImages::Keep(drv_idx, {hold});
+	}
 	result.ok = true;
 	return result;
 }
