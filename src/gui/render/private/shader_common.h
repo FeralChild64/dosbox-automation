@@ -8,6 +8,7 @@
 #include "gui/private/common.h"
 #include "utils/rect.h"
 
+#include <cassert>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -272,5 +273,23 @@ struct ShaderInfo {
 
 	ShaderPreset default_preset = {};
 };
+
+// Window position of a pass's output in pixels; zero for intermediate
+// passes. Shaders subtract it from gl_FragCoord so masks start at the image.
+struct ShaderOutputOrigin {
+	int x = 0;
+	int y = 0;
+};
+
+inline ShaderOutputOrigin GetPassOutputOrigin(const DosBox::Rect& out_size,
+                                              const bool is_final_pass)
+{
+	if (!is_final_pass) {
+		return {};
+	}
+	// Truncation matches the glViewport cast, negative origins included (a
+	// relative viewport above 100%); rounding would shift the mask phase.
+	return {static_cast<int>(out_size.x), static_cast<int>(out_size.y)};
+}
 
 #endif // DOSBOX_SHADER_COMMON_H

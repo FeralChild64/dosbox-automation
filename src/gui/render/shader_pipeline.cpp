@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2025-2026 The DOSBox Staging Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "private/shader_pipeline.h"
 
@@ -590,6 +591,13 @@ void ShaderPipeline::UpdateTextureUniforms(const std::vector<ShaderPass>::iterat
 	shader.SetUniform2f("OUTPUT_SIZE",
 	                    pass->out_size.w,
 	                    pass->out_size.h);
+
+	const bool is_final_pass = (std::next(pass) == shader_passes.end());
+	const auto origin = GetPassOutputOrigin(pass->out_size, is_final_pass);
+
+	shader.SetUniform2f("OUTPUT_ORIGIN",
+	                    static_cast<float>(origin.x),
+	                    static_cast<float>(origin.y));
 }
 
 void ShaderPipeline::UpdatePassTextureUniforms()

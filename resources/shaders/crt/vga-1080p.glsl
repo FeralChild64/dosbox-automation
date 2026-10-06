@@ -2,6 +2,7 @@
 
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-License-Identifier: MIT
+// Copyright (C) 2026 dosbox-automation contributors
 
 /*
 
@@ -54,6 +55,7 @@ in vec2 oney;
 
 out vec4 FragColor;
 
+uniform vec2 OUTPUT_ORIGIN;
 uniform sampler2D INPUT_TEXTURE_0;
 
 uniform float SPOT_WIDTH;
@@ -116,7 +118,7 @@ vec4 add_vga_overlay(vec4 color, float scanlineStrengthMin,
                      float color_boost_odd, float mask_strength)
 {
 	// scanlines
-	vec2 mask_coords = gl_FragCoord.xy;
+	vec2 mask_coords = gl_FragCoord.xy - OUTPUT_ORIGIN;
 
 	vec3 lum_factors = vec3(0.2126, 0.7152, 0.0722);
 

@@ -1,0 +1,8 @@
+# This file is part of the dosbox-automation Project.
+# License: GPL-2.0-or-later. Contact: dosbox-automation-project@trinity2k.net
+#
+# Third-party modules the integration tests import. Install into the
+# project venv: .venv/bin/pip install -r tests/integration/requirements.txt
+pytest
+requests
+pillow

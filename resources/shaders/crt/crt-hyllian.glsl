@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText:  2021-2020 Hyllian <sergiogdb@gmail.com>
 // SPDX-FileCopyrightText:  2020-2020 Tyrells
 // SPDX-License-Identifier: MIT
+// Copyright (C) 2026 dosbox-automation contributors
 
 // Hyllian's CRT Shader
 //
@@ -60,6 +61,7 @@ in vec2 v_texCoord;
 out vec4 FragColor;
 
 uniform vec2 INPUT_SIZE_0;
+uniform vec2 OUTPUT_ORIGIN;
 uniform sampler2D INPUT_TEXTURE_0;
 
 uniform float BEAM_PROFILE;
@@ -528,7 +530,7 @@ void main()
 	vec4 color = color_boost * (color0 * d0 + color1 * d1);
 
 	// Mask
-	vec2 mask_coords = gl_FragCoord.xy; // v_texCoord.xy * OutputSize.xy;
+	vec2 mask_coords = gl_FragCoord.xy - OUTPUT_ORIGIN;
 	mask_coords      = mix(mask_coords.xy, mask_coords.yx, VSCANLINES);
 	color.rgb *= mask_weights(mask_coords, MASK_INTENSITY, int(PHOSPHOR_LAYOUT));
 

@@ -1,3 +1,7 @@
+# This file is part of the dosbox-automation Project.
+# License: GPL-2.0-or-later. Contact: dosbox-automation-project@trinity2k.net
+#
+
 import time
 from pathlib import Path
 
@@ -163,8 +167,9 @@ class DosboxClient:
 
     # --- Video ---
 
-    def frame(self, fmt: str = "jpeg", quality: int = 98) -> requests.Response:
-        params = {"format": fmt, "quality": str(quality)}
+    def frame(self, fmt: str = "jpeg", quality: int = 98,
+              mode: str = "raw") -> requests.Response:
+        params = {"format": fmt, "quality": str(quality), "mode": mode}
         return self._get("/api/v1/video/frame", params=params)
 
     def frame_info(self) -> requests.Response:

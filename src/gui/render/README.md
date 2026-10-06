@@ -95,6 +95,15 @@ The following uniform are passed to the shader passes:
 - `OUTPUT_SIZE` — `vec2`; size of the output texture, or the viewport
   for the last pass (always present)
 
+- `OUTPUT_ORIGIN` — `vec2`; window position in pixels of the output, in
+  the same bottom-up coordinates as `gl_FragCoord`. It is `(0, 0)` for
+  every intermediate pass and the viewport origin for the last pass, which
+  is drawn into a viewport centred in the window. A shader that derives a
+  screen-space pattern from `gl_FragCoord` (phosphor masks, scanline
+  parity) subtracts it so the pattern starts at the image's bottom-left
+  pixel (OpenGL counts from the bottom) instead of the window corner
+  (always present)
+
 The shader's parameters that can be customised in the presets are also set via
 uniforms; see the description of the `parameter` custom shader pragma below
 for further details.
