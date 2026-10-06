@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2019-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_CONFIG_H
 #define DOSBOX_CONFIG_H
@@ -45,6 +46,7 @@ struct CommandLineArguments {
 	bool noautoexec;
 
 	std::string working_dir;
+	std::string run;
 	std::string lang;
 	std::string machine;
 	std::vector<std::string> conf;

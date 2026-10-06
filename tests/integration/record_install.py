@@ -28,7 +28,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dosbox_client import DosboxClient
 from e2e_helpers import (
     GameManifest,
+    archive_settings,
+    build_autoexec,
+    conf_section,
     download_disk_images,
+    media_present,
     resolve_cycle_settings,
     resolve_keyboard_layout,
 )
@@ -63,7 +67,7 @@ def main():
     manifest = GameManifest.from_file(game_dir / "manifest.toml")
 
     # Download if needed and permitted.
-    if not all((game_dir / img).exists() for img in manifest.disc_images):
+    if not media_present(manifest, game_dir):
         print(f"Downloading disk images for {manifest.name}...")
         if not download_disk_images(manifest, game_dir):
             print("Download failed or not permitted (commercial license).")
@@ -78,31 +82,7 @@ def main():
     port = find_free_port()
     token = secrets.token_hex(32)
 
-    # Build autoexec.
-    autoexec = [f'mount {manifest.target_drive} "{hd_dir}"']
-    if manifest.media in ("cdrom-iso", "cdrom-cue"):
-        autoexec.append(
-            f'mount {manifest.source_drive} '
-            f'"{game_dir / manifest.disc_images[0]}" -t cdrom'
-        )
-    elif manifest.media == "booter":
-        autoexec = [
-            f'mount a "{game_dir / manifest.disc_images[0]}" -t floppy'
-        ]
-    elif manifest.media == "directory":
-        autoexec.append(
-            f'mount {manifest.source_drive} '
-            f'"{game_dir / manifest.disc_images[0]}"'
-        )
-    elif manifest.media == "zip":
-        autoexec.append(
-            f'mount {manifest.source_drive} "{game_dir}"'
-        )
-    else:
-        autoexec.append(
-            f'mount {manifest.source_drive} '
-            f'"{game_dir / manifest.disc_images[0]}" -t floppy'
-        )
+    autoexec = build_autoexec(manifest, game_dir, hd_dir)
 
     # Config in game_dir for conf anchor. The recording is replayed later at
     # this same rate (persisted into recording.json below), so both the real
@@ -116,8 +96,8 @@ def main():
     conf_path.write_text(
         f"[cpu]\ncpu_cycles = {cycles['cpu_cycles']}\n"
         f"cpu_cycles_protected = {cycles['cpu_cycles_protected']}\n\n"
-        f"[dos]\nkeyboard_layout = {layout['keyboard_layout']}\n\n"
-        "[autoexec]\n" + "\n".join(autoexec) + "\n"
+        + conf_section("dos", {**layout, **archive_settings(manifest, work_dir)})
+        + "[autoexec]\n" + "\n".join(autoexec) + "\n"
     )
 
     # Primary config for Y: drive whitelist.

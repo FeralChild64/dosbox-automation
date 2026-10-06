@@ -5,12 +5,14 @@
 
 #include "shell/shell.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <memory>
 #include <regex>
+#include <utility>
 
 #include "config/config.h"
 #include "cpu/callback.h"
@@ -414,6 +416,8 @@ void DOS_Shell::ParseLine(char* line)
 			}
 		}
 	}
+
+	PushPendingCommands();
 }
 
 #pragma pvs(pop)
@@ -514,6 +518,93 @@ void DOS_Shell::Run()
 bool SHELL_IsRunning()
 {
 	return is_shell_running;
+}
+
+namespace {
+
+std::vector<std::string> pending_commands = {};
+
+// "@" keeps a line off the screen and doubled percent signs come out of
+// the batch expansion as they went in.
+std::string AsVerbatimBatchLine(const std::string_view line)
+{
+	std::string batch_line = "@";
+	for (const char c : line) {
+		batch_line += c;
+		if (c == '%') {
+			batch_line += '%';
+		}
+	}
+	return batch_line;
+}
+
+class PendingLinesReader final : public LineReader {
+public:
+	explicit PendingLinesReader(const std::vector<std::string>& lines)
+	{
+		for (const auto& line : lines) {
+			batch_lines.push_back(AsVerbatimBatchLine(line));
+		}
+	}
+	void Reset() override
+	{
+		next = 0;
+	}
+	std::optional<std::string> Read() override
+	{
+		if (next >= batch_lines.size()) {
+			return {};
+		}
+		return batch_lines[next++];
+	}
+
+private:
+	std::vector<std::string> batch_lines = {};
+	size_t next                          = 0;
+};
+
+} // namespace
+
+bool SHELL_QueuePendingCommands(std::vector<std::string> lines)
+{
+	if (!pending_commands.empty() || lines.empty()) {
+		return false;
+	}
+	const auto is_control = [](const char c) {
+		const auto byte = static_cast<uint8_t>(c);
+		return byte < 0x20 || byte == 0x7f;
+	};
+	for (const auto& line : lines) {
+		// "@", the line and a NUL fill ReadLine's CMD_MAXLINE buffer.
+		if (line.empty() || line.size() + 2 > CMD_MAXLINE ||
+		    std::any_of(line.begin(), line.end(), is_control)) {
+			return false;
+		}
+	}
+	pending_commands = std::move(lines);
+	return true;
+}
+
+std::vector<std::string> SHELL_TakePendingCommands()
+{
+	return std::exchange(pending_commands, {});
+}
+
+// The lines run as a batch on top of the stack, so a batch one of them
+// CALLs finishes before the next line (an EXIT) is read.
+void DOS_Shell::PushPendingCommands()
+{
+	auto lines = SHELL_TakePendingCommands();
+	if (lines.empty()) {
+		return;
+	}
+	const auto current_echo = batchfiles.empty() ? echo
+	                                             : batchfiles.top().Echo();
+	batchfiles.emplace(*psp,
+	                   std::make_unique<PendingLinesReader>(lines),
+	                   "",
+	                   "",
+	                   current_echo);
 }
 
 void DOS_Shell::SyntaxError()

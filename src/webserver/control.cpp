@@ -6,6 +6,7 @@
 #include "bridge.h"
 #include "webserver.h"
 
+#include "dos/archive/archive_activity.h"
 #include "dosbox.h"
 #include "gui/titlebar.h"
 #include "shell/shell.h"
@@ -50,6 +51,16 @@ void ControlHandlers::GetStatus(const httplib::Request&, httplib::Response& res)
 	j["program"] = TITLEBAR_GetSegmentName();
 	j["canonical_name"] = TITLEBAR_GetCanonicalName();
 	j["is_shell"] = SHELL_IsRunning();
+	// Read here, not through the Bridge: a mount that waits on the archive
+	// helper holds the emulation thread.
+	if (const auto archive = ArchiveMount::Activity::CurrentStatus()) {
+		j["archive"] = {
+		        {"activity", archive->activity},
+		        {"archive", archive->archive},
+		        {"bytes_done", archive->bytes_done},
+		        {"bytes_total", archive->bytes_total},
+		};
+	}
 	send_json(res, j);
 }
 

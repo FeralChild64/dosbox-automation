@@ -22,9 +22,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dosbox_client import DosboxClient
 from e2e_helpers import (
     GameManifest,
+    archive_settings,
+    build_autoexec,
     collect_provenance,
+    conf_section,
     download_disk_images,
     generate_install_script,
+    image_path,
+    media_present,
 )
 
 DOSBOX_BIN = os.environ.get(
@@ -55,7 +60,7 @@ def main():
     game_dir = DISKS_DIR / slug
     manifest = GameManifest.from_file(game_dir / "manifest.toml")
 
-    if not all((game_dir / img).exists() for img in manifest.disc_images):
+    if not media_present(manifest, game_dir):
         print(f"Downloading disk images for {manifest.name}...")
         if not download_disk_images(manifest, game_dir):
             print("Download failed.")
@@ -70,31 +75,14 @@ def main():
     port = find_free_port()
     token = secrets.token_hex(32)
 
-    # Build autoexec.
-    if manifest.media == "booter":
-        autoexec = [f'mount a "{game_dir / manifest.disc_images[0]}" -t floppy']
-    elif manifest.media in ("cdrom-iso", "cdrom-cue"):
-        autoexec = [
-            f'mount {manifest.target_drive} "{hd_dir}"',
-            f'mount {manifest.source_drive} "{game_dir / manifest.disc_images[0]}" -t cdrom',
-        ]
-    elif manifest.media == "directory":
-        autoexec = [
-            f'mount {manifest.target_drive} "{hd_dir}"',
-            f'mount {manifest.source_drive} "{game_dir / manifest.disc_images[0]}"',
-        ]
-    else:
-        autoexec = [
-            f'mount {manifest.target_drive} "{hd_dir}"',
-            f'mount {manifest.source_drive} "{game_dir / manifest.disc_images[0]}" -t floppy',
-        ]
+    autoexec = build_autoexec(manifest, game_dir, hd_dir)
 
     # Write config in game_dir so conf anchor covers disk images and HD.
     conf_path = game_dir / f"test-visual-{run_id}.conf"
-    conf_path.write_text(textwrap.dedent("""\
-        [autoexec]
-        {}
-    """.format("\n        ".join(autoexec))))
+    conf_path.write_text(
+        conf_section("dos", archive_settings(manifest, work_dir))
+        + "[autoexec]\n" + "\n".join(autoexec) + "\n"
+    )
 
     # Write primary config for mount policy.
     dosbox_bin = Path(DOSBOX_BIN).resolve()
@@ -167,7 +155,8 @@ def main():
         for key, val in out.items():
             if key.startswith("swap_") and isinstance(val, int):
                 if val != current_disc:
-                    disc_path = str(game_dir / manifest.disc_images[val - 1])
+                    disc_path = str(image_path(manifest, game_dir,
+                                               manifest.disc_images[val - 1]))
                     client.drive_swap(manifest.source_drive, disc_path)
                     current_disc = val
                     print(f"  Swapped to disc {val}")

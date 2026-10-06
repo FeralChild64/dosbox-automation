@@ -8,6 +8,8 @@ license = "commercial"
 url = "https://archive.org/download/QuestForGloryShadowsOfDarknessUSA/Quest%20for%20Glory%20-%20Shadows%20of%20Darkness%20%28USA%29.zip"
 
 [discs]
+# Mounted as it is (archive mounts); the cue and its bin are members.
+archive = "qfg4.zip"
 images = ["Quest for Glory - Shadows of Darkness (USA).cue"]
 
 [installer]

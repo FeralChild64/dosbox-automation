@@ -82,10 +82,14 @@ TEST_F(CdCompanionTest, ParentStepsNeverLeaveTheImageDirectory)
 TEST_F(CdCompanionTest, ALowercaseFileAnswersAnUppercaseName)
 {
 	Touch(images / "game.bin");
+	// On a case-insensitive filesystem (APFS, NTFS) the name as written
+	// already opens the file, so there is nothing to rewrite.
+	const bool case_insensitive_fs = std_fs::exists(images / "GAME.BIN");
+
 	const auto r = Resolve("GAME.BIN");
 	ASSERT_TRUE(r) << why;
 	EXPECT_EQ(r->path, std_fs::canonical(images / "game.bin"));
-	EXPECT_TRUE(r->rewritten);
+	EXPECT_EQ(r->rewritten, !case_insensitive_fs);
 }
 
 // A cue written on Windows names its files in the ANSI code page; those

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2019-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "config/setup.h"
 
@@ -591,6 +592,7 @@ void Config::ParseArguments()
                           cmdline->FindRemoveBoolArgument("help", '?'));
 
 	arguments.working_dir = cmdline->FindRemoveStringArgument("working-dir");
+	arguments.run     = cmdline->FindRemoveStringArgument("run");
 	arguments.lang    = cmdline->FindRemoveStringArgument("lang");
 	arguments.machine = cmdline->FindRemoveStringArgument("machine");
 

@@ -6,6 +6,7 @@
 # DOS layer: nothing from dosboxcommon may go on this link line.
 add_library(archivereader STATIC
   ../dos_names.cpp
+  archive_activity.cpp
   archive_cache.cpp
   archive_identity.cpp
   archive_lock.cpp
@@ -34,7 +35,9 @@ target_link_libraries(archivereader
 )
 # The engine gets NOMINMAX from dosbox_config.h, which this library does not
 # include; libarchive's headers pull in <windows.h> and its min/max macros.
-target_compile_definitions(archivereader PRIVATE $<$<PLATFORM_ID:Windows>:NOMINMAX>)
+# PUBLIC: a test that includes these headers before the config header
+# (archive_images_tests.cpp) needs it too.
+target_compile_definitions(archivereader PUBLIC $<$<PLATFORM_ID:Windows>:NOMINMAX>)
 
 # The reader library only: an engine object here is a leak in the reader's closure.
 add_executable(dosbox_archive_helper helper_main.cpp)

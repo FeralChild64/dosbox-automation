@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2025 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_SHELL_H
 #define DOSBOX_SHELL_H
@@ -11,6 +12,7 @@
 #include <optional>
 #include <stack>
 #include <string>
+#include <vector>
 
 #include "cpu/callback.h"
 #include "dos/programs.h"
@@ -96,6 +98,7 @@ private:
 	[[nodiscard]] std::string ResolvePath(std::string_view name) const;
 
 	bool ExecuteConfigChange(const char* const cmd_in, const std::string args);
+	void PushPendingCommands();
 
 	friend class AutoexecEditor;
 
@@ -190,5 +193,11 @@ std::string shorten_path(const std::string& path, const size_t max_len);
 
 void SHELL_InitAndRun();
 bool SHELL_IsRunning();
+
+// Lines a program leaves for the shell to run after it returns (MOUNT -run).
+// One set at a time: refused while a set is waiting, when empty, or when a
+// line has control characters or does not fit a command line.
+bool SHELL_QueuePendingCommands(std::vector<std::string> lines);
+std::vector<std::string> SHELL_TakePendingCommands();
 
 #endif

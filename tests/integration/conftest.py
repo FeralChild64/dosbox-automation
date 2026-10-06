@@ -22,6 +22,7 @@ SETTING_SECTIONS = {
     "machine": "dosbox",
     "memsize": "dosbox",
     "output": "sdl",
+    "window_size": "sdl",
     "ttf_output": "sdl",
     "joysticktype": "joystick",
     "archive_cache_path": "dos",
@@ -183,7 +184,7 @@ class DosboxInstance:
 
 def start_dosbox_instance(work_dir, autoexec_lines=None, extra_sets=None,
                           conf_dir=None, allowed_image_roots=None,
-                          settings=None, extra_env=None):
+                          settings=None, extra_env=None, extra_args=None):
     """Start a headless DOSBox instance with optional autoexec and config.
 
     conf_dir: directory for the config file. The mount policy's conf
@@ -195,6 +196,9 @@ def start_dosbox_instance(work_dir, autoexec_lines=None, extra_sets=None,
 
     extra_env: variables added to the engine's environment, e.g. a desktop
     session name for host keyboard detection.
+
+    extra_args: arguments after the options, e.g. a PATH the engine mounts
+    or runs on its own (an archive, a directory, an executable).
 
     Returns a DosboxInstance with client, process, and work_dir.
     """
@@ -282,6 +286,8 @@ def start_dosbox_instance(work_dir, autoexec_lines=None, extra_sets=None,
     if conf_path:
         cmd.extend(["-conf", str(conf_path)])
 
+    cmd.extend(extra_args or [])
+
     proc = subprocess.Popen(
         cmd,
         env=env,
@@ -322,13 +328,13 @@ def dosbox_e2e(tmp_path):
 
     def _factory(autoexec_lines=None, extra_sets=None, work_dir=None,
                  conf_dir=None, allowed_image_roots=None, settings=None,
-                 extra_env=None):
+                 extra_env=None, extra_args=None):
         if work_dir is None:
             work_dir = WORKSPACE / f"e2e-{secrets.token_hex(4)}"
         inst = start_dosbox_instance(
             work_dir, autoexec_lines, extra_sets, conf_dir=conf_dir,
             allowed_image_roots=allowed_image_roots,
-            settings=settings, extra_env=extra_env,
+            settings=settings, extra_env=extra_env, extra_args=extra_args,
         )
         instances.append(inst)
         return inst

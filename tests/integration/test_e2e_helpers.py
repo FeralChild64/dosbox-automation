@@ -4,11 +4,24 @@
 
 """Unit tests for the Lua script generator and replay helpers."""
 
+import datetime
+import functools
+import http.server
+import os
+import threading
+
+import pytest
 from e2e_helpers import (
     DEFAULT_CPU_CYCLES,
     GameManifest,
     PromptStep,
+    archive_settings,
+    build_autoexec,
+    conf_section,
+    download_disk_images,
     generate_install_script,
+    image_path,
+    media_present,
     resolve_cpu_cycles,
     resolve_cycle_settings,
     resolve_keyboard_layout,
@@ -203,3 +216,166 @@ def test_keyboard_layout_never_auto():
     for recording, manifest in ((None, None), ({}, {}), ({"events": []}, {})):
         out = resolve_keyboard_layout(recording, manifest)
         assert out["keyboard_layout"] != "auto"
+
+
+# ---------------------------------------------------------------------------
+# Archive manifests (plan 5 item 5.3): images are members, nothing unpacked
+# ---------------------------------------------------------------------------
+
+DOOM_MEMBERS = [
+    "Doom Shareware Floppy (v1.666) [Disk 1 of 2].ima",
+    "Doom Shareware Floppy (v1.666) [Disk 2 of 2].ima",
+]
+
+
+def write_manifest(tmp_path, discs, media="floppy", url=None):
+    source = f'[source]\nurl = "{url}"\n' if url else ""
+    text = f"""[game]
+name = "Test"
+slug = "test"
+media = "{media}"
+license = "shareware"
+
+{source}
+[discs]
+{discs}
+
+[installer]
+path = "SETUP.EXE"
+source_drive = "A"
+target_drive = "C"
+"""
+    path = tmp_path / "manifest.toml"
+    path.write_text(text, encoding="utf-8")
+    return GameManifest.from_file(path)
+
+
+def doom_discs():
+    images = ", ".join(f'"{m}"' for m in DOOM_MEMBERS)
+    return f'archive = "doom.7z"\nimages = [{images}]'
+
+
+def test_a_manifest_without_archive_has_none(tmp_path):
+    m = write_manifest(tmp_path, 'images = ["disk1.ima"]')
+    assert m.archive is None
+    assert image_path(m, tmp_path, "disk1.ima") == tmp_path / "disk1.ima"
+
+
+def test_an_archive_manifest_names_members_inside_it(tmp_path):
+    m = write_manifest(tmp_path, doom_discs())
+    assert m.archive == "doom.7z"
+    assert m.disc_images == DOOM_MEMBERS
+    assert image_path(m, tmp_path, DOOM_MEMBERS[1]) == (
+        tmp_path / "doom.7z" / DOOM_MEMBERS[1])
+
+
+@pytest.mark.parametrize("archive", ["../doom.7z", "/tmp/doom.7z", "", "a/b.zip"])
+def test_an_archive_outside_the_game_folder_is_refused(tmp_path, archive):
+    with pytest.raises(ValueError):
+        write_manifest(tmp_path, f'archive = "{archive}"\nimages = ["x.ima"]')
+
+
+def test_media_is_present_when_the_archive_is(tmp_path):
+    m = write_manifest(tmp_path, doom_discs())
+    assert not media_present(m, tmp_path)
+    (tmp_path / "doom.7z").write_bytes(b"7z")
+    assert media_present(m, tmp_path)
+    plain = write_manifest(tmp_path, 'images = ["disk1.ima"]')
+    assert not media_present(plain, tmp_path)
+    (tmp_path / "disk1.ima").write_bytes(b"x")
+    assert media_present(plain, tmp_path)
+
+
+def test_archive_settings_keep_cache_and_saves_in_the_work_dir(tmp_path):
+    m = write_manifest(tmp_path, doom_discs())
+    work = tmp_path / "work"
+    assert archive_settings(m, work) == {
+        "archive_cache_path": str(work / "archive-cache"),
+        "archive_sidecar_path": str(work / "archive-saves"),
+        "archive_sequential": "cache",
+    }
+    plain = write_manifest(tmp_path, 'images = ["disk1.ima"]')
+    assert archive_settings(plain, work) == {}
+
+
+def test_build_autoexec_mounts_members(tmp_path):
+    hd = tmp_path / "hd"
+    floppy = write_manifest(tmp_path, doom_discs())
+    assert build_autoexec(floppy, tmp_path, hd) == [
+        f'mount C "{hd}"',
+        f'mount A "{tmp_path / "doom.7z" / DOOM_MEMBERS[0]}" -t floppy',
+    ]
+    cd = write_manifest(tmp_path, 'archive = "qfg4.zip"\nimages = ["QFG4.cue"]',
+                        media="cdrom-cue")
+    cd.source_drive = "D"
+    assert build_autoexec(cd, tmp_path, hd) == [
+        f'mount C "{hd}"',
+        f'mount D "{tmp_path / "qfg4.zip" / "QFG4.cue"}" -t cdrom',
+    ]
+    plain = write_manifest(tmp_path, 'images = ["disk1.ima"]')
+    assert build_autoexec(plain, tmp_path, hd) == [
+        f'mount C "{hd}"',
+        f'mount A "{tmp_path / "disk1.ima"}" -t floppy',
+    ]
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):  # noqa: A002 - the base signature
+        pass
+
+
+class _NoDateHandler(_QuietHandler):
+    def send_header(self, keyword, value):
+        if keyword.lower() != "last-modified":
+            super().send_header(keyword, value)
+
+
+@pytest.fixture
+def serve(tmp_path):
+    servers = []
+
+    def start(handler):
+        root = tmp_path / "server"
+        root.mkdir(exist_ok=True)
+        server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), functools.partial(handler, directory=str(root)))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return root, f"http://127.0.0.1:{server.server_address[1]}"
+
+    yield start
+    for server in servers:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_downloaded_archive_keeps_the_server_time(tmp_path, serve):
+    root, base = serve(_QuietHandler)
+    (root / "doom.7z").write_bytes(b"7z-bytes")
+    stamp = datetime.datetime(2019, 4, 15, 12, 0, 0,
+                              tzinfo=datetime.timezone.utc).timestamp()
+    os.utime(root / "doom.7z", (stamp, stamp))
+    m = write_manifest(tmp_path, doom_discs(), url=f"{base}/doom.7z")
+    game = tmp_path / "game"
+    game.mkdir()
+    assert download_disk_images(m, game)
+    assert (game / "doom.7z").read_bytes() == b"7z-bytes"
+    assert (game / "doom.7z").stat().st_mtime == stamp
+    assert sorted(p.name for p in game.iterdir()) == ["doom.7z"]
+
+
+def test_a_download_without_a_server_time_says_so(tmp_path, serve, capsys):
+    root, base = serve(_NoDateHandler)
+    (root / "doom.7z").write_bytes(b"7z-bytes")
+    m = write_manifest(tmp_path, doom_discs(), url=f"{base}/doom.7z")
+    game = tmp_path / "game"
+    game.mkdir()
+    assert download_disk_images(m, game)
+    assert "Last-Modified" in capsys.readouterr().out
+
+
+def test_conf_section_writes_settings_and_nothing_when_empty():
+    assert conf_section("dos", {"keyboard_layout": "us",
+                                "archive_sequential": "cache"}) == (
+        "[dos]\nkeyboard_layout = us\narchive_sequential = cache\n\n")
+    assert conf_section("dos", {}) == ""

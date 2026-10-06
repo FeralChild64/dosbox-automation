@@ -17,6 +17,7 @@
 #include "dosbox_test_fixture.h"
 #include "ints/bios_disk.h"
 #include "misc/cross.h"
+#include "shell/shell.h"
 #include "test_temp_dir.h"
 #include "utils/env_utils.h"
 
@@ -95,6 +96,35 @@ std::vector<FileEntry> Images()
 	};
 }
 
+// Archives with the same content share one sidecar, so a second mount
+// of the same set needs another readme.
+std::vector<FileEntry> OneProgram(const std::string& readme = "hello")
+{
+	return {
+	        {"game.exe", "MZ"},
+	        {"readme.txt", readme},
+	};
+}
+
+std::vector<FileEntry> TwoPrograms(const std::string& readme = "hello")
+{
+	return {
+	        {"setup.exe", "MZ"},
+	        {"game.exe", "MZ"},
+	        {"readme.txt", readme},
+	};
+}
+
+// FloppyBytes with an empty X.EXE after the label in the root directory.
+std::string FloppyWithProgram()
+{
+	auto img              = FloppyBytes("RUNDISK");
+	constexpr size_t Root = 3 * 512;
+	img.replace(Root + 32, 11, "X       EXE");
+	img[Root + 32 + 11] = '\x20';
+	return img;
+}
+
 std::vector<std::pair<std::string, MountVerdict>> verdicts = {};
 std::vector<std::string> constructed                       = {};
 
@@ -133,6 +163,7 @@ protected:
 				UnmountHelper(d);
 			}
 		}
+		SHELL_TakePendingCommands();
 		ArchiveImages::ReleaseAllForTests();
 		imageDiskList.fill(nullptr);
 		MountPolicy::verdict_hook            = nullptr;
@@ -807,6 +838,21 @@ TEST_F(MountArchiveTest, AnIszMountsAsACdDrive)
 	EXPECT_EQ(ArchiveImages::HeldCountForTests(drive_index('D')), 1u);
 }
 
+// The command line mounts a CD container the way it mounts an ISO.
+TEST_F(MountArchiveTest, ACdContainerMountsWithTypeIso)
+{
+	const auto isz = tmp / "game.isz";
+	ASSERT_TRUE(WriteIsz(isz, MinimalIso(), IszChunk::Zlib));
+	ASSERT_TRUE(Mount("D " + isz.string() + " -t iso").has_value());
+	EXPECT_NE(std::dynamic_pointer_cast<isoDrive>(Drives.at(drive_index('D'))),
+	          nullptr);
+	const auto xz = tmp / "game.iso.xz";
+	ASSERT_TRUE(WriteCompressed(xz, Filter::Xz, MinimalIso()));
+	ASSERT_TRUE(Mount("E " + xz.string() + " -t iso").has_value());
+	EXPECT_NE(std::dynamic_pointer_cast<isoDrive>(Drives.at(drive_index('E'))),
+	          nullptr);
+}
+
 TEST_F(MountArchiveTest, AContainerAsAnArchiveDriveIsRefused)
 {
 	const auto imz = tmp / "game.imz";
@@ -960,4 +1006,116 @@ TEST_F(MountArchiveTest, AnUnsupportedMethodSaysSoAndAsksForTheArchive)
 	        << text;
 	EXPECT_NE(text.find("attach the archive"), std::string::npos) << text;
 	EXPECT_NE(text.find("link"), std::string::npos) << text;
+}
+
+TEST_F(MountArchiveTest, RunQueuesTheNamedProgram)
+{
+	const auto zip = Built("two.zip", Kind::ZipStored, TwoPrograms());
+	ASSERT_TRUE(Mount("D " + zip.string() + " -run GAME.EXE").has_value());
+	EXPECT_EQ(SHELL_TakePendingCommands(),
+	          (std::vector<std::string>{"D:", "D:\\GAME.EXE"}));
+}
+
+TEST_F(MountArchiveTest, RunWithoutANameFindsTheOnlyProgram)
+{
+	const auto zip = Built("one.zip", Kind::ZipStored, OneProgram());
+	ASSERT_TRUE(Mount("D " + zip.string() + " -run").has_value());
+	EXPECT_EQ(SHELL_TakePendingCommands(),
+	          (std::vector<std::string>{"D:", "D:\\GAME.EXE"}));
+}
+
+TEST_F(MountArchiveTest, RunListsSeveralCandidates)
+{
+	const auto zip = Built("two.zip", Kind::ZipStored, TwoPrograms());
+	EXPECT_TRUE(Mount("D " + zip.string() + " -run").has_value());
+	EXPECT_TRUE(DriveAt('D'));
+	EXPECT_TRUE(SHELL_TakePendingCommands().empty());
+}
+
+// Decision 4 (Stefan 2026-10-05): the mount stays, nothing runs.
+TEST_F(MountArchiveTest, ARunNameThatDoesNotResolveKeepsTheMount)
+{
+	const auto zip = Built("two.zip", Kind::ZipStored, TwoPrograms());
+	EXPECT_TRUE(Mount("D " + zip.string() + " -run PLAY.EXE").has_value());
+	EXPECT_TRUE(DriveAt('D'));
+	EXPECT_TRUE(SHELL_TakePendingCommands().empty());
+	const auto bad = Built("bad.zip", Kind::ZipStored, TwoPrograms("bad"));
+	EXPECT_TRUE(Mount("E " + bad.string() + " -run ..\\GAME.EXE").has_value());
+	EXPECT_TRUE(DriveAt('E'));
+	EXPECT_TRUE(SHELL_TakePendingCommands().empty());
+}
+
+TEST_F(MountArchiveTest, RunIsRefusedWithFsNone)
+{
+	const auto img = tmp / "disk.img";
+	std::ofstream(img, std::ios::binary) << FloppyWithProgram();
+	const auto mounted = [] {
+		return std::any_of(imageDiskList.begin(),
+		                   imageDiskList.end(),
+		                   [](const auto& disk) {
+			                   return disk != nullptr;
+		                   });
+	};
+	EXPECT_FALSE(Mount("D " + img.string() + " -fs none -run X.EXE").has_value());
+	EXPECT_FALSE(Mount("2 " + img.string() + " -fs none -run").has_value());
+	EXPECT_FALSE(mounted());
+	EXPECT_TRUE(SHELL_TakePendingCommands().empty());
+	// Without -run the same line mounts, so the refusal is -run's.
+	EXPECT_TRUE(Mount("2 " + img.string() + " -fs none").has_value());
+	EXPECT_TRUE(mounted());
+}
+
+TEST_F(MountArchiveTest, RunOnADirectoryMountWorks)
+{
+	const auto dir = tmp / "plain";
+	std::filesystem::create_directories(dir);
+	std::ofstream(dir / "GAME.EXE", std::ios::binary) << "MZ";
+	ASSERT_TRUE(Mount("D " + dir.string() + " -run").has_value());
+	EXPECT_EQ(SHELL_TakePendingCommands(),
+	          (std::vector<std::string>{"D:", "D:\\GAME.EXE"}));
+}
+
+TEST_F(MountArchiveTest, RunOnAMemberPathFloppy)
+{
+	const std::vector<FileEntry> entries = {
+	        {"disks/", "", true},
+	        {"disks/disk1.img", FloppyWithProgram()},
+	};
+	const auto zip = Built("images.zip", Kind::ZipDeflate, entries);
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img -run X").has_value());
+	EXPECT_EQ(SHELL_TakePendingCommands(),
+	          (std::vector<std::string>{"A:", "A:\\X.EXE"}));
+}
+
+TEST_F(MountArchiveTest, ExitIsQueuedOnlyBehindAProgram)
+{
+	const auto one = Built("one.zip", Kind::ZipStored, OneProgram());
+	ASSERT_TRUE(Mount("D " + one.string() + " -run GAME.EXE -exit").has_value());
+	EXPECT_EQ(SHELL_TakePendingCommands(),
+	          (std::vector<std::string>{"D:", "D:\\GAME.EXE", "EXIT"}));
+	const auto two = Built("two.zip", Kind::ZipStored, TwoPrograms());
+	ASSERT_TRUE(Mount("E " + two.string() + " -run -exit").has_value());
+	EXPECT_TRUE(SHELL_TakePendingCommands().empty());
+	const auto three = Built("three.zip", Kind::ZipStored, OneProgram("three"));
+	ASSERT_TRUE(Mount("F " + three.string() + " -exit -run").has_value());
+	EXPECT_EQ(SHELL_TakePendingCommands(),
+	          (std::vector<std::string>{"F:", "F:\\GAME.EXE", "EXIT"}));
+}
+
+TEST_F(MountArchiveTest, ExitWithoutRunIsRefused)
+{
+	const auto zip = Built("one.zip", Kind::ZipStored, OneProgram());
+	EXPECT_FALSE(Mount("D " + zip.string() + " -exit").has_value());
+	EXPECT_FALSE(Drives.at(drive_index('D')));
+	EXPECT_TRUE(SHELL_TakePendingCommands().empty());
+}
+
+TEST_F(MountArchiveTest, ASecondRunWhileOneWaitsIsRefused)
+{
+	ASSERT_TRUE(SHELL_QueuePendingCommands({"EARLIER"}));
+	const auto zip = Built("one.zip", Kind::ZipStored, OneProgram());
+	EXPECT_TRUE(Mount("D " + zip.string() + " -run GAME.EXE").has_value());
+	EXPECT_TRUE(DriveAt('D'));
+	EXPECT_EQ(SHELL_TakePendingCommands(),
+	          (std::vector<std::string>{"EARLIER"}));
 }

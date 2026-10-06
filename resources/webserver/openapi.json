@@ -2240,6 +2240,34 @@
           },
           "canonical_name": {
             "type": "string"
+          },
+          "archive": {
+            "$ref": "#/components/schemas/ArchiveActivity"
+          }
+        }
+      },
+      "ArchiveActivity": {
+        "type": "object",
+        "description": "Present only while the archive helper identifies an archive or unpacks a member for a mount, which blocks the emulation thread; a launcher can show it as preparing the game files.",
+        "required": ["activity", "archive", "bytes_done", "bytes_total"],
+        "properties": {
+          "activity": {
+            "type": "string",
+            "enum": ["identifying", "materializing"]
+          },
+          "archive": {
+            "type": "string",
+            "description": "The archive's file name without its last extension (big.tar for big.tar.gz)."
+          },
+          "bytes_done": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Bytes unpacked so far; 0 while identifying."
+          },
+          "bytes_total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The archive's size while identifying, the member's or all members' size while unpacking."
           }
         }
       },

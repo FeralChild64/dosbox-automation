@@ -10,6 +10,7 @@
 #include "dos/archive/member_path.h"
 #include "dos/programs/archive_images.h"
 #include "dos/programs/mount_archive_internal.h"
+#include "dos/programs/mount_run.h"
 #include "mount_common.h"
 #include "mount_policy.h"
 
@@ -780,6 +781,22 @@ bool MOUNT::ParseArguments(MountParameters& params, bool& explicit_fs,
 		return false;
 	}
 	params.sidecar_path = sidecar->value.value_or("");
+
+	const auto run      = TakeOption("-run", OptionValue::Optional);
+	const auto run_exit = TakeOption("-exit", OptionValue::None);
+	if (!run || !run_exit) {
+		return false;
+	}
+	if (run->present) {
+		params.run = run->value.value_or("");
+	}
+	params.run_exit = run_exit->present;
+	if (params.run_exit && !params.run) {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      "PROGRAM_MOUNT_EXIT_NEEDS_RUN");
+		return false;
+	}
 
 	// The geometry strings are interpreted in ParseGeometry once
 	// ProcessPaths has settled the mount type.
@@ -1790,11 +1807,50 @@ std::optional<MountParameters> MOUNT::ProcessArguments(CommandLine* cmd)
 		return {};
 	}
 
+	// -fs none leaves a drive number: no DOS drive to run anything from.
+	if (params.run && params.is_drive_number) {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      "PROGRAM_MOUNT_RUN_NEEDS_LETTER");
+		return {};
+	}
+
 	if (!MountPaths(params)) {
 		return {};
 	}
 
+	if (params.run) {
+		QueueRun(params);
+	}
+
 	return params;
+}
+
+// Decision 4 (Stefan 2026-10-05): a name that does not resolve leaves the
+// mount standing and runs nothing.
+void MOUNT::QueueRun(const MountParameters& params)
+{
+	auto target = MountRun::Resolve(params.drive, *params.run);
+	if (target.lines.empty()) {
+		const MountRun::Texts texts = {
+		        MSG_Get("PROGRAM_MOUNT_RUN_BAD_NAME"),
+		        MSG_Get("PROGRAM_MOUNT_RUN_NOT_FOUND"),
+		        MSG_Get("PROGRAM_MOUNT_RUN_NOT_A_PROGRAM"),
+		        MSG_Get("PROGRAM_MOUNT_RUN_NO_PROGRAM"),
+		        MSG_Get("PROGRAM_MOUNT_RUN_SEVERAL_PROGRAMS"),
+		        MSG_Get("PROGRAM_MOUNT_RUN_NO_DRIVE"),
+		        MSG_Get("PROGRAM_MOUNT_RUN_CANDIDATES"),
+		};
+		WriteOut_NoParsing(
+		        MountRun::Describe(target, *params.run, params.drive, texts));
+		return;
+	}
+	if (params.run_exit) {
+		target.lines.emplace_back("EXIT");
+	}
+	if (!SHELL_QueuePendingCommands(std::move(target.lines))) {
+		WriteOut(MSG_Get("PROGRAM_MOUNT_RUN_BUSY"));
+	}
 }
 
 const char* const MOUNT::ArchiveUnsupportedMessage =
@@ -1842,6 +1898,9 @@ void MOUNT::AddMessages()
 	        "  -root [color=white]DIR[reset]       directory inside the archive to use as the drive's root\n"
 	        "  -sidecar [color=white]PATH[reset]  archive mounts: directory for the game's writes (default: saves)\n"
 	        "  -nosidecar      archive mounts: no sidecar, the drive is read-only\n"
+	        "  -run [color=white]NAME[reset]       run NAME from the new drive once MOUNT is done; without\n"
+	        "                  NAME, the only .COM, .EXE or .BAT at the drive's root\n"
+	        "  -exit           with -run: leave DOSBox when the program ends\n"
 	        "  -reconnect [color=white]DRIVE[reset] reopen an archive mount that reports lost or offline\n"
 	        "\n"
 	        "Directory mount parameters:\n"
@@ -1967,6 +2026,20 @@ void MOUNT::AddMessages()
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_ONLY_OPTIONS",
 	        "%s: -root, -sidecar and -nosidecar apply to archive mounts only.\n");
 	MSG_Add("PROGRAM_MOUNT_REPEATED_OPTION", "Option %s given more than once\n");
+	const auto& run_texts = MountRun::EnglishTexts();
+	MSG_Add("PROGRAM_MOUNT_RUN_BAD_NAME", run_texts.bad_name);
+	MSG_Add("PROGRAM_MOUNT_RUN_NOT_FOUND", run_texts.not_found);
+	MSG_Add("PROGRAM_MOUNT_RUN_NOT_A_PROGRAM", run_texts.not_a_program);
+	MSG_Add("PROGRAM_MOUNT_RUN_NO_PROGRAM", run_texts.no_program);
+	MSG_Add("PROGRAM_MOUNT_RUN_SEVERAL_PROGRAMS", run_texts.several_programs);
+	MSG_Add("PROGRAM_MOUNT_RUN_NO_DRIVE", run_texts.no_drive);
+	MSG_Add("PROGRAM_MOUNT_RUN_CANDIDATES", run_texts.candidates);
+	MSG_Add("PROGRAM_MOUNT_RUN_BUSY",
+	        "Another program is already waiting to run; this MOUNT queued nothing.\n");
+	MSG_Add("PROGRAM_MOUNT_RUN_NEEDS_LETTER",
+	        "-run needs a drive letter; it cannot be used with -fs none.\n");
+	MSG_Add("PROGRAM_MOUNT_EXIT_NEEDS_RUN",
+	        "-exit only works together with -run.\n");
 	MSG_Add("PROGRAM_MOUNT_OPTION_NEEDS_VALUE", "Option %s needs a value\n");
 	MSG_Add("PROGRAM_MOUNT_ALREADY_MOUNTED", "Drive %c already mounted with %s\n");
 	MSG_Add("PROGRAM_MOUNT_UMOUNT_NOT_MOUNTED", "Drive %c isn't mounted.\n");

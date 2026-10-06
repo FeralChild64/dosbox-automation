@@ -59,6 +59,17 @@ struct ZipOptions {
 	bool zip64_eocd_sentinels = true;
 };
 
+// libarchive's narrow opener takes the ANSI code page on Windows, where a
+// name outside it (katakana in the member path tests) has no mapping.
+inline int OpenWriterAt(struct archive* a, const std::filesystem::path& path)
+{
+#if defined(WIN32)
+	return archive_write_open_filename_w(a, path.c_str());
+#else
+	return archive_write_open_filename(a, path.c_str());
+#endif
+}
+
 // The mtime through stat: MSVC's file_clock has no to_sys (2026-10-04).
 inline int64_t MtimeOf(const std::filesystem::path& path)
 {
@@ -347,7 +358,7 @@ inline bool WriteArchive(const std::filesystem::path& path, const Kind kind,
 		}
 	}
 	if (r == ARCHIVE_OK) {
-		r = archive_write_open_filename(a, path.string().c_str());
+		r = OpenWriterAt(a, path);
 	}
 	for (const auto& e : entries) {
 		if (r != ARCHIVE_OK) {
@@ -408,7 +419,7 @@ inline bool WriteCompressed(const std::filesystem::path& path, const Filter filt
 		}
 	}
 	if (r == ARCHIVE_OK) {
-		r = archive_write_open_filename(a, path.string().c_str());
+		r = OpenWriterAt(a, path);
 	}
 	if (r == ARCHIVE_OK) {
 		struct archive_entry* ae = archive_entry_new();

@@ -18,6 +18,7 @@
 #endif
 
 #include "augra/log.h"
+#include "dos/archive/archive_activity.h"
 #include "dos/archive/descriptor.h"
 #include "dos/archive/head_sniff.h"
 #include "dos/archive/helper_protocol.h"
@@ -101,26 +102,11 @@ bool is_digits(const std::u8string_view text)
 void remove_part_files(const std::filesystem::path& dir,
                        const std::optional<std::u8string>& only_name)
 {
-	constexpr size_t HexDigits = 32;
-	constexpr auto Tail        = std::u8string_view(u8".part");
-	std::error_code ec         = {};
-	auto it = std::filesystem::directory_iterator(dir, ec);
+	std::error_code ec = {};
+	auto it            = std::filesystem::directory_iterator(dir, ec);
 	for (; !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
-		const auto file = it->path().filename().u8string();
-		const auto name = std::u8string_view(file);
-		if (name.size() < 1 + 1 + HexDigits + Tail.size() ||
-		    !name.ends_with(Tail)) {
-			continue;
-		}
-		const auto hex_at = name.size() - Tail.size() - HexDigits;
-		const auto hex    = name.substr(hex_at, HexDigits);
-		const auto stem   = name.substr(0, hex_at - 1);
-		const auto is_hex = std::all_of(hex.begin(), hex.end(), [](const char8_t c) {
-			return (c >= u8'0' && c <= u8'9') ||
-			       (c >= u8'a' && c <= u8'f');
-		});
-		if (name[hex_at - 1] != u8'.' || !is_hex ||
-		    (only_name ? stem != *only_name : !is_digits(stem))) {
+		const auto stem = PartFileStem(it->path().filename().u8string());
+		if (!stem || (only_name ? *stem != *only_name : !is_digits(*stem))) {
 			continue;
 		}
 		auto remove_ec = std::error_code();
@@ -597,6 +583,13 @@ ArchiveHelperClient::OpenResult ArchiveHelperClient::Open(
 		result.detail = "open failed";
 		return result;
 	}
+	std::error_code size_ec     = {};
+	Activity::Snapshot identify = {};
+	identify.kind               = Activity::Kind::Identifying;
+	identify.archive            = PathToUtf8(path.stem());
+	const auto on_disk          = std::filesystem::file_size(path, size_ec);
+	identify.bytes_total = size_ec ? 0 : static_cast<int64_t>(on_disk);
+	const Activity::Guard guard(identify);
 	result.error = client->impl->Spawn(true, &result.detail);
 	if (result.error != Error::None) {
 		return result; // the client's destructor quits the helper
@@ -686,6 +679,13 @@ Error ArchiveHelperClient::MaterializeToFile(const int ordinal,
 		           "no entry with ordinal " + std::to_string(ordinal));
 		return Error::NotFound;
 	}
+	Activity::Snapshot activity = {};
+	activity.kind               = Activity::Kind::Materializing;
+	activity.archive            = PathToUtf8(impl->archive.stem());
+	activity.bytes_total        = entry->size;
+	activity.target             = target;
+	const Activity::Guard guard(activity);
+
 	auto request     = MaterializeRequest{};
 	request.ordinal  = ordinal;
 	request.target   = PathToUtf8(target);
@@ -709,6 +709,14 @@ Error ArchiveHelperClient::MaterializeToFile(const int ordinal,
 Error ArchiveHelperClient::MaterializeAll(const std::filesystem::path& directory,
                                           std::string* detail)
 {
+	Activity::Snapshot activity = {};
+	activity.kind               = Activity::Kind::Materializing;
+	activity.archive            = PathToUtf8(impl->archive.stem());
+	activity.bytes_total        = impl->index.total_bytes;
+	activity.target             = directory;
+	activity.target_is_folder   = true;
+	const Activity::Guard guard(activity);
+
 	auto request      = MaterializeAllRequest{};
 	request.directory = PathToUtf8(directory);
 	const auto error  = impl->StatusRequest(Type::MaterializeAll,

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "shell/autoexec.h"
 
@@ -11,6 +12,8 @@
 #include "hardware/input/keyboard.h"
 #include "hardware/input/mouse.h"
 #include "config/setup.h"
+#include "dos/programs/mount_run.h"
+#include "shell/autoexec_archive.h"
 #include "shell/shell.h"
 #include "utils/string_utils.h"
 #include "misc/unicode.h"
@@ -333,6 +336,7 @@ AutoExecModule::AutoExecModule(Section* configuration)
 
 	bool has_boot_image     = false;
 	bool has_dir_or_command = false;
+	bool has_archive        = false;
 
 	std::string drive_c_directory = {};
 	std::string cdrom_images      = {};
@@ -396,12 +400,54 @@ AutoExecModule::AutoExecModule(Section* configuration)
 			continue;
 		}
 
+		// Design D8 and plan 5 decision 1: archives and single-image
+		// containers, judged by name and head bytes as MOUNT judges them.
+		if (const auto kind = AutoexecArchive::Classify(path)) {
+			const auto absolute = std_fs::absolute(path).string();
+			if (*kind == AutoexecArchive::Argument::CdContainer) {
+				if (!cdrom_images.empty()) {
+					cdrom_images += " ";
+				}
+				cdrom_images += Quote + absolute + Quote;
+				continue;
+			}
+			if (*kind == AutoexecArchive::Argument::DiskContainer) {
+				AddLine(Placement::CommandsAfterAutoexecSection,
+				        CmdBoot + Quote + absolute + Quote);
+				has_boot_image     = true;
+				has_dir_or_command = true;
+				break;
+			}
+			const auto lines = AutoexecArchive::ArchiveLines(
+			        absolute, arguments->run);
+			if (!lines) {
+				LOG_WARNING("CONFIG: Cannot pass '%s' to MOUNT: the path has a quote or a control character",
+				            argument.c_str());
+				continue;
+			}
+			if (!arguments->run.empty() &&
+			    !MountRun::IsProgramName(arguments->run)) {
+				LOG_WARNING("CONFIG: --run '%s' is not a DOS program name; mounting without it",
+				            arguments->run.c_str());
+			}
+			for (const auto& line : *lines) {
+				AddLine(Placement::CommandsAfterAutoexecSection, line);
+			}
+			has_archive        = true;
+			has_dir_or_command = true;
+			break;
+		}
+
 		// Consider argument as executable
 		ReMountDirAsDriveC(path.parent_path().string());
 		AddLine(Placement::CommandsAfterAutoexecSection,
 		        path.filename().string());
 		has_dir_or_command = true;
 		break;
+	}
+
+	if (!arguments->run.empty() && !has_archive) {
+		LOG_WARNING("CONFIG: --run applies to an archive given as PATH; ignored");
 	}
 
 	// Mount drives

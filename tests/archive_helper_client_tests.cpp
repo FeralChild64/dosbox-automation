@@ -5,15 +5,19 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
+#include <thread>
 #include <tuple>
 
 #include "archive_fixtures.h"
+#include "dos/archive/archive_activity.h"
 #include "dos/archive/archive_reader.h"
 #include "dos/archive/shadow_sanitizer.h"
 #include "test_temp_dir.h"
@@ -592,4 +596,92 @@ TEST_F(ArchiveHelperClientTest, AKilledOnePassLeavesNoPartFiles)
 	EXPECT_EQ(client->MaterializeAll(dir, &detail), Error::Timeout);
 	EXPECT_FALSE(fs::exists(leftover));
 	EXPECT_TRUE(fs::exists(keep));
+}
+
+// Plan 5 item 5.7: the webserver thread sees the request while the
+// emulation thread waits on the helper.
+TEST_F(ArchiveHelperClientTest, TheActivityShowsAMemberWhileTheHelperWorks)
+{
+	const std::vector<FileEntry> entries = {
+	        {"a.txt", "a"},
+	        {"big.bin", std::string(9000, 'b')},
+	};
+	const auto path = Built("doom.zip", Kind::ZipStored, entries);
+	options.base_timeout = 500ms;
+	auto client          = OpenOk(path);
+	ASSERT_TRUE(client);
+	EXPECT_FALSE(Activity::Current());
+	ASSERT_TRUE(client->ArmTestHang(1, /*persistent=*/false));
+	const auto target = tmp_dir / "big.bin";
+	std::thread worker([&] {
+		auto detail = std::string();
+		EXPECT_EQ(client->MaterializeToFile(1, target, &detail),
+		          Error::Timeout);
+	});
+	std::optional<Activity::Status> seen = {};
+	const auto deadline                  = steady_clock::now() + 3s;
+	while (!seen && steady_clock::now() < deadline) {
+		seen = Activity::CurrentStatus();
+		std::this_thread::sleep_for(1ms);
+	}
+	worker.join();
+	ASSERT_TRUE(seen);
+	EXPECT_EQ(seen->activity, "materializing");
+	EXPECT_EQ(seen->archive, "doom");
+	EXPECT_EQ(seen->bytes_total, 9000);
+	EXPECT_FALSE(Activity::Current());
+}
+
+std::vector<Activity::Snapshot> started_guards = {};
+void RecordGuard(const Activity::Snapshot& snapshot)
+{
+	started_guards.push_back(snapshot);
+}
+
+// An early ASSERT return must not leave the hook set for the next tests.
+struct ObserverScope {
+	ObserverScope()
+	{
+		started_guards.clear();
+		Activity::observer = &RecordGuard;
+	}
+	~ObserverScope()
+	{
+		Activity::observer = nullptr;
+	}
+	ObserverScope(const ObserverScope&)            = delete;
+	ObserverScope& operator=(const ObserverScope&) = delete;
+};
+
+// The index takes under a millisecond, too short to poll for.
+TEST_F(ArchiveHelperClientTest, TheIdentificationAndEachRequestSetTheActivity)
+{
+	const std::vector<FileEntry> entries = {
+	        {"a.txt", "a"},
+	        {"dir/", "", true},
+	        {"dir/b.txt", "bb"},
+	};
+	const auto path = Built("keen.tar", Kind::Tar, entries);
+	auto observing = std::make_unique<ObserverScope>();
+	auto client    = OpenOk(path);
+	ASSERT_TRUE(client);
+	EXPECT_EQ(Read(*client, 0), "a");
+	auto detail = std::string();
+	EXPECT_EQ(client->MaterializeAll(tmp_dir / "all", &detail), Error::None)
+	        << detail;
+	observing.reset();
+	ASSERT_EQ(started_guards.size(), 3u);
+	EXPECT_EQ(started_guards[0].kind, Activity::Kind::Identifying);
+	EXPECT_EQ(started_guards[0].archive, "keen");
+	EXPECT_EQ(started_guards[0].bytes_total,
+	          static_cast<int64_t>(fs::file_size(path)));
+	EXPECT_EQ(started_guards[1].kind, Activity::Kind::Materializing);
+	EXPECT_EQ(started_guards[1].bytes_total, 1);
+	EXPECT_FALSE(started_guards[1].target_is_folder);
+	EXPECT_EQ(started_guards[1].target.parent_path(), options.scratch_dir);
+	EXPECT_EQ(started_guards[2].kind, Activity::Kind::Materializing);
+	EXPECT_TRUE(started_guards[2].target_is_folder);
+	EXPECT_EQ(started_guards[2].target, tmp_dir / "all");
+	EXPECT_EQ(started_guards[2].bytes_total, 3);
+	EXPECT_FALSE(Activity::Current());
 }

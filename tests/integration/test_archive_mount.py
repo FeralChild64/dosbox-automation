@@ -263,3 +263,237 @@ def test_doom_shareware_installs_into_the_sidecar(dosbox_e2e, tmp_path):
     assert (dooms / "DOOM.EXE").stat().st_size == 709905
     assert (dooms / "SETUP.EXE").exists()
     assert not list((tmp_path / "saves").rglob("DOOMS_19.EXE"))
+
+
+def floppy_bytes(label: str) -> bytes:
+    """A 320K DOS 1.x floppy: the media byte decides the BPB (two one-sector
+    FATs, the root at sector 3) and the root holds only a volume label."""
+    img = bytearray(327680)
+    img[512] = 0xFF
+    root = 3 * 512
+    img[root:root + 11] = label.ljust(11).encode("ascii")
+    img[root + 11] = 0x08
+    return bytes(img)
+
+
+HOUSE_FILES = [
+    ("info.toml", b'[game]\r\ntitle = "House Test"\r\n'),
+    ("disks/disk1.img", floppy_bytes("HOUSEONE")),
+    ("disks/disk2.img", floppy_bytes("HOUSETWO")),
+    ("game/house.exe", b"MZ" + b"\0" * 62),
+]
+
+
+def build_house_zip(path: Path) -> Path:
+    """The house archive layout: info.toml at the root, the disks in disks/,
+    the installed game in game/ (plan 5 item 5.5)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for name, data in HOUSE_FILES:
+            z.writestr(zipfile.ZipInfo(name, date_time=STAMP), data,
+                       compress_type=zipfile.ZIP_DEFLATED)
+    return path
+
+
+def listing_after(text: str, command: str) -> list[str]:
+    lines = text.split("\n")
+    start = next(i for i, line in enumerate(lines) if line.endswith(command))
+    names = []
+    for line in lines[start + 1:]:
+        if ">" in line and line.split(">", 1)[0].endswith(":\\"):
+            break
+        if line.strip():
+            names.append(line.strip())
+    return names
+
+
+def test_a_house_archive_mounts_with_its_info_and_its_disks(dosbox_e2e, tmp_path):
+    zip_path = build_house_zip(tmp_path / "game" / "house.zip")
+    folder = tmp_path / "game" / "house"
+    for name, data in HOUSE_FILES:
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_bytes(data)
+    before = sha256(zip_path)
+    inst = dosbox_e2e(
+        autoexec_lines=[
+            f"mount c {zip_path}",
+            f"mount d {folder}",
+            f"mount a {zip_path}/disks/disk1.img",
+            f"mount b {zip_path}/disks/disk2.img",
+            "d:",
+            "dir /b",
+            "c:",
+            "dir /b",
+            "type info~1.tom",
+            "vol a:",
+            "vol b:",
+        ],
+        conf_dir=tmp_path / "game",
+        settings=settings_for(tmp_path),
+    )
+    text = wait_text(inst.client, "HOUSETWO")
+    # Three entries at the top, so no single root directory is entered.
+    assert "as the root" not in text, text
+    # info.toml is not 8.3: the archive drive names it as a directory
+    # mount of the same files does.
+    from_folder = listing_after(text, "D:\\>dir /b")
+    from_archive = listing_after(text, "C:\\>dir /b")
+    assert sorted(from_archive) == sorted(from_folder), text
+    assert sorted(from_archive) == ["DISKS", "GAME", "INFO~1.TOM"], text
+    for needle in ('title = "House Test"', "HOUSEONE"):
+        assert needle in text, text
+    assert sha256(zip_path) == before
+
+
+# ---------------------------------------------------------------------------
+# Plan 5: the archive on the command line, MOUNT -run, the status field
+# ---------------------------------------------------------------------------
+
+DONE_BAT = b"@ECHO OFF\r\nECHO done> DONE.TXT\r\n"
+
+
+def build_program_zip(path: Path, programs: dict[str, bytes]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for name, data in {"README.TXT": b"hello\r\n", **programs}.items():
+            z.writestr(zipfile.ZipInfo(name, date_time=STAMP), data,
+                       compress_type=zipfile.ZIP_DEFLATED)
+    return path
+
+
+def run_to_exit(tmp_path: Path, args: list[str]) -> int:
+    """The engine without the webserver, which it would leave at once."""
+    import os
+    import subprocess
+
+    from conftest import DOSBOX_BIN
+
+    env = {**os.environ, "HOME": str(tmp_path), "SDL_VIDEODRIVER": "offscreen",
+           "SDL_AUDIODRIVER": "dummy"}
+    cmd = [DOSBOX_BIN, "--noprimaryconf", "--nolocalconf",
+           "--set", "webserver_enabled=false",
+           "--set", f"archive_cache_path={tmp_path / 'cache'}",
+           "--set", f"archive_sidecar_path={tmp_path / 'saves'}",
+           *args]
+    done = subprocess.run(cmd, env=env, cwd=tmp_path, timeout=60,  # nosec B603 - our engine
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return done.returncode
+
+
+def sidecar_files(tmp_path: Path) -> list[str]:
+    saves = tmp_path / "saves"
+    if not saves.is_dir():
+        return []
+    return sorted(p.name for p in saves.rglob("*") if p.is_file()
+                  and not p.name.startswith("."))
+
+
+def test_an_archive_on_the_command_line_runs_its_program_and_exits(tmp_path):
+    zip_path = build_program_zip(tmp_path / "game.zip", {"GAME.BAT": DONE_BAT})
+    before = sha256(zip_path)
+    assert run_to_exit(tmp_path, [str(zip_path)]) == 0
+    assert sidecar_files(tmp_path) == ["DONE.TXT"]
+    assert sha256(zip_path) == before
+
+
+def test_run_names_the_program_among_several(tmp_path):
+    zip_path = build_program_zip(tmp_path / "game.zip", {
+        "FIRST.BAT": b"@ECHO OFF\r\nECHO first> FIRST.TXT\r\n",
+        "SECOND.BAT": b"@ECHO OFF\r\nECHO second> SECOND.TXT\r\n",
+    })
+    assert run_to_exit(tmp_path, ["--run", "SECOND.BAT", str(zip_path)]) == 0
+    assert sidecar_files(tmp_path) == ["SECOND.TXT"]
+
+
+def test_a_percent_sign_in_the_archive_path_and_the_run_name(tmp_path):
+    """AUTOEXEC.BAT goes through the batch expansion, where a lone % would
+    end the MOUNT line."""
+    zip_path = build_program_zip(tmp_path / "100% game.zip", {
+        "50%.BAT": b"@ECHO OFF\r\nECHO half> HALF.TXT\r\n",
+        "OTHER.BAT": DONE_BAT,
+    })
+    assert run_to_exit(tmp_path, ["--run", "50%.BAT", str(zip_path)]) == 0
+    assert sidecar_files(tmp_path) == ["HALF.TXT"]
+
+
+def test_a_program_named_like_a_shell_command_runs_as_itself(tmp_path):
+    """The shell takes the stem of TYPE.BAT for its TYPE command unless the
+    line names the file by its path."""
+    zip_path = build_program_zip(tmp_path / "game.zip", {"TYPE.BAT": DONE_BAT})
+    assert run_to_exit(tmp_path, [str(zip_path)]) == 0
+    assert sidecar_files(tmp_path) == ["DONE.TXT"]
+
+
+def test_several_programs_are_listed_and_the_engine_stays(dosbox_e2e, tmp_path):
+    zip_path = build_program_zip(tmp_path / "game" / "game.zip", {
+        "FIRST.BAT": DONE_BAT, "SECOND.BAT": DONE_BAT})
+    inst = dosbox_e2e(conf_dir=tmp_path / "game",
+                      settings=settings_for(tmp_path),
+                      extra_args=[str(zip_path)])
+    text = wait_text(inst.client, "several programs")
+    assert "FIRST.BAT SECOND.BAT" in text, text
+    # The autoexec changes to C: as for a directory argument.
+    wait_text(inst.client, "C:\\>")
+    time.sleep(1)
+    assert inst.proc.poll() is None
+    assert inst.client.program_state().json().get("is_shell") is True
+    assert not (tmp_path / "saves").exists() or "DONE.TXT" not in sidecar_files(tmp_path)
+
+
+def test_mount_run_typed_at_the_prompt(dosbox_e2e, tmp_path):
+    host = tmp_path / "game" / "host"
+    build_program_zip(host / "GAME.ZIP", {"GAME.BAT": DONE_BAT, "SETUP.EXE": b"MZ"})
+    inst = dosbox_e2e(autoexec_lines=[f"mount c {host}", "c:"],
+                      conf_dir=tmp_path / "game",
+                      settings=settings_for(tmp_path))
+    inst.client.wait_shell(timeout=15)
+    # ada-hg7c: only characters the client has keys for.
+    r = inst.client.type_string("mount d c:\\game.zip -run game.bat\n")
+    assert r.status_code == 200, r.text
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and "DONE.TXT" not in sidecar_files(tmp_path):
+        time.sleep(0.2)
+    assert sidecar_files(tmp_path) == ["DONE.TXT"], screen(inst.client)
+    wait_text(inst.client, "D:\\>")
+
+
+def test_status_shows_the_archive_while_mount_prepares_it(dosbox_e2e, tmp_path):
+    """A gzip tar is identified by walking its whole stream and, with
+    archive_sequential = cache, unpacked into the cache at mount time; the
+    status route answers from the webserver thread meanwhile. The unit
+    tests (ArchiveActivityTest, ArchiveHelperClientTest) carry the rules."""
+    import io
+    import os
+    import tarfile
+
+    tgz = tmp_path / "game" / "big.tar.gz"
+    tgz.parent.mkdir(parents=True)
+    payload = os.urandom(96 * 1024 * 1024)
+    with tarfile.open(tgz, "w:gz", compresslevel=1) as t:
+        for name, data in [("big/data.bin", payload), ("big/readme.txt", b"hi\r\n")]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mtime = 631152000
+            t.addfile(info, io.BytesIO(data))
+    inst = dosbox_e2e(
+        autoexec_lines=["choice /c:y /t:y,3 >nul", f"mount c {tgz}", "echo MOUNTED"],
+        conf_dir=tmp_path / "game",
+        settings={**settings_for(tmp_path), "archive_sequential": "cache"},
+    )
+    # The screen route waits on the emulation thread, which MOUNT holds;
+    # only the status route is polled until the field has come and gone.
+    seen = []
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        archive = inst.client.status().json().get("archive")
+        if archive:
+            seen.append(archive)
+        elif seen:
+            break
+        time.sleep(0.02)
+    assert seen, "the status never showed the archive"
+    assert {s["activity"] for s in seen} <= {"identifying", "materializing"}
+    assert all(s["archive"] == "big.tar" for s in seen), seen[:3]
+    assert all(0 <= s["bytes_done"] <= s["bytes_total"] for s in seen), seen[:3]
+    wait_text(inst.client, "MOUNTED", timeout=60)
+    assert "archive" not in inst.client.status().json()

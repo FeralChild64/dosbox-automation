@@ -105,6 +105,18 @@ webserver an attack surface by design. The short version:
   refused. Our own ISZ reader checks the header, the chunk table and
   every chunk length against the file before it decodes anything, and it
   refuses encrypted and segmented ISZ files.
+- `MOUNT ... -run NAME`, and an archive given on the command line, start
+  a program from the drive that MOUNT has just made, and with exactly the
+  trust of that MOUNT: whoever could type the MOUNT could type the program.
+  The name is an 8.3 path on that drive, never a host path; a drive
+  letter, `..`, a leading `-`, and every character a DOS command line
+  reads as syntax (`> < | & "` and spaces among them) refuse it, and so
+  does a file that is not a .COM, .EXE or .BAT. The program is started by
+  its full path on that drive, so a name such as TYPE.EXE cannot reach a
+  built-in command. The command line's `--run` value passes the same rule
+  before it is written into AUTOEXEC.BAT, with `%` doubled for the batch
+  expansion. The name is echoed back with control characters replaced and
+  its length capped.
 - Lua scripts run sandboxed: no filesystem or process access, bytecode
   rejected, dangerous globals removed, instruction and pattern-complexity
   limits against runaway scripts.

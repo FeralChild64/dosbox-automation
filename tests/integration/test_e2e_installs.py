@@ -30,9 +30,13 @@ import pytest
 from conftest import WORKSPACE
 from e2e_helpers import (
     GameManifest,
+    archive_settings,
+    build_autoexec,
     collect_provenance,
     download_disk_images,
     generate_install_script,
+    image_path,
+    media_present,
     resolve_cycle_settings,
     resolve_keyboard_layout,
     save_run_stats,
@@ -57,42 +61,9 @@ GAMES = discover_games()
 
 def ensure_disk_images(manifest: GameManifest, game_dir: Path) -> bool:
     """Make sure disk images are present, downloading if permitted."""
-    if all((game_dir / img).exists() for img in manifest.disc_images):
+    if media_present(manifest, game_dir):
         return True
     return download_disk_images(manifest, game_dir)
-
-
-def build_autoexec(manifest: GameManifest, game_dir: Path,
-                   hd_dir: Path) -> list[str]:
-    """Build autoexec lines to mount drives for the game."""
-    lines = []
-
-    if manifest.media == "booter":
-        # A booter has no DOS file system; without '-fs none' MOUNT refuses
-        # the image and BOOT A: finds no drive
-        disk_path = game_dir / manifest.disc_images[0]
-        lines.append(f"mount a \"{disk_path}\" -t floppy -fs none")
-    elif manifest.media in ("cdrom-iso", "cdrom-cue"):
-        lines.append(f"mount {manifest.target_drive} \"{hd_dir}\"")
-        disk_path = game_dir / manifest.disc_images[0]
-        lines.append(
-            f"mount {manifest.source_drive} \"{disk_path}\" -t cdrom"
-        )
-    elif manifest.media == "directory":
-        disk_path = game_dir / manifest.disc_images[0]
-        lines.append(f"mount {manifest.target_drive} \"{hd_dir}\"")
-        lines.append(f"mount {manifest.source_drive} \"{disk_path}\"")
-    elif manifest.media == "zip":
-        lines.append(f"mount {manifest.target_drive} \"{hd_dir}\"")
-        lines.append(f"mount {manifest.source_drive} \"{game_dir}\"")
-    else:
-        lines.append(f"mount {manifest.target_drive} \"{hd_dir}\"")
-        disk_path = game_dir / manifest.disc_images[0]
-        lines.append(
-            f"mount {manifest.source_drive} \"{disk_path}\" -t floppy"
-        )
-
-    return lines
 
 
 def split_at_swaps(events):
@@ -113,7 +84,7 @@ def split_at_swaps(events):
     return chunks
 
 
-def run_via_recording(client, game_dir):
+def run_via_recording(client, manifest, game_dir):
     """Replay a recorded input session. Returns True on success."""
     recording_path = game_dir / "recording.json"
     with open(recording_path) as f:
@@ -141,7 +112,7 @@ def run_via_recording(client, game_dir):
             time.sleep(chunk_duration_s + 3.0)
 
         if swap:
-            image_path = str(game_dir / swap["image"])
+            swap_image = str(image_path(manifest, game_dir, swap["image"]))
             swap_t = swap.get("t", 0)
 
             next_chunk_events = chunks[i + 1][0] if i + 1 < len(chunks) else []
@@ -151,7 +122,7 @@ def run_via_recording(client, game_dir):
             else:
                 gap_s = 1.0
 
-            r = client.drive_swap(swap["drive"], image_path)
+            r = client.drive_swap(swap["drive"], swap_image)
             if r.status_code != 200:
                 return False
 
@@ -199,7 +170,8 @@ def run_via_lua(client, manifest, game_dir):
         for key, val in data.get("output", {}).items():
             if key.startswith("swap_") and isinstance(val, int):
                 if key not in handled_swaps:
-                    disc_path = str(game_dir / manifest.disc_images[val - 1])
+                    disc_path = str(image_path(manifest, game_dir,
+                                               manifest.disc_images[val - 1]))
                     client.drive_swap(manifest.source_drive, disc_path)
                     handled_swaps.add(key)
 
@@ -309,6 +281,7 @@ def test_install(slug, manifest_path, dosbox_e2e):
     settings = dict(manifest.settings)
     settings.update(resolve_cycle_settings(recording_data, manifest.settings))
     settings.update(resolve_keyboard_layout(recording_data, manifest.settings))
+    settings.update(archive_settings(manifest, work_dir))
 
     instance = dosbox_e2e(
         autoexec_lines=autoexec, work_dir=work_dir,
@@ -327,7 +300,7 @@ def test_install(slug, manifest_path, dosbox_e2e):
 
     # --- run the installer ---
     if has_recording:
-        recording_ok = run_via_recording(client, game_dir)
+        recording_ok = run_via_recording(client, manifest, game_dir)
     else:
         status, lua_script = run_via_lua(client, manifest, game_dir)
 

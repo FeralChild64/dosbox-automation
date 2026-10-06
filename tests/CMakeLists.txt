@@ -41,6 +41,7 @@ endif()
 
 add_executable(dosbox_tests
     ansi_code_markup_tests.cpp
+    archive_activity_tests.cpp
     archive_cache_tests.cpp
     archive_entry_names_tests.cpp
     archive_cp437_tests.cpp
@@ -59,6 +60,7 @@ add_executable(dosbox_tests
     archive_toml_tests.cpp
     archive_tree_tests.cpp
     archive_zip_central_directory_tests.cpp
+    autoexec_archive_tests.cpp
     head_sniff_tests.cpp
     rar4_headers_tests.cpp
     sidecar_locator_tests.cpp
@@ -98,6 +100,7 @@ add_executable(dosbox_tests
     mixer_tests.cpp
     mode_symbolic_tests.cpp
     mount_archive_tests.cpp
+    mount_run_tests.cpp
     mount_tests.cpp
     ne2000_tests.cpp
     path_command_tests.cpp
@@ -109,6 +112,7 @@ add_executable(dosbox_tests
     rgb_tests.cpp
     ring_buffer_tests.cpp
     rwqueue_tests.cpp
+    shader_common_tests.cpp
     shader_pragma_parser_tests.cpp
     shell_banner_tests.cpp
     shell_cmds_tests.cpp

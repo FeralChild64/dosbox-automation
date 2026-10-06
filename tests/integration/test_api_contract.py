@@ -38,6 +38,12 @@ def test_status_shape(dosbox):
     assert data["is_shell"] is True
 
 
+def test_status_has_no_archive_activity_when_idle(dosbox):
+    # The field appears only while the archive helper works for a mount.
+    data = dosbox.status().json()
+    assert "archive" not in data
+
+
 def test_program_state_at_shell(dosbox):
     r = dosbox.program_state()
     assert r.status_code == 200

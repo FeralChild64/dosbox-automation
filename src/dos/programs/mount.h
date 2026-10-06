@@ -75,6 +75,9 @@ struct MountParameters {
 	// Design D7: host file of each image named inside an archive, with
 	// what keeps it valid until the mount registers it.
 	std::map<std::string, std::shared_ptr<ArchiveImages::Hold>> member_holds = {};
+	// Design D8: -run with its optional name, -exit to leave after it.
+	std::optional<std::string> run = {};
+	bool run_exit                  = false;
 };
 
 class MOUNT final : public Program {
@@ -134,6 +137,8 @@ private:
 	                                      OptionValue value_kind);
 
 	bool HasUnknownOptions();
+
+	void QueueRun(const MountParameters& params);
 
 	bool ParseArguments(MountParameters& params, bool& explicit_fs,
 	                    bool& path_relative_to_last_config);

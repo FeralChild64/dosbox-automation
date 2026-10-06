@@ -5,13 +5,15 @@
 """E2E test helpers: manifest parsing, Lua script generation, frame
 hashing, ZMBV-to-MKV conversion, and disk image downloading."""
 
+import email.utils
 import hashlib
+import os
 import shutil
 import subprocess
 import tempfile
 import urllib.request
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 try:
     import tomllib
@@ -124,6 +126,7 @@ class GameManifest:
     verify_files: list[str]
     screenshot_at: list[int] = field(default_factory=list)
     settings: dict[str, str] = field(default_factory=dict)
+    archive: str | None = None
 
     @classmethod
     def from_file(cls, path: Path) -> "GameManifest":
@@ -144,6 +147,9 @@ class GameManifest:
             ))
 
         settings = data.get("settings", {})
+        archive = data["discs"].get("archive")
+        if archive is not None:
+            _check_archive_name(archive)
 
         source = data.get("source", {})
         return cls(
@@ -161,7 +167,86 @@ class GameManifest:
             verify_files=data.get("verify", {}).get("files", []),
             screenshot_at=data.get("capture", {}).get("screenshot_at", []),
             settings=settings,
+            archive=archive,
         )
+
+
+def _check_archive_name(name: str) -> None:
+    # The archive sits in the game folder; a path out of it is a mistake
+    # in the manifest, not something to resolve.
+    if (not isinstance(name, str) or not name or "\\" in name
+            or PurePosixPath(name).name != name or name in (".", "..")):
+        raise ValueError(f"[discs] archive must be a file name: {name!r}")
+
+
+def image_path(manifest: GameManifest, game_dir: Path, image: str) -> Path:
+    """Where MOUNT finds an image: a member path when the media is an archive."""
+    if manifest.archive:
+        return game_dir / manifest.archive / image
+    return game_dir / image
+
+
+def media_present(manifest: GameManifest, game_dir: Path) -> bool:
+    if manifest.archive:
+        return (game_dir / manifest.archive).is_file()
+    return all((game_dir / img).exists() for img in manifest.disc_images)
+
+
+def archive_settings(manifest: GameManifest, work_dir: Path) -> dict[str, str]:
+    """Cache and sidecar of an archive mount under the run's work dir.
+
+    archive_sequential only acts on sequential archives (a 7z, a tar), so
+    setting it for every archive costs a zip nothing.
+    """
+    if not manifest.archive:
+        return {}
+    return {
+        "archive_cache_path": str(work_dir / "archive-cache"),
+        "archive_sidecar_path": str(work_dir / "archive-saves"),
+        "archive_sequential": "cache",
+    }
+
+
+def conf_section(name: str, values: dict[str, str]) -> str:
+    """A conf file section, or nothing when there is nothing to set."""
+    if not values:
+        return ""
+    body = "".join(f"{key} = {value}\n" for key, value in values.items())
+    return f"[{name}]\n{body}\n"
+
+
+def build_autoexec(manifest: GameManifest, game_dir: Path,
+                   hd_dir: Path) -> list[str]:
+    """Build autoexec lines to mount drives for the game."""
+    lines = []
+
+    first_image = image_path(manifest, game_dir, manifest.disc_images[0])
+    if manifest.media == "booter":
+        # A booter has no DOS file system; without '-fs none' MOUNT refuses
+        # the image and BOOT A: finds no drive
+        disk_path = first_image
+        lines.append(f"mount a \"{disk_path}\" -t floppy -fs none")
+    elif manifest.media in ("cdrom-iso", "cdrom-cue"):
+        lines.append(f"mount {manifest.target_drive} \"{hd_dir}\"")
+        disk_path = first_image
+        lines.append(
+            f"mount {manifest.source_drive} \"{disk_path}\" -t cdrom"
+        )
+    elif manifest.media == "directory":
+        disk_path = first_image
+        lines.append(f"mount {manifest.target_drive} \"{hd_dir}\"")
+        lines.append(f"mount {manifest.source_drive} \"{disk_path}\"")
+    elif manifest.media == "zip":
+        lines.append(f"mount {manifest.target_drive} \"{hd_dir}\"")
+        lines.append(f"mount {manifest.source_drive} \"{game_dir}\"")
+    else:
+        lines.append(f"mount {manifest.target_drive} \"{hd_dir}\"")
+        disk_path = first_image
+        lines.append(
+            f"mount {manifest.source_drive} \"{disk_path}\" -t floppy"
+        )
+
+    return lines
 
 
 def _key_name(short_name):
@@ -374,6 +459,28 @@ def save_golden_hashes(hash_file: Path, hashes: dict[str, str]):
     hash_file.write_text("\n".join(lines) + "\n")
 
 
+def fetch_with_server_time(url: str, target: Path) -> None:
+    """Download url to target, stamped with the server's Last-Modified."""
+    partial = target.with_name(target.name + ".download")
+    try:
+        _, headers = urllib.request.urlretrieve(url, partial)  # nosec B310 - URL comes from the recipe manifest
+        stamp = headers.get("Last-Modified")
+        mtime = None
+        if stamp:
+            try:
+                mtime = email.utils.parsedate_to_datetime(stamp).timestamp()
+            except (TypeError, ValueError):
+                mtime = None
+        if mtime is None:
+            print(f"  {url}: no usable Last-Modified from the server; "
+                  f"the file keeps the download time")
+        else:
+            os.utime(partial, (mtime, mtime))
+        os.replace(partial, target)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 def download_disk_images(manifest: GameManifest, game_dir: Path) -> bool:
     """Download and extract disk images for freely-licensed games.
 
@@ -388,18 +495,26 @@ def download_disk_images(manifest: GameManifest, game_dir: Path) -> bool:
     if not manifest.source_url:
         return False
 
-    # Check if already present.
-    if all((game_dir / img).exists() for img in manifest.disc_images):
+    if media_present(manifest, game_dir):
         return True
 
     url = manifest.source_url
+    if manifest.archive:
+        # Mounted as it is: nothing is unpacked.
+        try:
+            fetch_with_server_time(url, game_dir / manifest.archive)
+        except (urllib.error.URLError, OSError) as e:
+            print(f"  Download failed for {manifest.slug}: {e}")
+            return False
+        return media_present(manifest, game_dir)
+
     tmp_dir = Path(tempfile.mkdtemp(prefix="dosbox-e2e-dl-"))
 
     try:
         # Download the archive.
         ext = ".7z" if ".7z" in url else ".zip"
         archive_path = tmp_dir / f"download{ext}"
-        urllib.request.urlretrieve(url, archive_path)  # nosec B310 - URL comes from the recipe manifest
+        fetch_with_server_time(url, archive_path)
 
         if manifest.media == "zip":
             # The zip itself is the disc image. Copy it directly.

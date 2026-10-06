@@ -19,7 +19,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from dosbox_client import DosboxClient
-from e2e_helpers import GameManifest, resolve_cycle_settings, resolve_keyboard_layout
+from e2e_helpers import (
+    GameManifest,
+    archive_settings,
+    build_autoexec,
+    conf_section,
+    image_path,
+    resolve_cycle_settings,
+    resolve_keyboard_layout,
+)
 
 DOSBOX_BIN = os.environ.get(
     "DOSBOX_BIN",
@@ -67,27 +75,7 @@ def main():
     port = find_free_port()
     token = secrets.token_hex(32)
 
-    # Build autoexec (same as record_install.py).
-    autoexec = [f'mount {manifest.target_drive} "{hd_dir}"']
-    if manifest.media in ("cdrom-iso", "cdrom-cue"):
-        autoexec.append(
-            f'mount {manifest.source_drive} '
-            f'"{game_dir / manifest.disc_images[0]}" -t cdrom'
-        )
-    elif manifest.media == "booter":
-        autoexec = [
-            f'mount a "{game_dir / manifest.disc_images[0]}" -t floppy'
-        ]
-    elif manifest.media == "directory":
-        autoexec.append(
-            f'mount {manifest.source_drive} '
-            f'"{game_dir / manifest.disc_images[0]}"'
-        )
-    else:
-        autoexec.append(
-            f'mount {manifest.source_drive} '
-            f'"{game_dir / manifest.disc_images[0]}" -t floppy'
-        )
+    autoexec = build_autoexec(manifest, game_dir, hd_dir)
 
     # Replay at the rates and keyboard layout the recording was made at,
     # not DOSBox's defaults. Pin both rates or the game jumps to 60000 in
@@ -99,8 +87,8 @@ def main():
     conf_path.write_text(
         f"[cpu]\ncpu_cycles = {cycles['cpu_cycles']}\n"
         f"cpu_cycles_protected = {cycles['cpu_cycles_protected']}\n\n"
-        f"[dos]\nkeyboard_layout = {layout['keyboard_layout']}\n\n"
-        "[autoexec]\n" + "\n".join(autoexec) + "\n"
+        + conf_section("dos", {**layout, **archive_settings(manifest, work_dir)})
+        + "[autoexec]\n" + "\n".join(autoexec) + "\n"
     )
 
     dosbox_bin = Path(DOSBOX_BIN).resolve()
@@ -173,7 +161,7 @@ def main():
             time.sleep(wait_s)
 
         if swap:
-            image_path = str(game_dir / swap["image"])
+            swap_image = str(image_path(manifest, game_dir, swap["image"]))
             swap_t = swap.get("t", 0)
 
             # Preserve the original gap between the swap and the next
@@ -186,7 +174,7 @@ def main():
                 gap_s = 1.0
 
             print(f"  Swapping to {swap['image']}...")
-            r = client.drive_swap(swap["drive"], image_path)
+            r = client.drive_swap(swap["drive"], swap_image)
             if r.status_code == 200:
                 print(f"  Swapped {swap['drive']}: to {swap['image']}")
             else:
