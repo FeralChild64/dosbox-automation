@@ -566,6 +566,19 @@ std::string Config::SetPropertyFromCli(std::vector<std::string>& parameters)
 	return "";
 }
 
+// The switch's first word, an empty one when it stands last or before
+// another option; the bare switch is removed too.
+static std::optional<std::string> find_remove_switch_word(CommandLine& cmdline,
+                                                          const std::string& name)
+{
+	const auto words = cmdline.FindRemoveOptionalArgument(name);
+	if (!words) {
+		return {};
+	}
+	cmdline.FindRemoveBoolArgument(name);
+	return words->empty() ? std::string() : words->front();
+}
+
 void Config::ParseArguments()
 {
 	arguments.printconf = cmdline->FindRemoveBoolArgument("printconf");
@@ -576,6 +589,8 @@ void Config::ParseArguments()
 	arguments.list_layouts = cmdline->FindRemoveBoolArgument("list-layouts");
 	arguments.list_code_pages = cmdline->FindRemoveBoolArgument("list-code-pages");
 	arguments.list_shaders = cmdline->FindRemoveBoolArgument("list-shaders");
+	arguments.archive_cache = find_remove_switch_word(*cmdline, "archive-cache");
+	arguments.sidecar     = find_remove_switch_word(*cmdline, "sidecar");
 	arguments.noconsole   = cmdline->FindRemoveBoolArgument("noconsole");
 	arguments.startmapper = cmdline->FindRemoveBoolArgument("startmapper");
 	arguments.exit        = cmdline->FindRemoveBoolArgument("exit");

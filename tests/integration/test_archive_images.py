@@ -271,6 +271,54 @@ def test_the_swap_takes_a_member(dosbox_e2e, tmp_path):
     inst.shutdown()
 
 
+def test_a_swapped_in_disk_takes_the_games_writes(dosbox_e2e, tmp_path):
+    """Decision 1a (2026-10-08): the swap keeps the drive's mode, so a disk
+    swapped in on a read-write drive takes writes like the first one; the
+    FAT path of the swap had opened every disk read-only since 2026-08-01."""
+    g = tmp_path / "g"
+    zip_path = build_images_zip(g / "game.zip")
+    inst = dosbox_e2e(
+        autoexec_lines=[f"mount c {g}", f"mount a {zip_path}/disks/disk1.img", "dir a:"],
+        conf_dir=g,
+        allowed_image_roots=[g],
+        settings=settings_for(tmp_path),
+    )
+    wait_text(inst.client, "DISKONE")
+    r = inst.client.drive_swap("A", "game.zip/disks/disk2.img")
+    assert r.status_code == 200, r.text
+    r = inst.client.type_string("echo hello> a:\\save.txt\ncopy a:\\save.txt c:\\out.txt\n")
+    assert r.status_code == 200, r.text
+    out = wait_file(g / "OUT.TXT")
+    deadline = time.monotonic() + 10
+    while out.read_bytes().strip() != b"hello" and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert out.read_bytes().strip() == b"hello"
+    assert sidecar_copy(tmp_path, "DISK2.IMG").is_file()
+    inst.shutdown()
+
+
+def test_the_swap_on_a_read_only_drive_makes_no_sidecar(dosbox_e2e, tmp_path):
+    """ada-ciru item 4: the drive's -ro holds through a swap, so the second
+    disk is served from the cache like the first and no sidecar appears."""
+    g = tmp_path / "g"
+    zip_path = build_images_zip(g / "game.zip")
+    inst = dosbox_e2e(
+        autoexec_lines=[f"mount a {zip_path}/disks/disk1.img -ro", "dir a:"],
+        conf_dir=g,
+        allowed_image_roots=[g],
+        settings=settings_for(tmp_path),
+    )
+    wait_text(inst.client, "DISKONE")
+    r = inst.client.drive_swap("A", "game.zip/disks/disk2.img")
+    assert r.status_code == 200, r.text
+    r = inst.client.type_string("dir a:\n")
+    assert r.status_code == 200, r.text
+    wait_text(inst.client, "DISKTWO")
+    assert not (tmp_path / "saves").exists(), sorted(
+        p.relative_to(tmp_path).as_posix() for p in (tmp_path / "saves").rglob("*"))
+    inst.shutdown()
+
+
 def test_the_swap_back_finds_the_first_disk_with_its_writes(dosbox_e2e, tmp_path):
     g = tmp_path / "g"
     zip_path = build_images_zip(g / "game.zip")

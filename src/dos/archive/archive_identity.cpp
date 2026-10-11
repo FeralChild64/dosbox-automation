@@ -91,4 +91,13 @@ std::string ShortKey(const std::string_view stem, const std::string_view hash_he
 	return SanitizeStem(stem) + "-" + std::string(hash_hex.substr(0, 8));
 }
 
+std::string ChainIdentity(const std::string_view host_hash,
+                          const std::string_view chain)
+{
+	auto text = std::string(host_hash) + '/' + std::string(chain);
+	std::replace(text.begin(), text.end(), '\\', '/');
+	return Sha256Hex(std::span<const uint8_t>(
+	        reinterpret_cast<const uint8_t*>(text.data()), text.size()));
+}
+
 } // namespace ArchiveIdentity

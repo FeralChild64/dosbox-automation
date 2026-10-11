@@ -90,6 +90,9 @@ public:
 	// entries are skipped; only regular files are ever deleted. Trash and
 	// scratch directories nobody holds are swept first.
 	CleanupReport Cleanup();
+	// Every entry nobody holds, whatever its last use says (design 6.1);
+	// counted as expired.
+	CleanupReport Purge();
 
 	// A scratch directory of one mount's own, locked while the lock lives.
 	struct Scratch {
@@ -97,6 +100,10 @@ public:
 		std::shared_ptr<FileLock> lock = {};
 	};
 	std::optional<Scratch> MakeScratch() const;
+	// Removes the scratch's tree (regular files and directories, never
+	// through a link), releases its lock and empties the struct. A tree
+	// that cannot be removed is left for the next SweepLeftovers.
+	static void DiscardScratch(Scratch& scratch);
 
 	class Lease;
 	struct LeaseResult {
@@ -121,7 +128,7 @@ public:
 private:
 	ArchiveCache();
 	// Cleanup that also makes room for extra_bytes under the cap.
-	CleanupReport CleanupToFit(int64_t extra_bytes);
+	CleanupReport CleanupToFit(int64_t extra_bytes, bool retire_all = false);
 	struct Impl;
 	std::unique_ptr<Impl> impl;
 };
@@ -141,6 +148,10 @@ public:
 	// EnsureAll serves.
 	CacheStatus MemberFile(int ordinal, std::filesystem::path& out,
 	                       std::string* detail);
+	// The cache's file for a member whatever the source's access: the one
+	// pass for a sequential source, MemberFile otherwise.
+	CacheStatus ServeMember(int ordinal, std::filesystem::path& out,
+	                        std::string* detail);
 	// The one pass of a sequential source, run only when a member is
 	// missing; judged by the declared total against the reserve and the cap.
 	CacheStatus EnsureAll(std::string* detail);

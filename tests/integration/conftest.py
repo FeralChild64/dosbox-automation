@@ -230,14 +230,13 @@ def start_dosbox_instance(work_dir, autoexec_lines=None, extra_sets=None,
         "[webserver]\n" + "\n".join(primary_lines) + "\n"
     )
 
-    # When running visible, disable joystick (Stadia controller bug).
-    # The OSD draws on every output backend since the GL draw path
-    # landed, so no output override is needed anymore.
+    # No host joystick: a plugged-in controller (the Stadia pad) blocks
+    # the emulation thread past the API's 250 ms command timeout right
+    # after start, and the first screen read answers 500 (2026-10-09).
+    if settings is None:
+        settings = {}
+    settings.setdefault("joysticktype", "none")
     visible = os.environ.get("DOSBOX_VISIBLE")
-    if visible:
-        if settings is None:
-            settings = {}
-        settings.setdefault("joysticktype", "none")
 
     # Write a config file with settings and autoexec.
     conf_path = None

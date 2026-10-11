@@ -8,12 +8,14 @@
 #include "dos/archive/archive_lock.h"
 #include "dos/archive/archive_toml.h"
 #include "dos/archive/exclusive_file.h"
+#include "dos/archive/member_path.h"
 #include "dos/archive/random_name.h"
 #include "utils/checks.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -152,7 +154,7 @@ RemovalResult RemoveEntry(const fs::path& dir)
 			} else {
 				augra::log_warn(LogComponent,
 				                "leaving '%s': not a regular file",
-				                item.path().string().c_str());
+				                PathToUtf8(item.path()).c_str());
 				clean = false;
 			}
 		}
@@ -172,7 +174,7 @@ RemovalResult RemoveEntry(const fs::path& dir)
 	if (!result.removed) {
 		augra::log_warn(LogComponent,
 		                "entry '%s' kept: not fully ours",
-		                dir.string().c_str());
+		                PathToUtf8(dir).c_str());
 	}
 	return result;
 }
@@ -191,7 +193,7 @@ int64_t MeasureEntry(const fs::path& dir, const std::optional<int64_t> now)
 		if (!IsRegularNoFollow(item.path(), ec)) {
 			continue;
 		}
-		const auto name = item.path().filename().string();
+		const auto name = PathToUtf8(item.path().filename());
 		if (now && IsTemporaryName(name)) {
 			const auto stamp = MtimeSeconds(item.path());
 			if (stamp && *now - *stamp > StaleTempSeconds) {
@@ -217,7 +219,7 @@ bool HoldsOnlyOurs(const fs::path& dir)
 {
 	std::error_code ec = {};
 	for (const auto& item : ListDirectory(dir, ec)) {
-		const auto name = item.path().filename().string();
+		const auto name = PathToUtf8(item.path().filename());
 		if (name == FilesDirName && IsDirectoryNoFollow(item.path(), ec)) {
 			for (const auto& file : ListDirectory(item.path(), ec)) {
 				if (!IsRegularNoFollow(file.path(), ec)) {
@@ -244,7 +246,7 @@ RemovalResult RetireEntry(const fs::path& cache_dir, const fs::path& dir,
 	if (!HoldsOnlyOurs(dir)) {
 		augra::log_warn(LogComponent,
 		                "entry '%s' kept: not fully ours",
-		                dir.string().c_str());
+		                PathToUtf8(dir).c_str());
 		return {};
 	}
 	std::error_code ec    = {};
@@ -253,11 +255,11 @@ RemovalResult RetireEntry(const fs::path& cache_dir, const fs::path& dir,
 	    !MakePrivateDirectory(trash_base)) {
 		augra::log_warn(LogComponent,
 		                "entry '%s' kept: no trash directory",
-		                dir.string().c_str());
+		                PathToUtf8(dir).c_str());
 		return {};
 	}
-	const auto trash = trash_base /
-	                   (dir.filename().string() + "." + RandomHex(2));
+	auto trash = trash_base / dir.filename();
+	trash += "." + RandomHex(2);
 #if defined(WIN32)
 	lock.reset();
 	fs::rename(dir, trash, ec);
@@ -268,7 +270,7 @@ RemovalResult RetireEntry(const fs::path& cache_dir, const fs::path& dir,
 	if (ec) {
 		augra::log_info(LogComponent,
 		                "entry '%s' kept: %s",
-		                dir.string().c_str(),
+		                PathToUtf8(dir).c_str(),
 		                ec.message().c_str());
 		return {};
 	}
@@ -290,25 +292,62 @@ std::vector<fs::path> Subdirectories(const fs::path& dir)
 	return out;
 }
 
-// Regular files first, the released lock file next, the directory last;
-// anything foreign keeps the directory.
-void RemoveScratch(const fs::path& dir, std::optional<FileLock>& lock)
+// Regular files and directories only, deepest first, never through a
+// link; false when anything foreign keeps the tree.
+bool RemoveTreeNoFollow(const fs::path& dir)
 {
 	std::error_code ec = {};
+	bool clean         = true;
 	for (const auto& item : ListDirectory(dir, ec)) {
-		if (item.path().filename() != LockName &&
-		    IsRegularNoFollow(item.path(), ec)) {
-			fs::remove(item.path(), ec);
+		const auto& path = item.path();
+		if (IsDirectoryNoFollow(path, ec)) {
+			clean = RemoveTreeNoFollow(path) && clean;
+		} else if (IsRegularNoFollow(path, ec)) {
+			if (!fs::remove(path, ec) || ec) {
+				clean = false;
+			}
+		} else {
+			augra::log_warn(LogComponent,
+			                "leaving '%s': not a regular file",
+			                PathToUtf8(path).c_str());
+			clean = false;
 		}
 	}
-	lock.reset();
+	if (clean && (!fs::remove(dir, ec) || ec)) {
+		clean = false;
+	}
+	return clean;
+}
+
+// Everything but the lock file first, the released lock next, the
+// directory last; anything foreign keeps the directory.
+void RemoveScratch(const fs::path& dir, const std::function<void()>& release_lock)
+{
+	std::error_code ec = {};
+	bool clean         = true;
+	for (const auto& item : ListDirectory(dir, ec)) {
+		const auto& path = item.path();
+		if (path.filename() == LockName) {
+			continue;
+		}
+		if (IsDirectoryNoFollow(path, ec)) {
+			clean = RemoveTreeNoFollow(path) && clean;
+		} else if (IsRegularNoFollow(path, ec)) {
+			if (!fs::remove(path, ec) || ec) {
+				clean = false;
+			}
+		} else {
+			clean = false;
+		}
+	}
+	release_lock();
 	if (IsRegularNoFollow(dir / LockName, ec)) {
 		fs::remove(dir / LockName, ec);
 	}
-	if (!fs::remove(dir, ec) || ec) {
+	if (!clean || !fs::remove(dir, ec) || ec) {
 		augra::log_warn(LogComponent,
 		                "scratch '%s' kept: not empty",
-		                dir.string().c_str());
+		                PathToUtf8(dir).c_str());
 	}
 }
 
@@ -335,7 +374,7 @@ void SweepLeftovers(const fs::path& cache_dir, const int64_t now)
 				continue;
 			}
 		}
-		RemoveScratch(scratch, lock);
+		RemoveScratch(scratch, [&] { lock.reset(); });
 	}
 }
 
@@ -344,7 +383,7 @@ std::vector<fs::path> EntryDirectories(const fs::path& cache_dir)
 	std::vector<fs::path> out = {};
 	std::error_code ec        = {};
 	for (const auto& letter : ListDirectory(cache_dir, ec)) {
-		if (letter.path().filename().string().size() != 1 ||
+		if (PathToUtf8(letter.path().filename()).size() != 1 ||
 		    !IsDirectoryNoFollow(letter.path(), ec)) {
 			continue;
 		}
@@ -485,7 +524,7 @@ ArchiveCache::OpenResult ArchiveCache::Open(const fs::path& directory,
 	const auto status  = fs::symlink_status(directory, ec);
 	auto refuse        = [&](const std::string& why) {
                 result.status = CacheStatus::Refused;
-                result.detail = directory.string() + ": " + why;
+                result.detail = PathToUtf8(directory) + ": " + why;
                 return std::move(result);
 	};
 	if (!ec && fs::exists(status)) {
@@ -575,7 +614,13 @@ ArchiveCache::CleanupReport ArchiveCache::Cleanup()
 	return CleanupToFit(0);
 }
 
-ArchiveCache::CleanupReport ArchiveCache::CleanupToFit(const int64_t extra_bytes)
+ArchiveCache::CleanupReport ArchiveCache::Purge()
+{
+	return CleanupToFit(0, true);
+}
+
+ArchiveCache::CleanupReport ArchiveCache::CleanupToFit(const int64_t extra_bytes,
+                                                       const bool retire_all)
 {
 	CleanupReport report = {};
 	const auto now       = impl->Now();
@@ -607,7 +652,7 @@ ArchiveCache::CleanupReport ArchiveCache::CleanupToFit(const int64_t extra_bytes
 		}
 		record.readable_toml = true;
 		record.last_use      = *doc->root.Integer("last_use");
-		if (now - record.last_use > impl->options.ttl_seconds) {
+		if (retire_all || now - record.last_use > impl->options.ttl_seconds) {
 			if (RetireEntry(impl->directory,
 			                dir,
 			                lock,
@@ -677,20 +722,21 @@ ArchiveCache::LeaseResult ArchiveCache::Acquire(ArchiveSource& source,
 		result.detail = why;
 		return std::move(result);
 	};
-	const auto stem = archive_path.stem().string();
+	const auto stem = PathToUtf8(archive_path.stem());
 	const auto dir = EntryDirectory(impl->directory, stem, source.IdentityHash());
 	std::error_code ec = {};
 	if (!IsDirectoryNoFollow(dir.parent_path(), ec) &&
 	    !MakePrivateDirectory(dir.parent_path())) {
 		return fail(CacheStatus::Failed,
-		            "cannot create " + dir.parent_path().string());
+		            "cannot create " + PathToUtf8(dir.parent_path()));
 	}
 	if (!IsDirectoryNoFollow(dir, ec) && !MakePrivateDirectory(dir)) {
-		return fail(CacheStatus::Failed, "cannot create " + dir.string());
+		return fail(CacheStatus::Failed, "cannot create " + PathToUtf8(dir));
 	}
 	auto lock = FileLock::TryAcquire(dir / LockName, FileLock::Mode::Shared);
 	if (!lock) {
-		return fail(CacheStatus::Busy, dir.string() + " is held exclusively");
+		return fail(CacheStatus::Busy,
+		            PathToUtf8(dir) + " is held exclusively");
 	}
 	// impl->cache stays null until the lease is whole, so a failed
 	// Acquire destroys a lease that writes nothing.
@@ -725,7 +771,7 @@ ArchiveCache::LeaseResult ArchiveCache::Acquire(ArchiveSource& source,
 		if (doc) {
 			augra::log_info(LogComponent,
 			                "%s: recorded archive differs, starting the entry over",
-			                dir.string().c_str());
+			                PathToUtf8(dir).c_str());
 		}
 		// Only regular files are ours to delete; anything else fails
 		// the lease.
@@ -736,13 +782,13 @@ ArchiveCache::LeaseResult ArchiveCache::Acquire(ArchiveSource& source,
 				    !fs::remove(item.path(), ec)) {
 					return fail(CacheStatus::Failed,
 					            "cannot clear " +
-					                    item.path().string());
+					                    PathToUtf8(item.path()));
 				}
 			}
 		}
 		ArchiveToml::Document fresh = {};
 		fresh.root.Set("version", int64_t{EntryTomlVersion});
-		fresh.root.Set("archive_path", archive_path.string());
+		fresh.root.Set("archive_path", PathToUtf8(archive_path));
 		fresh.root.Set("identity_hash", source.IdentityHash());
 		fresh.root.Set("entry_count", static_cast<int64_t>(entries.size()));
 		fresh.root.Set("total_bytes", source.TotalBytes());
@@ -758,7 +804,7 @@ ArchiveCache::LeaseResult ArchiveCache::Acquire(ArchiveSource& source,
 	if (!IsDirectoryNoFollow(dir / FilesDirName, ec) &&
 	    !MakePrivateDirectory(dir / FilesDirName)) {
 		return fail(CacheStatus::Failed,
-		            "cannot create " + (dir / FilesDirName).string());
+		            "cannot create " + PathToUtf8(dir / FilesDirName));
 	}
 	lease->impl->cache = this;
 	result.lease       = std::move(lease);
@@ -860,7 +906,7 @@ CacheStatus ArchiveCache::Lease::MemberFile(const int ordinal, fs::path& out,
 	case Impl::Presence::Whole: out = path; return CacheStatus::Ok;
 	case Impl::Presence::Foreign:
 		if (detail) {
-			*detail = path.string() + " is not a regular file";
+			*detail = PathToUtf8(path) + " is not a regular file";
 		}
 		return CacheStatus::Failed;
 	case Impl::Presence::Missing: break;
@@ -886,12 +932,26 @@ CacheStatus ArchiveCache::Lease::MemberFile(const int ordinal, fs::path& out,
 	}
 	if (impl->Check(*entry) != Impl::Presence::Whole) {
 		if (detail) {
-			*detail = path.string() + " is not whole after materialization";
+			*detail = PathToUtf8(path) +
+			          " is not whole after materialization";
 		}
 		return CacheStatus::Failed;
 	}
 	out = path;
 	return CacheStatus::Ok;
+}
+
+CacheStatus ArchiveCache::Lease::ServeMember(const int ordinal, fs::path& out,
+                                             std::string* detail)
+{
+	if (impl->source && impl->source->GetAccess() == Access::Sequential) {
+		const auto status = EnsureAll(detail);
+		if (status == CacheStatus::Ok) {
+			out = FilesDirectory() / std::to_string(ordinal);
+		}
+		return status;
+	}
+	return MemberFile(ordinal, out, detail);
 }
 
 CacheStatus ArchiveCache::Lease::EnsureAll(std::string* detail)
@@ -927,6 +987,15 @@ CacheStatus ArchiveCache::Lease::EnsureAll(std::string* detail)
 		return CacheStatus::Failed;
 	}
 	return CacheStatus::Ok;
+}
+
+void ArchiveCache::DiscardScratch(Scratch& scratch)
+{
+	if (scratch.dir.empty()) {
+		return;
+	}
+	RemoveScratch(scratch.dir, [&] { scratch.lock.reset(); });
+	scratch.dir.clear();
 }
 
 } // namespace ArchiveMount

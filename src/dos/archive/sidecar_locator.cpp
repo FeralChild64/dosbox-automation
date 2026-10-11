@@ -4,6 +4,7 @@
 #include "dos/archive/sidecar_locator.h"
 
 #include "dos/archive/archive_identity.h"
+#include "dos/archive/member_path.h"
 #include "dos/archive/sidecar_record.h"
 #include "utils/checks.h"
 
@@ -21,7 +22,8 @@ namespace fs = std::filesystem;
 std::string SidecarKey(const fs::path& archive_path,
                        const std::string_view identity_hash)
 {
-	return ArchiveIdentity::ShortKey(archive_path.stem().string(), identity_hash);
+	return ArchiveIdentity::ShortKey(PathToUtf8(archive_path.stem()),
+	                                 identity_hash);
 }
 
 namespace {
@@ -92,7 +94,7 @@ SidecarLocation LocateSidecar(const fs::path& saves_dir,
                               const std::string_view identity_hash)
 {
 	SidecarLocation loc    = {};
-	const auto path_text   = archive_canonical.string();
+	const auto path_text   = PathToUtf8(archive_canonical);
 	const auto under_saves = Scan(saves_dir);
 	const auto saves = Classify(under_saves, path_text, identity_hash);
 	if (saves.by_path) {

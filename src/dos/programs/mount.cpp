@@ -8,6 +8,7 @@
 #include "dos/archive/descriptor.h"
 #include "dos/archive/head_sniff.h"
 #include "dos/archive/member_path.h"
+#include "dos/programs/append.h"
 #include "dos/programs/archive_images.h"
 #include "dos/programs/mount_archive_internal.h"
 #include "dos/programs/mount_run.h"
@@ -358,6 +359,7 @@ bool MOUNT::MountImageFat(MountParameters& params)
 		// Obtain the drive label, saving it in the dirCache
 		char root[7] = {params.drive, ':', '\\', '*', '.', '*', 0};
 
+		AppendCommand::Suspend no_append_search;
 		if (!DOS_FindFirst(root, FatAttributeFlags::Volume)) {
 			LOG_WARNING("DRIVE: Unable to find %c drive's volume label",
 			            params.drive);
@@ -781,6 +783,18 @@ bool MOUNT::ParseArguments(MountParameters& params, bool& explicit_fs,
 		return false;
 	}
 	params.sidecar_path = sidecar->value.value_or("");
+	const auto scratch = TakeOption("-scratch", OptionValue::None);
+	if (!scratch) {
+		return false;
+	}
+	params.scratch = scratch->present;
+	if (params.scratch &&
+	    (params.roflag || params.no_sidecar || !params.sidecar_path.empty())) {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      "PROGRAM_MOUNT_ARCHIVE_SCRATCH_CONFLICT");
+		return false;
+	}
 
 	const auto run      = TakeOption("-run", OptionValue::Optional);
 	const auto run_exit = TakeOption("-exit", OptionValue::None);
@@ -1283,7 +1297,8 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 		return;
 	}
 	if (!params.archive_root.empty() ||
-	    (!names_member && (params.no_sidecar || !params.sidecar_path.empty()))) {
+	    (!names_member && (params.no_sidecar || params.scratch ||
+	                       !params.sidecar_path.empty()))) {
 		NOTIFY_DisplayWarning(Notification::Source::Console,
 		                      "MOUNT",
 		                      "PROGRAM_MOUNT_ARCHIVE_ONLY_OPTIONS",
@@ -1341,6 +1356,18 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 					}
 					continue;
 				}
+			}
+
+			// A host image would be written in place on a -scratch drive.
+			if (params.scratch) {
+				NOTIFY_DisplayWarning(Notification::Source::Console,
+				                      "MOUNT",
+				                      "PROGRAM_MOUNT_ARCHIVE_SCRATCH_HOST_IMAGE",
+				                      cur_arg.c_str());
+				params.paths.clear();
+				params.member_holds.clear();
+				params.is_image_mode = false;
+				return;
 			}
 
 			// Resolve virtual drive letters to host paths first
@@ -1438,6 +1465,17 @@ bool MOUNT::AddArchiveMember(const ArchiveMount::MemberPath& member,
 	request.origin                 = MountOrigin::GuestCommand;
 	request.read_only              = params.roflag || params.no_sidecar;
 	request.sidecar_path           = params.sidecar_path;
+	if (params.scratch) {
+		auto why = std::string();
+		if (!EnsureScratch(params, &why)) {
+			ReportMountDenied(typed,
+			                  MountArchiveInternal::Denied(
+			                          DenyReason::CacheUnavailable),
+			                  why);
+			return false;
+		}
+		request.scratch_dir = params.scratch_made->dir;
+	}
 	request.allowed_image_roots    = MountPolicy::AllowedImageRoots();
 	request.conf_anchor            = MountPolicy::ConfAnchor();
 	WriteOut(MSG_Get("PROGRAM_MOUNT_ARCHIVE_IDENTIFYING"),
@@ -1451,7 +1489,7 @@ bool MOUNT::AddArchiveMember(const ArchiveMount::MemberPath& member,
 	if (params.paths.empty() && params.type == MountType::Directory) {
 		detect_image_type(result.resolved->member_name, host, params);
 	}
-	if (request.read_only) {
+	if (request.read_only || result.resolved->read_only) {
 		params.roflag = true;
 	}
 	params.paths.push_back(host);
@@ -1528,15 +1566,41 @@ bool MOUNT::MountPaths(MountParameters& params)
 		if (success && params.type == MountType::FloppyImage) {
 			incrementFDD();
 		}
-		if (success && !params.member_holds.empty()) {
+		if (success) {
+			// Every image drive records its mode, so a swap keeps -ro
+			// for host images as well; the first image typed names the
+			// drive's archive.
 			std::vector<std::shared_ptr<ArchiveImages::Hold>> holds = {};
-			for (auto& [path, hold] : params.member_holds) {
-				holds.push_back(hold);
+			for (const auto& path : params.paths) {
+				const auto found = params.member_holds.find(path);
+				if (found != params.member_holds.end()) {
+					holds.push_back(found->second);
+				}
 			}
-			const int index = params.is_drive_number
-			                        ? params.drive - '0'
-			                        : drive_index(params.drive);
-			ArchiveImages::Keep(index, std::move(holds));
+			for (const auto& [path, hold] : params.member_holds) {
+				if (std::find(holds.begin(), holds.end(), hold) ==
+				    holds.end()) {
+					holds.push_back(hold);
+				}
+			}
+			const int index               = params.is_drive_number
+			                                      ? params.drive - '0'
+			                                      : drive_index(params.drive);
+			ArchiveImages::DriveMode mode = {};
+			mode.read_only    = params.roflag || params.no_sidecar;
+			mode.sidecar_path = params.sidecar_path;
+			if (params.scratch_made) {
+				mode.scratch_dir = params.scratch_made->dir;
+				KeepScratch(params.drive, std::move(*params.scratch_made));
+				params.scratch_made.reset();
+				WriteOut(MSG_Get("PROGRAM_MOUNT_ARCHIVE_SCRATCH"),
+				         params.drive);
+			}
+			if (!holds.empty()) {
+				mode.archive = holds.front()->archive;
+				ArchiveImages::Keep(index, std::move(holds));
+			}
+			ArchiveImages::SetDriveMode(index, mode);
 		}
 
 	} else {
@@ -1756,6 +1820,9 @@ void MOUNT::Run(void)
 	if (HandleUnmount()) {
 		return;
 	}
+	if (HandleCache()) {
+		return;
+	}
 	if (HandleReconnect()) {
 		return;
 	}
@@ -1772,6 +1839,20 @@ std::optional<MountParameters> MOUNT::ProcessArguments(CommandLine* cmd)
 	}
 
 	MountParameters params;
+	// Phase 6.4: a scratch made for this line and never handed to a drive
+	// goes with the line, whichever return ends it.
+	struct DiscardUnkeptScratch {
+		MountParameters& params;
+		~DiscardUnkeptScratch()
+		{
+			if (params.scratch_made) {
+				// The holds keep the copies open; Windows deletes none.
+				params.member_holds.clear();
+				ArchiveMount::ArchiveCache::DiscardScratch(*params.scratch_made);
+				params.scratch_made.reset();
+			}
+		}
+	} discard_unkept{params};
 
 	bool explicit_fs                  = false;
 	bool path_relative_to_last_config = false;
@@ -1812,6 +1893,13 @@ std::optional<MountParameters> MOUNT::ProcessArguments(CommandLine* cmd)
 		NOTIFY_DisplayWarning(Notification::Source::Console,
 		                      "MOUNT",
 		                      "PROGRAM_MOUNT_RUN_NEEDS_LETTER");
+		return {};
+	}
+	// A raw slot has no DOS drive whose unmount discards the scratch.
+	if (params.scratch && params.is_drive_number) {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      "PROGRAM_MOUNT_ARCHIVE_SCRATCH_NEEDS_LETTER");
 		return {};
 	}
 
@@ -1898,10 +1986,14 @@ void MOUNT::AddMessages()
 	        "  -root [color=white]DIR[reset]       directory inside the archive to use as the drive's root\n"
 	        "  -sidecar [color=white]PATH[reset]  archive mounts: directory for the game's writes (default: saves)\n"
 	        "  -nosidecar      archive mounts: no sidecar, the drive is read-only\n"
+	        "  -scratch        archive mounts: keep the writes for this mount only,\n"
+	        "                  discarded at unmount (installer media)\n"
 	        "  -run [color=white]NAME[reset]       run NAME from the new drive once MOUNT is done; without\n"
 	        "                  NAME, the only .COM, .EXE or .BAT at the drive's root\n"
 	        "  -exit           with -run: leave DOSBox when the program ends\n"
 	        "  -reconnect [color=white]DRIVE[reset] reopen an archive mount that reports lost or offline\n"
+	        "  -cache          show the archive cache: size, cap, free space and entries\n"
+	        "  -cache trim     remove expired entries and trim the cache to its cap\n"
 	        "\n"
 	        "Directory mount parameters:\n"
 	        "  -freesize [color=white]SIZE[reset]  size (in KB for floppies, in MB for hard disks); sets the\n"
@@ -2005,6 +2097,12 @@ void MOUNT::AddMessages()
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_ROOT",
 	        "%s has no directory %s to use as the root.\n");
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_RECONNECTED", "Drive %c: reconnected.\n");
+	MSG_Add("PROGRAM_MOUNT_CACHE_TRIMMED",
+	        "Archive cache trimmed: %d expired, %d over the cap and %d damaged "
+	        "entries removed, %d in use kept, %lld MiB left.\n");
+	MSG_Add("PROGRAM_MOUNT_CACHE_UNAVAILABLE", "Archive cache unavailable: %s.\n");
+	MSG_Add("PROGRAM_MOUNT_CACHE_BAD_ARGUMENT",
+	        "MOUNT -cache takes no word or 'trim', not '%s'.\n");
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_RECONNECT_FAILED",
 	        "Drive %c: reconnect failed: %s.\n");
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_NOT_ARCHIVE",
@@ -2024,7 +2122,15 @@ void MOUNT::AddMessages()
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_NEEDS_LETTER",
 	        "%s: an archive mounts on a drive letter, not a drive number.\n");
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_ONLY_OPTIONS",
-	        "%s: -root, -sidecar and -nosidecar apply to archive mounts only.\n");
+	        "%s: -root, -sidecar, -nosidecar and -scratch apply to archive mounts only.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_SCRATCH_CONFLICT",
+	        "-scratch cannot be combined with -ro, -nosidecar or -sidecar.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_SCRATCH_HOST_IMAGE",
+	        "%s: a -scratch mount takes images from archives only.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_SCRATCH_NEEDS_LETTER",
+	        "-scratch needs a drive letter, not a drive number or -fs none.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_SCRATCH",
+	        "Writes to %c: are kept for this mount only and discarded at unmount.\n");
 	MSG_Add("PROGRAM_MOUNT_REPEATED_OPTION", "Option %s given more than once\n");
 	const auto& run_texts = MountRun::EnglishTexts();
 	MSG_Add("PROGRAM_MOUNT_RUN_BAD_NAME", run_texts.bad_name);

@@ -6,6 +6,7 @@
 
 #include "dos/archive/archive_cache.h"
 #include "dos/archive/archive_lock.h"
+#include "dos/archive/chain_resolver.h"
 #include "dos/archive/member_path.h"
 #include "dos/programs/mount_policy.h"
 
@@ -37,12 +38,21 @@ public:
 	std::filesystem::path scratch_dir                        = {};
 	std::shared_ptr<ArchiveMount::FileLock> scratch_lock     = {};
 
-	// The member this hold serves, so its drive can be handed it again.
+	// Nested archives: the intermediate leases in opening order, released
+	// innermost first by the destructor; their clients close with the host's.
+	std::vector<ArchiveMount::ChainLink> chain_links = {};
+	std::string chain = {}; // ChainPrefix of the member, "" when not nested
+
+	// The member this hold serves, so its drive can be handed it again,
+	// and the listing it was picked from, so a swap back to it needs no
+	// helper (a sequential archive would be unpacked once more).
 	std::filesystem::path archive   = {};
 	std::string key                 = {};
 	std::filesystem::path host_file = {};
 	std::string member_name         = {};
+	int ordinal                     = ArchiveMount::ImpliedOrdinal;
 	int64_t size                    = 0;
+	std::shared_ptr<const std::vector<ArchiveMount::Entry>> entries = {};
 };
 
 enum class Kind { CdImage, CdCompanion, DiskImage };
@@ -56,6 +66,9 @@ struct Request {
 	MountOrigin origin              = MountOrigin::GuestCommand;
 	bool read_only                  = false; // -ro or -nosidecar: the cache
 	std::string sidecar_path        = {};    // -sidecar, already resolved
+	// Phase 6.4: a -scratch drive; the copy lands under this directory's
+	// .images instead of a sidecar's. Empty: the sidecar rules apply.
+	std::filesystem::path scratch_dir = {};
 	// The policy roots the archive is judged under; MOUNT and BOOT pass
 	// the policy's own, the swap passes what its caller gave it.
 	std::vector<std::filesystem::path> allowed_image_roots = {};
@@ -70,6 +83,7 @@ struct Resolved {
 	std::string member_name         = {}; // the entry's UTF-8 path
 	int64_t size                    = 0;
 	std::shared_ptr<Hold> hold      = {};
+	bool read_only = false; // a cache file other engines lease too
 };
 
 struct Result {
@@ -88,7 +102,21 @@ Result Resolve(const Request& request);
 // unmount. Raw drive numbers 0 to 3 use the index of A to D.
 void Keep(int drive_index, std::vector<std::shared_ptr<Hold>> holds);
 void Release(int drive_index);
-// BOOT never returns to DOS: its holds live until the engine exits.
+
+// How MOUNT mounted the drive's archive: a later request naming the drive
+// (the swap) inherits it, so -ro and -nosidecar hold through swaps and a
+// named sidecar keeps every disk of the set (ada-ciru items 2 and 4).
+struct DriveMode {
+	std::filesystem::path archive = {}; // canonical, as Resolve judged it
+	bool read_only                = false;
+	std::string sidecar_path      = {};
+	std::filesystem::path scratch_dir = {}; // every swap of the drive
+	                                        // copies here
+};
+void SetDriveMode(int drive_index, const DriveMode& mode);
+std::optional<DriveMode> DriveModeOf(int drive_index);
+// BOOT never returns to DOS: its holds live until the engine exits, under
+// A and B, where swapInDisks puts the set whatever drive was booted.
 void KeepForBoot(std::vector<std::shared_ptr<Hold>> holds);
 size_t HeldCountForTests(int drive_index);
 void ReleaseAllForTests();

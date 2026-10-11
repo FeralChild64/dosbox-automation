@@ -1,6 +1,8 @@
 // This file is part of the dosbox-automation Project.
 // License: GPL-2.0-or-later. Contact: dosbox-automation-project@trinity2k.net
 //
+#include "dos/archive/archive_management.h"
+#include "dos/archive/archive_toml.h"
 #include "dos/programs/mount.h"
 
 #include "archive_fixtures.h"
@@ -28,6 +30,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -80,6 +83,12 @@ std::string FloppyBytes(const std::string& label)
 	return img;
 }
 
+std::string ReadAll(const std_fs::path& path)
+{
+	std::ifstream in(path, std::ios::binary);
+	return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
 std::vector<FileEntry> Images()
 {
 	return {
@@ -101,7 +110,7 @@ std::vector<FileEntry> Images()
 std::vector<FileEntry> OneProgram(const std::string& readme = "hello")
 {
 	return {
-	        {"game.exe", "MZ"},
+	        {  "game.exe",   "MZ"},
 	        {"readme.txt", readme},
 	};
 }
@@ -109,8 +118,8 @@ std::vector<FileEntry> OneProgram(const std::string& readme = "hello")
 std::vector<FileEntry> TwoPrograms(const std::string& readme = "hello")
 {
 	return {
-	        {"setup.exe", "MZ"},
-	        {"game.exe", "MZ"},
+	        { "setup.exe",   "MZ"},
+	        {  "game.exe",   "MZ"},
 	        {"readme.txt", readme},
 	};
 }
@@ -213,6 +222,32 @@ protected:
 	{
 		return std::dynamic_pointer_cast<UnionDrive>(
 		        Drives.at(drive_index(letter)));
+	}
+
+	// A cache entry of a mounted and unmounted tar.gz, aged past the TTL.
+	std_fs::path ExpiredCacheEntry()
+	{
+		Set("archive_sequential", "cache");
+		const auto tgz = Built("doom.tar.gz", Kind::TarGz);
+		EXPECT_TRUE(Mount("D " + tgz.string()).has_value());
+		const auto entry = ArchiveMount::ArchiveCache::EntryDirectory(
+		        tmp / "cache",
+		        "doom.tar",
+		        DriveAt('D')->Source().IdentityHash());
+		UnmountHelper('D');
+		EXPECT_TRUE(std_fs::is_regular_file(
+		        entry / ArchiveMount::FilesDirName / "1"));
+		auto error = std::string();
+		auto doc = ArchiveToml::ReadFile(entry / ArchiveMount::EntryTomlName,
+		                                 &error);
+		EXPECT_TRUE(doc) << error;
+		if (doc) {
+			doc->root.Set("last_use", int64_t{1});
+			EXPECT_TRUE(ArchiveToml::WriteAtomically(
+			        entry / ArchiveMount::EntryTomlName, *doc, &error))
+			        << error;
+		}
+		return entry;
 	}
 
 	std_fs::path tmp               = {};
@@ -318,6 +353,113 @@ TEST_F(MountArchiveTest, SequentialIsRefusedByDefaultAndCachedOnRequest)
 	EXPECT_TRUE(std_fs::is_regular_file(entry / ArchiveMount::FilesDirName / "1"));
 }
 
+// Design 6.1: MOUNT -cache shows the store, MOUNT -cache trim runs D14's
+// cleanup now.
+TEST_F(MountArchiveTest, CacheStatusTextNamesSizeCapTtlAndFreeSpace)
+{
+	ArchiveManagement::CacheOverview o  = {};
+	o.exists                            = true;
+	o.directory                         = "/c";
+	o.bytes                             = 3 << 20;
+	o.cap_bytes                         = 4096ll << 20;
+	o.min_free_bytes                    = 2048ll << 20;
+	o.ttl_seconds                       = 7 * 86400;
+	o.free_bytes                        = 10ll << 30;
+	ArchiveManagement::CacheEntryInfo e = {};
+	e.directory                         = "/c/g/game-1a2b3c4d";
+	e.archive_path                      = "/games/game.zip";
+	e.bytes                             = 2 << 20;
+	e.last_use                          = 0;
+	o.entries.push_back(e);
+	const auto text = MOUNT::CacheOverviewText(o);
+	EXPECT_NE(text.find("3 MiB"), std::string::npos) << text;
+	EXPECT_NE(text.find("4096 MiB"), std::string::npos) << text;
+	EXPECT_NE(text.find("7 days"), std::string::npos) << text;
+	EXPECT_NE(text.find("10240 MiB free"), std::string::npos) << text;
+	EXPECT_NE(text.find("game-1a2b3c4d"), std::string::npos) << text;
+	EXPECT_NE(text.find("/games/game.zip"), std::string::npos) << text;
+
+	ArchiveManagement::CacheOverview none = {};
+	none.directory                        = "/c";
+	EXPECT_NE(MOUNT::CacheOverviewText(none).find("no cache yet"),
+	          std::string::npos);
+}
+
+// An entry without a readable record has no archive and no last use to
+// show; it says so instead of counting days from the epoch.
+TEST_F(MountArchiveTest, CacheStatusTextMarksADamagedEntry)
+{
+	ArchiveManagement::CacheOverview o  = {};
+	o.exists                            = true;
+	o.directory                         = "/c";
+	o.cap_bytes                         = 4096ll << 20;
+	o.ttl_seconds                       = 7 * 86400;
+	ArchiveManagement::CacheEntryInfo e = {};
+	e.directory                         = "/c/g/game-1a2b3c4d";
+	e.bytes                             = 2 << 20;
+	e.damaged                           = true;
+	o.entries.push_back(e);
+	const auto text = MOUNT::CacheOverviewText(o);
+	EXPECT_NE(text.find("game-1a2b3c4d  2 MiB  damaged"), std::string::npos)
+	        << text;
+	EXPECT_EQ(text.find("days ago"), std::string::npos) << text;
+}
+
+// MOUNT -cache runs the same path check as --archive-cache status: a link
+// or a system path is named, never listed as a cache.
+TEST_F(MountArchiveTest, CacheStatusForALinkedRootNamesTheLink)
+{
+	std_fs::create_directories(tmp / "real");
+	std_fs::create_directory_symlink(tmp / "real", tmp / "link");
+	Set("archive_cache_path", (tmp / "link").string());
+	const auto text = MOUNT::CacheOverviewForSettings();
+	EXPECT_NE(text.find("is a link"), std::string::npos) << text;
+	EXPECT_EQ(text.find("not a directory"), std::string::npos) << text;
+	EXPECT_EQ(text.find("no entries"), std::string::npos) << text;
+}
+
+TEST_F(MountArchiveTest, CacheTrimRemovesAnExpiredEntry)
+{
+	const auto entry = ExpiredCacheEntry();
+	SetCommand("-cache trim");
+	EXPECT_TRUE(program->HandleCache());
+	EXPECT_FALSE(std_fs::exists(entry));
+}
+
+// The first open of the store runs its own cleanup; -cache trim reports
+// what that removed, not a second pass that finds nothing.
+TEST_F(MountArchiveTest, CacheTrimReportsWhatTheFirstOpenRemoved)
+{
+	const auto entry = ExpiredCacheEntry();
+	MOUNT::ResetArchiveCacheForTests();
+	auto detail       = std::string();
+	const auto report = MOUNT::TrimCache(&detail);
+	ASSERT_TRUE(report) << detail;
+	EXPECT_EQ(report->removed_expired, 1);
+	EXPECT_FALSE(std_fs::exists(entry));
+}
+
+TEST_F(MountArchiveTest, CacheTrimTakesTheWordInAnyCase)
+{
+	const auto entry = ExpiredCacheEntry();
+	SetCommand("-cache TRIM");
+	EXPECT_TRUE(program->HandleCache());
+	EXPECT_FALSE(std_fs::exists(entry));
+}
+
+TEST_F(MountArchiveTest, CacheIsHandledWithOrWithoutAWordAndNotForOtherLines)
+{
+	const auto entry = ExpiredCacheEntry();
+	SetCommand("-cache");
+	EXPECT_TRUE(program->HandleCache());
+	EXPECT_TRUE(std_fs::exists(entry)); // the overview removes nothing
+	SetCommand("-cache wipe");
+	EXPECT_TRUE(program->HandleCache());
+	EXPECT_TRUE(std_fs::exists(entry)); // an unknown word trims nothing
+	SetCommand("D game.zip");
+	EXPECT_FALSE(program->HandleCache());
+}
+
 TEST_F(MountArchiveTest, NoSidecarParsesAndAnUnavailableCacheRefuses)
 {
 	const auto zip = Built("doom.zip", Kind::ZipStored);
@@ -414,6 +556,31 @@ TEST_F(MountArchiveTest, NoSidecarMountsTheArchiveDriveAlone)
 	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
 }
 
+// Phase 6.4: -scratch is a mode of its own; the three switches that
+// decide where writes go cannot be combined with it.
+TEST_F(MountArchiveTest, ScratchParsesAndRefusesItsConflicts)
+{
+	const auto zip   = Built("doom.zip", Kind::ZipStored);
+	const auto plain = Mount("D " + zip.string() + " -scratch");
+	ASSERT_TRUE(plain.has_value());
+	EXPECT_TRUE(plain->scratch);
+	UnmountHelper('D');
+	const auto named = " -sidecar " + (tmp / "named").string();
+	for (const auto& conflict :
+	     {std::string(" -ro"), std::string(" -nosidecar"), named}) {
+		const auto line = "E " + zip.string() + " -scratch" + conflict;
+		EXPECT_FALSE(Mount(line).has_value()) << line;
+		EXPECT_FALSE(Drives.at(drive_index('E'))) << line;
+	}
+}
+
+TEST_F(MountArchiveTest, ScratchOnADirectoryMountIsRefused)
+{
+	std_fs::create_directories(tmp / "plain");
+	EXPECT_FALSE(Mount("E " + (tmp / "plain").string() + " -scratch").has_value());
+	EXPECT_FALSE(Drives.at(drive_index('E')));
+}
+
 TEST_F(MountArchiveTest, ASecondMountOfTheSameArchiveIsSidecarBusy)
 {
 	const auto zip = Built("doom.zip", Kind::ZipStored);
@@ -443,6 +610,88 @@ TEST_F(MountArchiveTest, AnExplicitSidecarPathIsUsedAndValidated)
 
 // The fixture has no PSP file table: handles go through FCB mode.
 constexpr bool fcb = true;
+
+// The union's upper side under a -scratch mount; every archive mount also
+// owns a helper scratch beside it, so the tests name this one directly.
+static bool IsScratchOf(const std_fs::path& dir, const std_fs::path& cache)
+{
+	std::error_code ec = {};
+	return std_fs::equivalent(dir.parent_path(), cache / "scratch", ec) && !ec;
+}
+
+// Phase 6.4: the union's upper side is a scratch under the cache; the
+// writes live there and go with the unmount, no sidecar appears.
+TEST_F(MountArchiveTest, ScratchMountTakesWritesAndLosesThemAtUnmount)
+{
+	const auto zip = Built("doom.zip", Kind::ZipStored);
+	ASSERT_TRUE(Mount("D " + zip.string() + " -scratch").has_value());
+	ASSERT_TRUE(UnionAt('D'));
+	const auto upper = UnionAt('D')->SidecarDirectory();
+	EXPECT_TRUE(IsScratchOf(upper, tmp / "cache")) << upper;
+	uint16_t handle = 0;
+	ASSERT_TRUE(DOS_CreateFile("D:\\SAVE.DAT", {}, &handle, fcb));
+	ASSERT_TRUE(DOS_CloseFile(handle, fcb));
+	ASSERT_TRUE(DOS_MakeDir("D:\\SAVES"));
+	EXPECT_TRUE(std_fs::is_regular_file(upper / "SAVE.DAT"));
+	EXPECT_TRUE(std_fs::is_directory(upper / "SAVES"));
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+	UnmountHelper('D');
+	EXPECT_FALSE(std_fs::exists(upper));
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+	EXPECT_FALSE(Drives.at(drive_index('D')));
+}
+
+TEST_F(MountArchiveTest, ScratchMountReadsTheArchive)
+{
+	const auto zip = Built("doom.zip", Kind::ZipStored);
+	ASSERT_TRUE(Mount("D " + zip.string() + " -scratch").has_value());
+	uint16_t handle = 0;
+	ASSERT_TRUE(DOS_OpenFile("D:\\README.TXT", OPEN_READ, &handle, fcb));
+	ASSERT_TRUE(DOS_CloseFile(handle, fcb));
+	UnmountHelper('D');
+}
+
+// Two scratch mounts of one archive never share a directory, and each
+// unmount takes only its own.
+TEST_F(MountArchiveTest, TwoScratchMountsGetTwoDirectories)
+{
+	const auto zip = Built("doom.zip", Kind::ZipStored);
+	ASSERT_TRUE(Mount("D " + zip.string() + " -scratch").has_value());
+	ASSERT_TRUE(Mount("E " + zip.string() + " -scratch").has_value());
+	ASSERT_TRUE(UnionAt('D'));
+	ASSERT_TRUE(UnionAt('E'));
+	const auto upper_d = UnionAt('D')->SidecarDirectory();
+	const auto upper_e = UnionAt('E')->SidecarDirectory();
+	EXPECT_NE(upper_d, upper_e);
+	EXPECT_TRUE(IsScratchOf(upper_d, tmp / "cache")) << upper_d;
+	EXPECT_TRUE(IsScratchOf(upper_e, tmp / "cache")) << upper_e;
+	UnmountHelper('D');
+	EXPECT_FALSE(std_fs::exists(upper_d));
+	EXPECT_TRUE(std_fs::exists(upper_e));
+	UnmountHelper('E');
+	EXPECT_FALSE(std_fs::exists(upper_e));
+}
+
+// A crash leaves the scratch with a free lock; the next start's cleanup
+// takes it, subdirectories and all.
+TEST_F(MountArchiveTest, AScratchLeftByACrashIsSweptAtTheNextStart)
+{
+	const auto zip = Built("doom.zip", Kind::ZipStored);
+	ASSERT_TRUE(Mount("D " + zip.string() + " -scratch").has_value());
+	ASSERT_TRUE(UnionAt('D'));
+	const auto upper = UnionAt('D')->SidecarDirectory();
+	uint16_t handle  = 0;
+	ASSERT_TRUE(DOS_CreateFile("D:\\SAVE.DAT", {}, &handle, fcb));
+	ASSERT_TRUE(DOS_CloseFile(handle, fcb));
+	ASSERT_TRUE(DOS_MakeDir("D:\\SAVES"));
+	// The process and its locks go; nothing discards the directory.
+	MOUNT::ResetArchiveCacheForTests();
+	UnmountHelper('D');
+	ASSERT_TRUE(std_fs::is_directory(upper / "SAVES"));
+	auto detail = std::string();
+	ASSERT_TRUE(MOUNT::TrimCache(&detail)) << detail;
+	EXPECT_FALSE(std_fs::exists(upper));
+}
 
 TEST_F(MountArchiveTest, AnArchiveFileOpenOnTheUnionKeepsTheDriveMounted)
 {
@@ -709,6 +958,21 @@ TEST_F(MountArchiveTest, TwoFloppiesFromOneArchiveFormASwapSet)
 	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
 }
 
+// The cache spreads entries by stem, so zzz's copy sorts after aaa's.
+TEST_F(MountArchiveTest, TheDriveModeNamesTheArchiveOfTheFirstImageTyped)
+{
+	auto other = Images();
+	other.push_back({"other.txt", "b"});
+	const auto first  = Built("zzz.zip", Kind::ZipDeflate, other);
+	const auto second = Built("aaa.zip", Kind::ZipDeflate, Images());
+	ASSERT_TRUE(Mount("A " + first.string() + "/disks/disk1.img " +
+	                  second.string() + "/disks/disk2.img -ro")
+	                    .has_value());
+	const auto mode = ArchiveImages::DriveModeOf(0);
+	ASSERT_TRUE(mode);
+	EXPECT_EQ(mode->archive, std_fs::canonical(first));
+}
+
 TEST_F(MountArchiveTest, AnArchiveDriveAndAnImageFromItMountSideBySide)
 {
 	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
@@ -786,7 +1050,7 @@ TEST_F(MountArchiveTest, EveryMemberConstructionFollowsAnAllowedVerdict)
 
 TEST_F(MountArchiveTest, BootRefusesAMissingMemberAndHoldsNothing)
 {
-	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto zip  = Built("images.zip", Kind::ZipDeflate, Images());
 	const auto args = zip.string() + "/disks/none.img";
 	auto boot       = std::make_unique<BOOT>();
 	delete boot->cmd;
@@ -805,7 +1069,11 @@ TEST_F(MountArchiveTest, BootRefusesAMissingMemberAndHoldsNothing)
 TEST_F(MountArchiveTest, AnImzMountsItsFloppyFromTheSidecar)
 {
 	const auto imz = tmp / "game.imz";
-	ASSERT_TRUE(WriteArchive(imz, Kind::ZipDeflate, {{"DISK1.IMA", FloppyBytes("DISKONE")}}));
+	ASSERT_TRUE(WriteArchive(imz,
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {"DISK1.IMA", FloppyBytes("DISKONE")}
+        }));
 	const auto result = Mount("A " + imz.string());
 	ASSERT_TRUE(result.has_value());
 	EXPECT_EQ(result->type, MountType::FloppyImage);
@@ -834,7 +1102,8 @@ TEST_F(MountArchiveTest, AnIszMountsAsACdDrive)
 	const auto isz = tmp / "game.isz";
 	ASSERT_TRUE(WriteIsz(isz, MinimalIso(), IszChunk::Zlib));
 	ASSERT_TRUE(Mount("D " + isz.string()).has_value());
-	EXPECT_NE(std::dynamic_pointer_cast<isoDrive>(Drives.at(drive_index('D'))), nullptr);
+	EXPECT_NE(std::dynamic_pointer_cast<isoDrive>(Drives.at(drive_index('D'))),
+	          nullptr);
 	EXPECT_EQ(ArchiveImages::HeldCountForTests(drive_index('D')), 1u);
 }
 
@@ -856,7 +1125,11 @@ TEST_F(MountArchiveTest, ACdContainerMountsWithTypeIso)
 TEST_F(MountArchiveTest, AContainerAsAnArchiveDriveIsRefused)
 {
 	const auto imz = tmp / "game.imz";
-	ASSERT_TRUE(WriteArchive(imz, Kind::ZipDeflate, {{"DISK1.IMA", FloppyBytes("DISKONE")}}));
+	ASSERT_TRUE(WriteArchive(imz,
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {"DISK1.IMA", FloppyBytes("DISKONE")}
+        }));
 	EXPECT_FALSE(Mount("E " + imz.string() + " -t archive").has_value());
 	EXPECT_EQ(Drives.at(drive_index('E')), nullptr);
 	const bool seen = std::any_of(verdicts.begin(), verdicts.end(), [](const auto& v) {
@@ -891,7 +1164,8 @@ TEST_F(MountArchiveTest, TheSwapTakesACompressedImage)
 	ASSERT_TRUE(WriteCompressed(one, Filter::Xz, FloppyBytes("DISKONE")));
 	ASSERT_TRUE(WriteCompressed(two, Filter::Gzip, FloppyBytes("DISKTWO")));
 	ASSERT_TRUE(Mount("A " + one.string()).has_value());
-	const auto result = DriveSwap::Swap('A', two, false, {}, {std_fs::canonical(tmp)});
+	const auto result =
+	        DriveSwap::Swap('A', two, false, {}, {std_fs::canonical(tmp)});
 	ASSERT_TRUE(result.ok) << result.error;
 	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
 	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
@@ -931,6 +1205,117 @@ TEST_F(MountArchiveTest, TheSwapBackToAMemberReusesItsHold)
 	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
 }
 
+// The scratch directory a member mount's image lives in, from the file
+// the image drive opened: <cache>/scratch/<dir>/<archive key>/.images/...
+static std_fs::path ScratchOfImage(const std_fs::path& image, const std_fs::path& cache)
+{
+	const auto base = std_fs::weakly_canonical(cache / "scratch");
+	const auto rel = std_fs::weakly_canonical(image).lexically_relative(base);
+	if (rel.empty() || *rel.begin() == "..") {
+		return {};
+	}
+	return base / *rel.begin();
+}
+
+static size_t ScratchCount(const std_fs::path& cache)
+{
+	size_t count       = 0;
+	std::error_code ec = {};
+	auto it            = std_fs::directory_iterator(cache / "scratch", ec);
+	for (; !ec && it != std_fs::directory_iterator(); it.increment(ec)) {
+		++count;
+	}
+	return count;
+}
+
+// Phase 6.4 for image members: the first disk and the swap use copies in
+// the scratch; the unmount takes the scratch away.
+TEST_F(MountArchiveTest, ScratchMemberMountCopiesAndSwapsInsideTheScratch)
+{
+	const auto zip  = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img -scratch").has_value());
+	ASSERT_TRUE(imageDiskList[0]);
+	const auto scratch = ScratchOfImage(imageDiskList[0]->diskname, tmp / "cache");
+	ASSERT_FALSE(scratch.empty()) << imageDiskList[0]->diskname;
+	EXPECT_FALSE(Drives.at(0)->IsReadOnly());
+	uint16_t handle = 0;
+	ASSERT_TRUE(DOS_CreateFile("A:\\SAVE.DAT", {}, &handle, fcb));
+	ASSERT_TRUE(DOS_CloseFile(handle, fcb));
+	const auto swapped = DriveSwap::Swap(
+	        'A', zip.string() + "/disks/disk2.img", false, {}, root);
+	ASSERT_TRUE(swapped.ok) << swapped.error;
+	EXPECT_EQ(ScratchOfImage(imageDiskList[0]->diskname, tmp / "cache"), scratch)
+	        << imageDiskList[0]->diskname;
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+	UnmountHelper('A');
+	EXPECT_FALSE(std_fs::exists(scratch));
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 0u);
+}
+
+// ada-lm3d: naming an archive inside an archive as a disk refuses it
+// before anything lands in a sidecar.
+TEST_F(MountArchiveTest, AnInnerArchiveNamedAsADiskLeavesNoSidecar)
+{
+	auto entries = Images();
+	entries.push_back({"inner.zip", std::string(5000, 'z')});
+	const auto zip = Built("images.zip", Kind::ZipDeflate, entries);
+	EXPECT_FALSE(Mount("D " + zip.string() + "/inner.zip").has_value());
+	std::error_code ec = {};
+	EXPECT_TRUE(!std_fs::exists(tmp / "saves", ec) ||
+	            std_fs::is_empty(tmp / "saves", ec));
+	ASSERT_FALSE(verdicts.empty());
+	EXPECT_EQ(verdicts.back().second.reason, DenyReason::NotADiskImage);
+}
+
+TEST_F(MountArchiveTest, ScratchMemberMountThatFailsLeavesNoScratch)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	EXPECT_FALSE(
+	        Mount("A " + zip.string() + "/disks/nothere.img -scratch").has_value());
+	EXPECT_EQ(ScratchCount(tmp / "cache"), 0u);
+}
+
+// A drive number has no DOS drive whose unmount could discard a scratch,
+// and its key would collide with a letter's: refused.
+TEST_F(MountArchiveTest, ScratchOnADriveNumberIsRefused)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	for (const auto& line :
+	     {"0 " + zip.string() + "/disks/disk1.img -scratch",
+	      "A " + zip.string() + "/disks/disk1.img -scratch -fs none"}) {
+		EXPECT_FALSE(Mount(line).has_value()) << line;
+		EXPECT_EQ(ScratchCount(tmp / "cache"), 0u) << line;
+		EXPECT_FALSE(imageDiskList[0]) << line;
+	}
+}
+
+// A -scratch line keeps every write for the mount only; a host image in
+// it, or swapped onto such a drive, would be written in place.
+TEST_F(MountArchiveTest, ScratchRefusesAHostImageInTheSameLine)
+{
+	const auto zip  = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto host = tmp / "save.img";
+	std::ofstream(host, std::ios::binary) << FloppyBytes("SAVEDISK");
+	EXPECT_FALSE(Mount("A " + zip.string() + "/disks/disk1.img " +
+	                   host.string() + " -scratch")
+	                     .has_value());
+	EXPECT_FALSE(imageDiskList[0]);
+	EXPECT_EQ(ScratchCount(tmp / "cache"), 0u);
+}
+
+TEST_F(MountArchiveTest, AHostImageCannotBeSwappedOntoAScratchDrive)
+{
+	const auto zip  = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto host = tmp / "save.img";
+	std::ofstream(host, std::ios::binary) << FloppyBytes("SAVEDISK");
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img -scratch").has_value());
+	const auto swapped = DriveSwap::Swap('A', host.string(), false, {}, root);
+	EXPECT_FALSE(swapped.ok);
+	EXPECT_EQ(std::string(Drives.at(0)->GetLabel()), "DISKONE");
+}
+
 TEST_F(MountArchiveTest, TheSwapBackToACompressedImageReusesItsHold)
 {
 	const auto one = tmp / "disk1.img.xz";
@@ -944,6 +1329,177 @@ TEST_F(MountArchiveTest, TheSwapBackToACompressedImageReusesItsHold)
 	ASSERT_TRUE(back.ok) << back.error;
 	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
 	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
+}
+
+// Decision 1a (2026-10-08): the swap's FAT path takes the resolved
+// read-only flag like the raw path, instead of a drive hard-wired
+// read-only since 2026-08-01.
+TEST_F(MountArchiveTest, TheSwapKeepsTheDriveWritable)
+{
+	const auto zip  = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img").has_value());
+	ASSERT_FALSE(Drives.at(0)->IsReadOnly());
+	const auto result = DriveSwap::Swap(
+	        'A', zip.string() + "/disks/disk2.img", false, {}, root);
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
+	EXPECT_FALSE(Drives.at(0)->IsReadOnly());
+	uint16_t handle = 0;
+	ASSERT_TRUE(DOS_CreateFile("A:\\SAVE.DAT", {}, &handle, fcb));
+	ASSERT_TRUE(DOS_CloseFile(handle, fcb));
+}
+
+TEST_F(MountArchiveTest, TheSwapOnAReadOnlyDriveStaysReadOnly)
+{
+	const auto zip  = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img -ro").has_value());
+	ASSERT_TRUE(Drives.at(0)->IsReadOnly());
+	const auto result = DriveSwap::Swap(
+	        'A', zip.string() + "/disks/disk2.img", false, {}, root);
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
+	EXPECT_TRUE(Drives.at(0)->IsReadOnly());
+	uint16_t handle = 0;
+	EXPECT_FALSE(DOS_CreateFile("A:\\SAVE.DAT", {}, &handle, fcb));
+}
+
+// The hard-wired flag bit host images as much as archives.
+TEST_F(MountArchiveTest, TheSwapOfAHostImageKeepsTheDriveWritable)
+{
+	const auto one = tmp / "one.img";
+	const auto two = tmp / "two.img";
+	std::ofstream(one, std::ios::binary) << FloppyBytes("DISKONE");
+	std::ofstream(two, std::ios::binary) << FloppyBytes("DISKTWO");
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + one.string()).has_value());
+	ASSERT_FALSE(Drives.at(0)->IsReadOnly());
+	const auto result = DriveSwap::Swap('A', two, false, {}, root);
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
+	EXPECT_FALSE(Drives.at(0)->IsReadOnly());
+}
+
+// A swap back to a held disk is served from the drive's copy without
+// opening the archive again: the hold carries the entry listing, so a
+// sequential archive is not unpacked once more for a disk already held.
+TEST_F(MountArchiveTest, TheSwapBackToAHeldMemberOpensNoArchive)
+{
+	const auto zip  = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto one  = zip.string() + "/disks/disk1.img";
+	const auto two  = zip.string() + "/disks/disk2.img";
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + one).has_value());
+	ASSERT_TRUE(DriveSwap::Swap('A', two, false, {}, root).ok);
+	// On disk the archive no longer lists disk1: an open would not
+	// find the member.
+	std_fs::remove(zip);
+	Built("images.zip",
+	      Kind::ZipDeflate,
+	      {
+	              {"disks/", "", true},
+	              {"disks/disk2.img", FloppyBytes("DISKTWO")}
+        });
+	const auto back = DriveSwap::Swap('A', one, false, {}, root);
+	ASSERT_TRUE(back.ok) << back.error;
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 2u);
+}
+
+// Round 3: a drive's -ro reaches every swap, host images included; the
+// old hard-wired read-only had covered these by accident.
+TEST_F(MountArchiveTest, TheSwapOfAHostImageOntoAReadOnlyDriveStaysReadOnly)
+{
+	const auto one = tmp / "one.img";
+	const auto two = tmp / "two.img";
+	std::ofstream(one, std::ios::binary) << FloppyBytes("DISKONE");
+	std::ofstream(two, std::ios::binary) << FloppyBytes("DISKTWO");
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + one.string() + " -ro").has_value());
+	ASSERT_TRUE(Drives.at(0)->IsReadOnly());
+	const auto result = DriveSwap::Swap('A', two, false, {}, root);
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
+	EXPECT_TRUE(Drives.at(0)->IsReadOnly());
+	uint16_t handle = 0;
+	EXPECT_FALSE(DOS_CreateFile("A:\\SAVE.DAT", {}, &handle, fcb));
+}
+
+TEST_F(MountArchiveTest, AnImageMemberMountedReadOnlySwappedToAHostImageStaysReadOnly)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	const auto two = tmp / "two.img";
+	std::ofstream(two, std::ios::binary) << FloppyBytes("DISKTWO");
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + zip.string() + "/disks/disk1.img -ro").has_value());
+	const auto result = DriveSwap::Swap('A', two, false, {}, root);
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_TRUE(Drives.at(0)->IsReadOnly());
+}
+
+// ada-99u7: a swap to a file the drive's Ctrl+F4 list already holds takes
+// that list's object, so one file never has two writing objects with two
+// FAT caches; the list's position follows the swap.
+TEST_F(MountArchiveTest, ASwapToAListedImageTakesTheListsObject)
+{
+	const auto one = tmp / "one.img";
+	const auto two = tmp / "two.img";
+	std::ofstream(one, std::ios::binary) << FloppyBytes("DISKONE");
+	std::ofstream(two, std::ios::binary) << FloppyBytes("DISKTWO");
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + one.string() + " " + two.string()).has_value());
+	const auto& listed = DriveManager::GetFilesystemImages(0);
+	ASSERT_EQ(listed.size(), 2u);
+	const auto result = DriveSwap::Swap('A', two.string(), false, {}, root);
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_EQ(Drives.at(0), listed[1]);
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
+	DriveManager::CycleDisks(0, false);
+	EXPECT_EQ(Drives.at(0), listed[0]);
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
+}
+
+TEST_F(MountArchiveTest, AReadOnlySwapNeverTakesTheListsWritableObject)
+{
+	const auto one = tmp / "one.img";
+	const auto two = tmp / "two.img";
+	std::ofstream(one, std::ios::binary) << FloppyBytes("DISKONE");
+	std::ofstream(two, std::ios::binary) << FloppyBytes("DISKTWO");
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("A " + one.string() + " " + two.string()).has_value());
+	const auto& listed = DriveManager::GetFilesystemImages(0);
+	ASSERT_EQ(listed.size(), 2u);
+	ASSERT_FALSE(listed[1]->IsReadOnly());
+	// The drive's mode turned read-only, as a slot shared with a -ro
+	// mount leaves it (ada-9w06).
+	auto mode = ArchiveImages::DriveModeOf(0);
+	ASSERT_TRUE(mode);
+	mode->read_only = true;
+	ArchiveImages::SetDriveMode(0, *mode);
+	const auto result = DriveSwap::Swap('A', two.string(), false, {}, root);
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_NE(Drives.at(0), listed[1]);
+	EXPECT_TRUE(Drives.at(0)->IsReadOnly());
+}
+
+TEST_F(MountArchiveTest, TheRawSwapOntoAReadOnlySlotStaysReadOnly)
+{
+	const auto one = tmp / "one.img";
+	const auto two = tmp / "two.img";
+	std::ofstream(one, std::ios::binary) << FloppyBytes("DISKONE");
+	std::ofstream(two, std::ios::binary) << FloppyBytes("DISKTWO");
+	const auto root = std::vector<std_fs::path>{std_fs::canonical(tmp)};
+	ASSERT_TRUE(Mount("0 " + one.string() + " -t floppy -fs none -ro").has_value());
+	ASSERT_FALSE(Drives.at(0));
+	ASSERT_TRUE(imageDiskList[0]);
+	const auto result = DriveSwap::Swap('A', two, false, {}, root);
+	ASSERT_TRUE(result.ok) << result.error;
+	const auto before = ReadAll(two);
+	auto sector       = std::array<uint8_t, 512>{};
+	sector.fill(0x5A);
+	EXPECT_NE(imageDiskList[0]->Write_AbsoluteSector(3, sector.data()), 0);
+	EXPECT_TRUE(ReadAll(two) == before);
 }
 
 TEST_F(MountArchiveTest, AnImageAnotherDriveHoldsIsRefusedAsBusy)

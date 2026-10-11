@@ -23,15 +23,17 @@ namespace ArchiveMount {
 
 namespace {
 
-int OpenLockFile(const std::filesystem::path& path)
+int OpenLockFile(const std::filesystem::path& path, const bool create = true)
 {
 #if defined(WIN32)
 	// _O_NOINHERIT so no helper the engine spawns carries the handle.
 	return _wopen(path.wstring().c_str(),
-	              _O_RDWR | _O_CREAT | _O_BINARY | _O_NOINHERIT,
+	              _O_RDWR | _O_BINARY | _O_NOINHERIT | (create ? _O_CREAT : 0),
 	              _S_IREAD | _S_IWRITE);
 #else
-	return open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+	return open(path.c_str(),
+	            O_RDWR | O_CLOEXEC | O_NOFOLLOW | (create ? O_CREAT : 0),
+	            0600);
 #endif
 }
 
@@ -89,6 +91,19 @@ std::optional<FileLock> FileLock::TryAcquire(const std::filesystem::path& path,
 		return {};
 	}
 	return FileLock(fd, mode, path);
+}
+
+bool FileLock::IsHeld(const std::filesystem::path& path)
+{
+	// Holders create the file, so a missing one is held by nobody. The
+	// exclusive try lasts only until Unlock, the same window Cleanup has.
+	const int fd = OpenLockFile(path, false);
+	if (fd < 0) {
+		return false;
+	}
+	const bool free = Lock(fd, Mode::Exclusive);
+	Unlock(fd);
+	return !free;
 }
 
 FileLock::FileLock(const int fd, const Mode mode, std::filesystem::path path)

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2021-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "mount_common.h"
 #include "dos/programs/archive_images.h"
@@ -33,6 +34,7 @@ std::string UnmountHelper(char umount)
 		return MSG_Get("PROGRAM_MOUNT_UMOUNT_NOT_MOUNTED");
 	}
 
+	bool had_drive = false;
 	if (Drives[i_drive]) {
 		switch (DriveManager::UnmountDrive(i_drive)) {
 			case 1: return MSG_Get("PROGRAM_MOUNT_UMOUNT_NO_VIRTUAL");
@@ -41,7 +43,7 @@ std::string UnmountHelper(char umount)
 				return MSG_Get("PROGRAM_MOUNT_UMOUNT_FILES_OPEN");
 		}
 		Drives[i_drive] = nullptr;
-		MOUNT::ReleaseSidecar(static_cast<char>('A' + i_drive));
+		had_drive       = true;
 		mem_writeb(RealToPhysical(dos.tables.mediaid)+i_drive*9,0);
 		if (i_drive == DOS_GetDefaultDrive()) {
 			DOS_SetDrive(ZDRIVE_NUM);
@@ -54,6 +56,11 @@ std::string UnmountHelper(char umount)
 	}
 
 	ArchiveImages::Release(i_drive);
+	// Last: a scratch is discarded once its image and holds are closed,
+	// Windows deletes no file that is still open.
+	if (had_drive) {
+		MOUNT::ReleaseSidecar(static_cast<char>('A' + i_drive));
+	}
 	return MSG_Get("PROGRAM_MOUNT_UMOUNT_SUCCESS");
 }
 

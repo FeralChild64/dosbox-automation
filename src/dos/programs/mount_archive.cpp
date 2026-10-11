@@ -20,11 +20,13 @@
 #include "misc/notifications.h"
 #include "utils/checks.h"
 #include "utils/fs_utils.h"
+#include "utils/string_utils.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <chrono>
+#include <ctime>
 #include <random>
 #include <unordered_map>
 
@@ -36,14 +38,6 @@ using namespace MountArchiveInternal;
 namespace {
 
 constexpr auto LogComponent = "mount";
-
-constexpr int64_t MiB = 1024 * 1024;
-
-std_fs::path EffectiveCachePath(const ArchiveSettings& s)
-{
-	return s.cache_path.empty() ? get_cache_dir() / "archive-cache"
-	                            : s.cache_path;
-}
 
 // The engine's one store (design D14): opened and cleaned up at engine
 // start (ArchiveCacheStartup), reopened when the settings change.
@@ -67,6 +61,16 @@ int MountedArchiveDrives()
 	return count;
 }
 
+} // namespace
+
+namespace MountArchiveInternal {
+
+std_fs::path EffectiveCachePath(const ArchiveSettings& s)
+{
+	return s.cache_path.empty() ? get_cache_dir() / "archive-cache"
+	                            : s.cache_path;
+}
+
 std_fs::path SavesDirectory()
 {
 	const auto section = get_section("dos");
@@ -75,9 +79,30 @@ std_fs::path SavesDirectory()
 	return raw.empty() ? get_data_dir() / "saves" : resolve_home(raw);
 }
 
-} // namespace
+CacheOptions CacheOptionsFor(const ArchiveSettings& s)
+{
+	CacheOptions options   = {};
+	options.max_size_bytes = s.cache_max_bytes;
+	options.min_free_bytes = s.cache_min_free_bytes;
+	options.ttl_seconds    = s.ttl_seconds;
+	return options;
+}
 
-namespace MountArchiveInternal {
+std::string CachePathProblem(const std_fs::path& path)
+{
+	// The directory may not exist yet. Links above it belong to the host's
+	// layout (/home on Silverblue or FreeBSD); the leaf may not be one, and
+	// the system-path rule judges the canonical place.
+	std::error_code ec = {};
+	if (std_fs::is_symlink(std_fs::symlink_status(path, ec))) {
+		return PathToUtf8(path) + " is a link";
+	}
+	const auto probe = std_fs::weakly_canonical(path, ec);
+	if (!ec && MountPolicy::IsUnderSystemPath(probe)) {
+		return PathToUtf8(path) + " is a system path";
+	}
+	return {};
+}
 
 ArchiveSettings ReadArchiveSettings()
 {
@@ -98,7 +123,8 @@ ArchiveSettings ReadArchiveSettings()
 	return s;
 }
 
-ArchiveCache* OpenStore(const ArchiveSettings& s, std::string* detail)
+ArchiveCache* OpenStore(const ArchiveSettings& s, std::string* detail,
+                        std::optional<ArchiveCache::CleanupReport>* cleaned)
 {
 	const auto path = EffectiveCachePath(s);
 	if (store.cache && store.path == path && store.max_bytes == s.cache_max_bytes &&
@@ -113,24 +139,11 @@ ArchiveCache* OpenStore(const ArchiveSettings& s, std::string* detail)
 		return store.cache.get();
 	}
 	store = {};
-	// The directory may not exist yet. Links above it belong to the host's
-	// layout (/home on Silverblue or FreeBSD); the leaf may not be one, and
-	// the system-path rule judges the canonical place.
-	std::error_code ec = {};
-	if (std_fs::is_symlink(std_fs::symlink_status(path, ec))) {
-		*detail = path.string() + " is a link";
+	if (const auto problem = CachePathProblem(path); !problem.empty()) {
+		*detail = problem;
 		return nullptr;
 	}
-	const auto probe = std_fs::weakly_canonical(path, ec);
-	if (!ec && MountPolicy::IsUnderSystemPath(probe)) {
-		*detail = path.string() + " is a system path";
-		return nullptr;
-	}
-	CacheOptions options   = {};
-	options.max_size_bytes = s.cache_max_bytes;
-	options.min_free_bytes = s.cache_min_free_bytes;
-	options.ttl_seconds    = s.ttl_seconds;
-	auto opened            = ArchiveCache::Open(path, options);
+	auto opened = ArchiveCache::Open(path, CacheOptionsFor(s));
 	if (opened.status != CacheStatus::Ok) {
 		*detail = std::string(CacheStatusText(opened.status)) + ": " +
 		          opened.detail;
@@ -139,12 +152,15 @@ ArchiveCache* OpenStore(const ArchiveSettings& s, std::string* detail)
 	const auto report = opened.cache->Cleanup();
 	augra::log_info(LogComponent,
 	                "archive cache %s: %d expired, %d damaged, %d over the cap removed, %d locked kept, %lld bytes in use",
-	                path.string().c_str(),
+	                PathToUtf8(path).c_str(),
 	                report.removed_expired,
 	                report.removed_damaged,
 	                report.removed_for_cap,
 	                report.skipped_locked,
 	                static_cast<long long>(report.bytes_after));
+	if (cleaned) {
+		*cleaned = report;
+	}
 	store.cache     = std::move(opened.cache);
 	store.path      = path;
 	store.max_bytes = s.cache_max_bytes;
@@ -162,8 +178,8 @@ MountVerdict Denied(const DenyReason reason)
 }
 
 // Design D2 without the lock, shared with the image copies of 4a (D17).
-SidecarPlace PlaceSidecar(const std::string& sidecar_path,
-                          const std_fs::path& archive, const ArchiveSource& source)
+SidecarPlace PlaceSidecar(const std::string& sidecar_path, const std_fs::path& archive,
+                          const std::string_view identity_hash)
 {
 	SidecarPlace place = {};
 	std::error_code ec = {};
@@ -184,7 +200,7 @@ SidecarPlace PlaceSidecar(const std::string& sidecar_path,
 	const auto saves = SavesDirectory();
 	std_fs::create_directories(saves, ec);
 	std_fs::permissions(saves, std_fs::perms::owner_all, ec);
-	auto location = LocateSidecar(saves, archive, source.IdentityHash());
+	auto location = LocateSidecar(saves, archive, identity_hash);
 	switch (location.kind) {
 	case SidecarLocation::Kind::ByPath:
 		place.directory = location.directory;
@@ -192,7 +208,7 @@ SidecarPlace PlaceSidecar(const std::string& sidecar_path,
 		if (!location.also_matching.empty()) {
 			augra::log_info(LogComponent,
 			                "sidecar %s also matches by hash, path wins",
-			                location.also_matching.string().c_str());
+			                PathToUtf8(location.also_matching).c_str());
 		}
 		break;
 	case SidecarLocation::Kind::ByHash:
@@ -211,22 +227,24 @@ SidecarPlace PlaceSidecar(const std::string& sidecar_path,
 				place.how       = "found beside the archive";
 				break;
 			}
-			NOTIFY_DisplayWarning(Notification::Source::Console,
-			                      "MOUNT",
-			                      "PROGRAM_MOUNT_SIDECAR_SKIPPED",
-			                      location.beside_archive.string().c_str());
+			NOTIFY_DisplayWarning(
+			        Notification::Source::Console,
+			        "MOUNT",
+			        "PROGRAM_MOUNT_SIDECAR_SKIPPED",
+			        PathToUtf8(location.beside_archive).c_str());
 		}
 		if (!location.replaced_old.empty()) {
 			NOTIFY_DisplayWarning(Notification::Source::Console,
 			                      "MOUNT",
 			                      "PROGRAM_MOUNT_SIDECAR_REPLACED",
-			                      location.replaced_old.string().c_str());
+			                      PathToUtf8(location.replaced_old).c_str());
 		}
 		place.directory = location.directory;
 		place.how       = "created";
-		if (!std_fs::create_directory(place.directory, ec) && ec) {
+		place.made_now  = std_fs::create_directory(place.directory, ec);
+		if (!place.made_now && ec) {
 			place.refusal = Denied(DenyReason::SidecarUnavailable);
-			place.detail = "cannot create " + place.directory.string();
+			place.detail = "cannot create " + PathToUtf8(place.directory);
 			return place;
 		}
 		std_fs::permissions(place.directory, std_fs::perms::owner_all, ec);
@@ -237,6 +255,7 @@ SidecarPlace PlaceSidecar(const std::string& sidecar_path,
 
 // A fresh record for a created sidecar; an existing one is the union's.
 bool EnsureSidecarRecord(const std_fs::path& directory, const std_fs::path& archive,
+                         const std::string_view identity_hash,
                          const ArchiveSource& source, std::string* detail)
 {
 	std::error_code ec = {};
@@ -245,8 +264,8 @@ bool EnsureSidecarRecord(const std_fs::path& directory, const std_fs::path& arch
 		return true;
 	}
 	SidecarRecord record = {};
-	record.archive_path  = archive.string();
-	record.identity_hash = source.IdentityHash();
+	record.archive_path  = PathToUtf8(archive);
+	record.identity_hash = std::string(identity_hash);
 	record.entry_count   = static_cast<int64_t>(source.Entries().size());
 	record.total_bytes   = source.TotalBytes();
 	record.created       = std::chrono::duration_cast<std::chrono::seconds>(
@@ -284,13 +303,14 @@ void ReportSidecarDenied(const std_fs::path& raw, const DenyReason reason,
 	if (MountPolicy::verdict_hook) {
 		MountPolicy::verdict_hook(raw, denied);
 	}
-	MOUNT::ReportMountDenied(raw.string(), denied, detail);
+	MOUNT::ReportMountDenied(PathToUtf8(raw), denied, detail);
 }
 
 // One sidecar, one mount: the lock is cross-process, this map is the
 // in-process half (3.2); keyed by the sidecar's directory.
-std::unordered_map<std::string, FileLock> sidecar_locks = {};
-std::unordered_map<char, std::string> sidecar_owner     = {};
+std::unordered_map<std::string, FileLock> sidecar_locks        = {};
+std::unordered_map<char, std::string> sidecar_owner            = {};
+std::unordered_map<char, ArchiveCache::Scratch> scratch_mounts = {};
 
 struct ResolvedSidecar {
 	std_fs::path directory       = {};
@@ -305,7 +325,7 @@ std::optional<ResolvedSidecar> ResolveSidecar(const MountParameters& params,
                                               const ArchiveSource& source,
                                               const std_fs::path& raw_archive)
 {
-	auto place = PlaceSidecar(params.sidecar_path, archive, source);
+	auto place = PlaceSidecar(params.sidecar_path, archive, source.IdentityHash());
 	if (place.refusal.reason != DenyReason::None) {
 		if (place.refusal.reason == DenyReason::SidecarUnavailable) {
 			ReportSidecarDenied(raw_archive,
@@ -324,7 +344,7 @@ std::optional<ResolvedSidecar> ResolveSidecar(const MountParameters& params,
 	if (sidecar_locks.contains(out.key)) {
 		ReportSidecarDenied(raw_archive,
 		                    DenyReason::SidecarBusy,
-		                    out.directory.string());
+		                    PathToUtf8(out.directory));
 		return {};
 	}
 	out.lock = FileLock::TryAcquire(out.directory / ".lock",
@@ -332,11 +352,12 @@ std::optional<ResolvedSidecar> ResolveSidecar(const MountParameters& params,
 	if (!out.lock) {
 		ReportSidecarDenied(raw_archive,
 		                    DenyReason::SidecarBusy,
-		                    out.directory.string());
+		                    PathToUtf8(out.directory));
 		return {};
 	}
 	auto error = std::string();
-	if (!EnsureSidecarRecord(out.directory, archive, source, &error)) {
+	if (!EnsureSidecarRecord(
+	            out.directory, archive, source.IdentityHash(), source, &error)) {
 		ReportSidecarDenied(raw_archive, DenyReason::SidecarUnavailable, error);
 		return {};
 	}
@@ -347,12 +368,40 @@ std::optional<ResolvedSidecar> ResolveSidecar(const MountParameters& params,
 
 void MOUNT::ReleaseSidecar(const char drive_letter)
 {
+	if (const auto scratch = scratch_mounts.find(drive_letter);
+	    scratch != scratch_mounts.end()) {
+		ArchiveCache::DiscardScratch(scratch->second);
+		scratch_mounts.erase(scratch);
+	}
 	const auto owner = sidecar_owner.find(drive_letter);
 	if (owner == sidecar_owner.end()) {
 		return;
 	}
 	sidecar_locks.erase(owner->second);
 	sidecar_owner.erase(owner);
+}
+
+void MOUNT::KeepScratch(const char drive_letter, ArchiveCache::Scratch&& scratch)
+{
+	scratch_mounts.insert_or_assign(drive_letter, std::move(scratch));
+}
+
+bool MOUNT::EnsureScratch(MountParameters& params, std::string* why)
+{
+	if (params.scratch_made) {
+		return true;
+	}
+	auto* cache = OpenStore(ReadArchiveSettings(), why);
+	if (!cache) {
+		return false;
+	}
+	auto scratch = cache->MakeScratch();
+	if (!scratch) {
+		*why = "cannot create a scratch directory under the cache";
+		return false;
+	}
+	params.scratch_made = std::move(scratch);
+	return true;
 }
 
 void MOUNT::ArchiveCacheStartup()
@@ -367,6 +416,8 @@ void MOUNT::ArchiveCacheStartup()
 
 void MOUNT::ResetArchiveCacheForTests()
 {
+	// A crash does not discard: the locks go, the directories stay.
+	scratch_mounts.clear();
 	store = {};
 }
 
@@ -393,7 +444,9 @@ bool MOUNT::MountArchive(MountParameters& params)
 	const auto resolved = verdict.verdict.resolved;
 	// Plan 4b: a single-image container mounts as its image, never as a drive.
 	if (ArchiveMount::IsSingleImageContainer(resolved)) {
-		ReportSidecarDenied(raw, DenyReason::NotAnArchive, "a single image: mount it as the image");
+		ReportSidecarDenied(raw,
+		                    DenyReason::NotAnArchive,
+		                    "a single image: mount it as the image");
 		return false;
 	}
 	params.paths[0] = resolved.string();
@@ -458,7 +511,7 @@ bool MOUNT::MountArchive(MountParameters& params)
 			         root.c_str());
 			augra::log_info(LogComponent,
 			                "%s: the root is %s (D10)",
-			                resolved.string().c_str(),
+			                PathToUtf8(resolved).c_str(),
 			                root.c_str());
 		}
 	}
@@ -515,23 +568,48 @@ bool MOUNT::MountArchive(MountParameters& params)
 	}
 
 	std::shared_ptr<DOS_Drive> to_register = made.drive;
-	if (!params.no_sidecar && !params.roflag) {
+	SidecarRecord identity                 = {};
+	identity.archive_path                  = PathToUtf8(resolved);
+	identity.identity_hash = made.drive->Source().IdentityHash();
+	identity.entry_count   = static_cast<int64_t>(
+                made.drive->Source().Entries().size());
+	identity.total_bytes = made.drive->Source().TotalBytes();
+	if (params.scratch) {
+		auto why = std::string();
+		if (!EnsureScratch(params, &why)) {
+			ReportSidecarDenied(raw, DenyReason::CacheUnavailable, why);
+			return false;
+		}
+		auto error   = std::string();
+		auto unioned = UnionDrive::Create(made.drive,
+		                                  params.scratch_made->dir,
+		                                  params.drive,
+		                                  identity,
+		                                  &error);
+		if (!unioned) {
+			ArchiveCache::DiscardScratch(*params.scratch_made);
+			params.scratch_made.reset();
+			ReportSidecarDenied(raw, DenyReason::CacheUnavailable, error);
+			return false;
+		}
+		augra::log_info(LogComponent,
+		                "%s mounted with scratch %s",
+		                PathToUtf8(resolved).c_str(),
+		                PathToUtf8(params.scratch_made->dir).c_str());
+		KeepScratch(params.drive, std::move(*params.scratch_made));
+		params.scratch_made.reset();
+		to_register = unioned;
+	} else if (!params.no_sidecar && !params.roflag) {
 		auto sidecar = ResolveSidecar(params, resolved, made.drive->Source(), raw);
 		if (!sidecar) {
 			return false; // reported inside
 		}
-		SidecarRecord identity = {};
-		identity.archive_path  = resolved.string();
-		identity.identity_hash = made.drive->Source().IdentityHash();
-		identity.entry_count   = static_cast<int64_t>(
-                        made.drive->Source().Entries().size());
-		identity.total_bytes = made.drive->Source().TotalBytes();
-		auto error           = std::string();
-		auto unioned         = UnionDrive::Create(made.drive,
-                                                  sidecar->directory,
-                                                  params.drive,
-                                                  identity,
-                                                  &error);
+		auto error   = std::string();
+		auto unioned = UnionDrive::Create(made.drive,
+		                                  sidecar->directory,
+		                                  params.drive,
+		                                  identity,
+		                                  &error);
 		if (!unioned) {
 			ReportSidecarDenied(raw, DenyReason::SidecarUnavailable, error);
 			return false;
@@ -540,8 +618,8 @@ bool MOUNT::MountArchive(MountParameters& params)
 		sidecar_owner[params.drive] = sidecar->key;
 		augra::log_info(LogComponent,
 		                "%s mounted with sidecar %s (%s)",
-		                resolved.string().c_str(),
-		                sidecar->directory.string().c_str(),
+		                PathToUtf8(resolved).c_str(),
+		                PathToUtf8(sidecar->directory).c_str(),
 		                sidecar->how);
 		to_register = unioned;
 	}
@@ -556,6 +634,113 @@ bool MOUNT::MountArchive(MountParameters& params)
 	if (params.no_sidecar || params.roflag) {
 		WriteOut(MSG_Get("PROGRAM_MOUNT_READONLY"));
 	}
+	if (params.scratch) {
+		WriteOut(MSG_Get("PROGRAM_MOUNT_ARCHIVE_SCRATCH"), params.drive);
+	}
+	return true;
+}
+
+// The status lines are built here and shown as they are: the test binary
+// links the message stubs, so a text a test must see lives in the code.
+std::string MOUNT::CacheOverviewText(const ArchiveManagement::CacheOverview& overview)
+{
+	const auto mib = [](const int64_t bytes) {
+		return std::to_string(bytes / MiB);
+	};
+	auto text = "Archive cache: " + PathToUtf8(overview.directory) + "\n";
+	if (!overview.problem.empty()) {
+		return text + "  " + overview.problem + "\n";
+	}
+	if (!overview.exists) {
+		return text + "  no cache yet\n";
+	}
+	text += "  " + mib(overview.bytes) + " MiB of " +
+	        mib(overview.cap_bytes) + " MiB used";
+	if (overview.free_bytes) {
+		text += ", " + mib(*overview.free_bytes) + " MiB free (" +
+		        mib(overview.min_free_bytes) + " MiB kept)";
+	}
+	text += ", unused entries live " +
+	        std::to_string(overview.ttl_seconds / (24 * 60 * 60)) + " days\n";
+	auto entries = overview.entries;
+	std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+		return a.last_use > b.last_use;
+	});
+	const auto now = static_cast<int64_t>(std::time(nullptr));
+	for (const auto& e : entries) {
+		text += "  " + PathToUtf8(e.directory.filename()) + "  " +
+		        mib(e.bytes) + " MiB  ";
+		if (e.damaged) {
+			text += "damaged";
+		} else {
+			const auto days = std::max<int64_t>(0,
+			                                    (now - e.last_use) /
+			                                            (24 * 60 * 60));
+			text += std::to_string(days) + " days ago  " + e.archive_path;
+		}
+		text += (e.locked ? "  (in use)" : "") + std::string("\n");
+	}
+	if (entries.empty()) {
+		text += "  no entries\n";
+	}
+	return text;
+}
+
+std::string MOUNT::CacheOverviewForSettings()
+{
+	const auto settings = ReadArchiveSettings();
+	const auto path     = EffectiveCachePath(settings);
+	if (const auto problem = CachePathProblem(path); !problem.empty()) {
+		ArchiveManagement::CacheOverview refused = {};
+		refused.directory                        = path;
+		refused.problem                          = problem;
+		return CacheOverviewText(refused);
+	}
+	return CacheOverviewText(
+	        ArchiveManagement::InspectCache(path, CacheOptionsFor(settings)));
+}
+
+std::optional<ArchiveCache::CleanupReport> MOUNT::TrimCache(std::string* detail)
+{
+	auto cleaned = std::optional<ArchiveCache::CleanupReport>();
+	auto* store  = OpenStore(ReadArchiveSettings(), detail, &cleaned);
+	if (!store) {
+		return {};
+	}
+	return cleaned ? *cleaned : store->Cleanup();
+}
+
+bool MOUNT::HandleCache()
+{
+	if (!cmd->FindExist("-cache", false)) {
+		return false;
+	}
+	std::string word = {};
+	if (!cmd->FindString("-cache", word, false)) {
+		word.clear();
+	}
+	if (word.empty()) {
+		// Not WriteOut: its 16 KiB format buffer cuts a long listing.
+		WriteOut_NoParsing(CacheOverviewForSettings());
+		return true;
+	}
+	if (iequals(word, "trim")) {
+		auto detail       = std::string();
+		const auto report = TrimCache(&detail);
+		if (!report) {
+			WriteOut(MSG_Get("PROGRAM_MOUNT_CACHE_UNAVAILABLE"),
+			         detail.c_str());
+			return true;
+		}
+		WriteOut(MSG_Get("PROGRAM_MOUNT_CACHE_TRIMMED"),
+		         report->removed_expired,
+		         report->removed_for_cap,
+		         report->removed_damaged,
+		         report->skipped_locked,
+		         static_cast<long long>(report->bytes_after / MiB));
+		return true;
+	}
+	WriteOut(MSG_Get("PROGRAM_MOUNT_CACHE_BAD_ARGUMENT"), word.c_str());
 	return true;
 }
 

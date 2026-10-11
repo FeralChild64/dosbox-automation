@@ -55,6 +55,27 @@ TEST_F(ArchiveLockTest, ExclusiveIsRefusedWhileSharedIsHeldAndTheOtherWayRound)
 	EXPECT_FALSE(FileLock::TryAcquire(path, FileLock::Mode::Exclusive));
 }
 
+// A status query sits beside engines that mount: it must not create lock
+// files or hold a lock past its own answer.
+TEST_F(ArchiveLockTest, IsHeldCreatesNothingAndKeepsNothing)
+{
+	EXPECT_FALSE(FileLock::IsHeld(path));
+	EXPECT_FALSE(fs::exists(path));
+	{
+		auto shared = FileLock::TryAcquire(path, FileLock::Mode::Shared);
+		ASSERT_TRUE(shared);
+		EXPECT_TRUE(FileLock::IsHeld(path));
+		EXPECT_TRUE(FileLock::TryAcquire(path, FileLock::Mode::Shared));
+	}
+	{
+		auto exclusive = FileLock::TryAcquire(path, FileLock::Mode::Exclusive);
+		ASSERT_TRUE(exclusive);
+		EXPECT_TRUE(FileLock::IsHeld(path));
+	}
+	EXPECT_FALSE(FileLock::IsHeld(path));
+	EXPECT_TRUE(FileLock::TryAcquire(path, FileLock::Mode::Exclusive));
+}
+
 TEST_F(ArchiveLockTest, ReleaseOnDestructionAndOnMove)
 {
 	auto first = FileLock::TryAcquire(path, FileLock::Mode::Exclusive);

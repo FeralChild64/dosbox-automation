@@ -35,6 +35,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <zlib.h>
 
 #if defined(WIN32)
 #include <io.h>
@@ -663,13 +664,12 @@ struct ArchiveReader::Impl {
 	{
 		std::error_code ec = {};
 		std::filesystem::create_directories(target.parent_path(), ec);
-		const auto temp = target.parent_path() /
-		                  (target.filename().string() + "." +
-		                   RandomHex(4) + ".part");
+		auto temp = target;
+		temp += "." + RandomHex(4) + ".part";
 		FILE* f = OpenExclusive(temp);
 		if (!f) {
 			if (detail) {
-				*detail = "cannot create " + temp.string();
+				*detail = "cannot create " + PathToUtf8(temp);
 			}
 			return Error::OpenFailed;
 		}
@@ -679,7 +679,7 @@ struct ArchiveReader::Impl {
 		const auto closed = fclose(f) == 0;
 		if (read != Error::None || !closed) {
 			if (read == Error::None && detail) {
-				*detail = "cannot finish writing " + temp.string();
+				*detail = "cannot finish writing " + PathToUtf8(temp);
 			}
 			std::filesystem::remove(temp, ec);
 			return read != Error::None ? read : Error::OpenFailed;
@@ -687,9 +687,9 @@ struct ArchiveReader::Impl {
 		if (entry.mtime < MinStampSeconds || entry.mtime > MaxStampSeconds) {
 			augra::log_warn(LogComponent,
 			                "%s: mtime %lld of '%s' is outside the file clock, clamped",
-			                path.string().c_str(),
+			                PathToUtf8(path).c_str(),
 			                static_cast<long long>(entry.mtime),
-			                target.string().c_str());
+			                PathToUtf8(target).c_str());
 		}
 		std::filesystem::last_write_time(temp,
 		                                 file_time_from_unix(entry.mtime),
@@ -697,15 +697,15 @@ struct ArchiveReader::Impl {
 		if (ec) {
 			augra::log_warn(LogComponent,
 			                "%s: cannot set the mtime of '%s': %s",
-			                path.string().c_str(),
-			                target.string().c_str(),
+			                PathToUtf8(path).c_str(),
+			                PathToUtf8(target).c_str(),
 			                ec.message().c_str());
 			ec.clear();
 		}
 		std::filesystem::rename(temp, target, ec);
 		if (ec) {
 			if (detail) {
-				*detail = "cannot rename into " + target.string();
+				*detail = "cannot rename into " + PathToUtf8(target);
 			}
 			std::filesystem::remove(temp, ec);
 			return Error::OpenFailed;
@@ -816,7 +816,7 @@ OpenResult ArchiveReader::Open(const std::filesystem::path& path, const Limits& 
 		result.detail = "open failed";
 		augra::log_warn(LogComponent,
 		                "%s: %s (%s)",
-		                path.string().c_str(),
+		                PathToUtf8(path).c_str(),
 		                ErrorText(result.error),
 		                result.detail.c_str());
 		return result;
@@ -841,7 +841,7 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 		result.detail = detail;
 		augra::log_warn(LogComponent,
 		                "%s: %s (%s)",
-		                path.string().c_str(),
+		                PathToUtf8(path).c_str(),
 		                ErrorText(error),
 		                detail.c_str());
 		return std::move(result);
@@ -924,12 +924,21 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 			                    std::to_string(limits.max_total_bytes) +
 			                    " bytes");
 		}
+		auto content_crc = uint32_t{0};
+		auto crc_detail  = std::string();
+		if (const auto error = Isz::ContentCrc(
+		            impl.file.fd, parsed.image, &content_crc, &crc_detail);
+		    error != Error::None) {
+			return fail(error, crc_detail);
+		}
 		auto entry       = Entry{};
 		entry.ordinal    = 0;
 		entry.utf8_path  = split->components[0];
 		entry.dos_path   = *dos;
 		entry.size       = size;
 		entry.mtime      = impl.indexed_stat.mtime;
+		entry.has_crc    = true;
+		entry.crc32      = content_crc;
 		impl.format      = Format::Isz;
 		impl.access      = access_of(Format::Isz);
 		impl.total_bytes = size;
@@ -1141,7 +1150,7 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 			const auto* name = archive_entry_pathname_utf8(ae);
 			augra::log_warn(LogComponent,
 			                "%s: dropping entry %d '%s': not a file or directory",
-			                path.string().c_str(),
+			                PathToUtf8(path).c_str(),
 			                ordinal,
 			                name ? name : "");
 			archive_read_data_skip(handle.a);
@@ -1244,6 +1253,12 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 			// container's (D13.3).
 			std::vector<uint8_t> block(ReadBlockBytes);
 			int64_t counted = 0;
+			// The archive cap bounds this pass too (ada-ciru item
+			// 5); the CRC of the bytes read here is the identity's
+			// content field (item 6).
+			const auto cap   = std::min(limits.max_member_bytes,
+                                                  limits.max_total_bytes);
+			auto content_crc = crc32(0L, Z_NULL, 0);
 			while (true) {
 				const auto got = archive_read_data(handle.a,
 				                                   block.data(),
@@ -1257,15 +1272,20 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 					break;
 				}
 				counted += got;
-				if (counted > limits.max_member_bytes) {
+				if (counted > cap) {
 					return fail(Error::TooLarge,
 					            "'" + utf8_name + "': over " +
-					                    std::to_string(limits.max_member_bytes) +
+					                    std::to_string(cap) +
 					                    " bytes");
 				}
+				content_crc = crc32(content_crc,
+				                    block.data(),
+				                    static_cast<uInt>(got));
 			}
-			entry.size  = counted;
-			entry.mtime = impl.indexed_stat.mtime;
+			entry.size    = counted;
+			entry.mtime   = impl.indexed_stat.mtime;
+			entry.has_crc = true;
+			entry.crc32   = static_cast<uint32_t>(content_crc);
 		}
 		if (entry.size < 0) {
 			return fail(Error::TooLarge,
@@ -1340,7 +1360,7 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 				}
 				augra::log_warn(LogComponent,
 				                "%s: duplicate entry '%s' kept once",
-				                path.string().c_str(),
+				                PathToUtf8(path).c_str(),
 				                normalized.c_str());
 			}
 			archive_read_data_skip(handle.a);
@@ -1560,7 +1580,7 @@ Error ArchiveReader::MaterializeAll(const std::filesystem::path& directory,
 	std::filesystem::create_directories(directory, ec);
 	if (ec) {
 		if (detail) {
-			*detail = "cannot create " + directory.string();
+			*detail = "cannot create " + PathToUtf8(directory);
 		}
 		return Error::OpenFailed;
 	}

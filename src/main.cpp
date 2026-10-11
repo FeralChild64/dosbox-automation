@@ -6,7 +6,9 @@
 
 #include "gui/common.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <signal.h>
@@ -24,8 +26,11 @@
 #include "config/setup.h"
 #include "debugger/debugger.h"
 #include "dos/archive/archive_helper_client.h"
+#include "dos/archive/archive_management.h"
+#include "dos/archive/member_path.h"
 #include "dos/drives.h"
 #include "dos/programs/mount.h"
+#include "dos/programs/mount_archive_internal.h"
 #include "dos/dos_locale.h"
 #include "gui/mapper.h"
 #include "gui/render/render.h"
@@ -154,6 +159,12 @@ static void register_command_line_help_message()
 	        "\n"
 	        "  --list-shaders           List all available shaders and their paths.\n"
 	        "                           Shaders are to be used in the 'shader' config setting.\n"
+	        "\n"
+	        "  --archive-cache <action> 'status' shows the archive cache, 'empty'\n"
+	        "                           removes every entry no engine holds.\n"
+	        "\n"
+	        "  --sidecar list           List the sidecars under the saves directory with\n"
+	        "                           their archive and whether it still matches.\n"
 	        "\n"
 	        "  --fullscreen             Start in fullscreen mode.\n"
 	        "\n"
@@ -338,7 +349,8 @@ static void init_logger(const CommandLineArguments& args, int argc, char* argv[]
 
 	if (args.version || args.help || args.printconf || args.editconf ||
 	    args.eraseconf || args.list_countries || args.list_layouts ||
-	    args.list_code_pages || args.list_shaders || args.erasemapper) {
+	    args.list_code_pages || args.list_shaders || args.erasemapper ||
+	    args.archive_cache || args.sidecar) {
 
 		loguru::g_stderr_verbosity = loguru::Verbosity_WARNING;
 	}
@@ -393,6 +405,122 @@ certain conditions; please read the COPYING file thoroughly before doing so.
 There is NO WARRANTY, to the extent permitted by law.
 )";
 
+// Design 6.1: the management switches run after the config files are
+// parsed and before any display exists; exit 0, 1 on a failure, 2 on a
+// word the switch does not take (the CLI rules).
+static int archive_cache_action(const std::string& action)
+{
+	using namespace MountArchiveInternal;
+	const auto settings = ReadArchiveSettings();
+	const auto path     = EffectiveCachePath(settings);
+	if (action == "status") {
+		if (const auto problem = CachePathProblem(path); !problem.empty()) {
+			fprintf(stderr, "%s\n", problem.c_str());
+			return 1;
+		}
+		const auto overview = ArchiveManagement::InspectCache(
+		        path, CacheOptionsFor(settings));
+		printf("%s", MOUNT::CacheOverviewText(overview).c_str());
+		return overview.problem.empty() ? 0 : 1;
+	}
+	if (action == "empty") {
+		if (const auto problem = CachePathProblem(path); !problem.empty()) {
+			fprintf(stderr, "%s\n", problem.c_str());
+			return 1;
+		}
+		const auto report = ArchiveManagement::EmptyCache(
+		        path, CacheOptionsFor(settings));
+		if (!report.ok) {
+			fprintf(stderr, "%s\n", report.problem.c_str());
+			return 1;
+		}
+		if (!report.cache_exists) {
+			printf("no cache at %s, nothing to empty.\n",
+			       ArchiveMount::PathToUtf8(path).c_str());
+			return 0;
+		}
+		printf("Archive cache emptied: removed %d, skipped %d in use, %lld MiB left.\n",
+		       report.removed,
+		       report.skipped_locked,
+		       static_cast<long long>(report.bytes_after / MiB));
+		return 0;
+	}
+	if (action.empty()) {
+		fprintf(stderr, "--archive-cache needs 'status' or 'empty'.\n");
+	} else {
+		fprintf(stderr,
+		        "--archive-cache takes 'status' or 'empty', not '%s'.\n",
+		        action.c_str());
+	}
+	return 2;
+}
+
+static int sidecar_action(const std::string& action)
+{
+	using namespace MountArchiveInternal;
+	if (action.empty()) {
+		fprintf(stderr, "--sidecar needs 'list'.\n");
+		return 2;
+	}
+	if (action != "list") {
+		fprintf(stderr, "--sidecar takes 'list', not '%s'.\n", action.c_str());
+		return 2;
+	}
+	const auto settings         = ReadArchiveSettings();
+	ArchiveMount::Limits limits = {};
+	limits.max_entries          = settings.max_entries;
+	limits.max_total_bytes      = settings.max_size_bytes;
+	const auto identify =
+	        [&](const std::filesystem::path& archive) -> std::optional<std::string> {
+		auto opened = ArchiveMount::ArchiveHelperClient::Open(archive,
+		                                                      limits,
+		                                                      {});
+		if (opened.error != ArchiveMount::Error::None || !opened.client) {
+			return {};
+		}
+		return opened.client->IdentityHash();
+	};
+	auto problem  = std::string();
+	auto sidecars = ArchiveManagement::ListSidecars(SavesDirectory(),
+	                                                identify,
+	                                                &problem);
+	if (!problem.empty()) {
+		fprintf(stderr, "%s\n", problem.c_str());
+		return 1;
+	}
+	std::sort(sidecars.begin(), sidecars.end(), [](const auto& a, const auto& b) {
+		return a.directory < b.directory;
+	});
+	printf("Sidecars under %s\n",
+	       ArchiveMount::PathToUtf8(SavesDirectory()).c_str());
+	if (sidecars.empty()) {
+		printf("  no sidecars\n");
+		return 0;
+	}
+	for (const auto& s : sidecars) {
+		const char* state = "missing";
+		switch (s.state) {
+		case ArchiveManagement::ArchiveState::Same:
+			state = "same";
+			break;
+		case ArchiveManagement::ArchiveState::Changed:
+			state = "changed";
+			break;
+		case ArchiveManagement::ArchiveState::Unreadable:
+			state = "unreadable";
+			break;
+		case ArchiveManagement::ArchiveState::Missing: break;
+		}
+		printf("  %s  %lld MiB  %s  %s  %s\n",
+		       ArchiveMount::PathToUtf8(s.directory.filename()).c_str(),
+		       static_cast<long long>(s.bytes / MiB),
+		       state,
+		       s.identity_hash.c_str(),
+		       s.archive_path.c_str());
+	}
+	return 0;
+}
+
 static std::optional<int> maybe_handle_command_line_output_only_actions(
         const CommandLineArguments& args, const char* program_name)
 {
@@ -433,6 +561,12 @@ static std::optional<int> maybe_handle_command_line_output_only_actions(
 	if (args.list_shaders) {
 		list_shaders();
 		return 0;
+	}
+	if (args.archive_cache) {
+		return archive_cache_action(*args.archive_cache);
+	}
+	if (args.sidecar) {
+		return sidecar_action(*args.sidecar);
 	}
 	return {};
 }
@@ -683,6 +817,10 @@ int main(int argc, char* argv[])
 		assert(argv && argv[0]);
 		const auto program_name = argv[0];
 
+		// Before the display-less actions: --set reaches a status query
+		// or an empty the same way it reaches the emulator.
+		handle_cli_set_commands(arguments->set);
+
 		if (const auto return_code = maybe_handle_command_line_output_only_actions(
 		            *arguments, program_name);
 		    return_code) {
@@ -698,10 +836,6 @@ int main(int argc, char* argv[])
 #if defined(WIN32)
 		SetConsoleCtrlHandler((PHANDLER_ROUTINE)console_event_handler, TRUE);
 #endif
-
-		// Handle configuration settings passed with `--set` commands
-		// from the CLI.
-		handle_cli_set_commands(arguments->set);
 
 		maybe_create_resource_directories();
 

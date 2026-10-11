@@ -84,7 +84,10 @@ webserver an attack surface by design. The short version:
   sidecar serves one mount at a time, held by a lock file and an
   in-process key; a second mount of the same archive is refused unless it
   asks for no sidecar. Unpacked members live under the cache directory
-  with caps on size, free space and age.
+  with caps on size, free space and age. A mount with `-scratch` writes
+  into a private directory under the archive cache instead, locked to
+  that mount and removed when it is unmounted; after a crash the cache's
+  start-up sweep removes it, without following links.
   Zip members packed with PKZIP 1.x's shrink and implode methods are
   decoded by our port of Info-ZIP's decoders, inside the same helper
   process, stopped at the member's declared size and checked against its
@@ -94,7 +97,11 @@ webserver an attack surface by design. The short version:
   image code then opens is the engine's own copy. A CD image is served
   from the cache; a floppy or hard-disk image is copied once into the
   game's sidecar under `.images`, where its writes stay, and that copy is
-  locked to one engine at a time. A cue sheet from an archive is
+  locked to one engine at a time. A disk served from the cache, or any
+  disk of a read-only mount and its swaps, is opened read-only, because
+  other engines lease the same file; a swap on a read-write drive opens
+  its disk read-write, and a read-only drive never takes the writable
+  object BOOT keeps in its list. A cue sheet from an archive is
   rewritten so every `FILE` line names a member's cached file beside it;
   a cue that names anything else refuses the mount.
   A compressed single image (`disk1.img.xz`, `game.imz`, `game.isz`) is
@@ -105,6 +112,9 @@ webserver an attack surface by design. The short version:
   refused. Our own ISZ reader checks the header, the chunk table and
   every chunk length against the file before it decodes anything, and it
   refuses encrypted and segmented ISZ files.
+  The management commands (`MOUNT -cache`, `--archive-cache`,
+  `--sidecar list`) read an archive only through the same helper, and the
+  cache's "in use" check creates no lock files.
 - `MOUNT ... -run NAME`, and an archive given on the command line, start
   a program from the drive that MOUNT has just made, and with exactly the
   trust of that MOUNT: whoever could type the MOUNT could type the program.

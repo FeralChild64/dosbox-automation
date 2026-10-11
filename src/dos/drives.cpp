@@ -148,6 +148,15 @@ void DriveManager::AppendFilesystemImages(const int drive,
 	disks.insert(std::end(disks), std::begin(images), std::end(images));
 }
 
+void DriveManager::SelectDisk(const int drive, const size_t index)
+{
+	auto& drive_info = drive_infos.at(drive);
+	assert(index < drive_info.disks.size());
+	if (index < drive_info.disks.size()) {
+		drive_info.current_disk = check_cast<uint16_t>(index);
+	}
+}
+
 const DriveManager::filesystem_images_t& DriveManager::GetFilesystemImages(int drive)
 {
 	return drive_infos.at(drive).disks;

@@ -50,7 +50,8 @@ protected:
 		ASSERT_TRUE(WriteArchive(tmp / "games" / "game.imz",
 		                         Kind::ZipDeflate,
 		                         {
-		                                 {"DISK1.IMA", std::string(4096, 'b')}
+		                                 {"DISK1.IMA",
+		                                  std::string(4096, 'b')}
                 }));
 		ASSERT_TRUE(WriteCompressed(tmp / "games" / "disk.img.xz",
 		                            Filter::Xz,
@@ -79,6 +80,22 @@ protected:
 	}
 	fs::path tmp = {};
 };
+
+// The sidecar record holds UTF-8; on Windows a narrow path would be read in
+// the code page, so the round trip only holds through these two.
+TEST(PathUtf8, ARecordedNameComesBackAsTheSamePath)
+{
+	const auto name = fs::path(u8"Spiel \u00e4\u30b2\u30fc\u30e0.zip");
+	const auto back = PathFromUtf8(PathToUtf8(name));
+	ASSERT_TRUE(back);
+	EXPECT_EQ(*back, name);
+	EXPECT_EQ(PathToUtf8(*back), PathToUtf8(name));
+	ASSERT_TRUE(PathFromUtf8(""));
+	EXPECT_TRUE(PathFromUtf8("")->empty());
+#if defined(WIN32)
+	EXPECT_FALSE(PathFromUtf8("bad \xff\xfe name"));
+#endif
+}
 
 TEST_F(MemberPathTest, SplitsAtTheArchive)
 {
@@ -127,7 +144,11 @@ TEST_F(MemberPathTest, IsArchiveFileWantsExtensionAndSignature)
 // The legacy LZMA_Alone tar (plan 4b, Task 2b); .tlz is lzip's, not ours.
 TEST_F(MemberPathTest, ATarLzmaIsAnArchiveFile)
 {
-	ASSERT_TRUE(WriteArchive(P("old.tar.lzma"), Kind::TarLzma, {{"A.TXT", "a"}}));
+	ASSERT_TRUE(WriteArchive(P("old.tar.lzma"),
+	                         Kind::TarLzma,
+	                         {
+	                                 {"A.TXT", "a"}
+        }));
 	EXPECT_TRUE(IsArchiveFile(P("old.tar.lzma")));
 	fs::copy_file(P("old.tar.lzma"), P("UPPER.TAR.LZMA"));
 	EXPECT_TRUE(IsArchiveFile(P("UPPER.TAR.LZMA")));

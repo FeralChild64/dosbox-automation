@@ -109,6 +109,8 @@ class DosboxClient:
             "_": "KBD_minus",
             "+": "KBD_equals",
             "?": "KBD_slash",
+            "<": "KBD_comma",
+            ">": "KBD_period",
         }
 
         events = []
@@ -241,16 +243,19 @@ class DosboxClient:
     # --- Helpers ---
 
     def wait_ready(self, timeout: float = 10.0):
+        """Ready means the webserver answers and the emulation thread
+        serves a command: during start-up a screen read answers 500 from
+        the Bridge's 250 ms command timeout (2026-10-09)."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                r = self.status()
-                if r.status_code == 200:
+                if (self.status().status_code == 200
+                        and self.screen_text().status_code == 200):
                     return
             except requests.ConnectionError:
                 pass
             time.sleep(0.2)
-        raise TimeoutError(f"DOSBox webserver not ready after {timeout}s")
+        raise TimeoutError(f"DOSBox not ready after {timeout}s")
 
     def wait_program(self, name: str, timeout: float = 15.0):
         deadline = time.monotonic() + timeout

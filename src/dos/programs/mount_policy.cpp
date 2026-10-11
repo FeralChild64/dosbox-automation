@@ -26,13 +26,14 @@
 //     System directories are always blocked in both modes.
 //
 // The primary config is at $HOME/.config/dosbox-automation/ (Linux),
-// ~/Library/Preferences/DOSBox/ (macOS), or %LOCALAPPDATA% (Windows).
+// ~/Library/Preferences/dosbox-automation/ (macOS), or
+// %LOCALAPPDATA%\dosbox-automation\ (Windows).
 // It is NOT the -conf file; it is the persistent user config.
 //
 // Common "why is MOUNT blocked?" situations:
-//   - Temp directory (/tmp, %TEMP%) is outside conf anchor and not
-//     in mount_allowed_bases. Put files under the conf anchor or add
-//     the path to mount_allowed_bases in the primary config.
+//   - Temp directory. \Temp, \TMP, \TmpDir and \Windows\Temp on every
+//     Windows drive, %TEMP% and %TMP% are system paths, never mountable;
+//     /tmp on Linux and macOS opens through mount_allowed_bases.
 //   - Webserver enabled but no -conf file passed. Conf anchor is
 //     empty, so only mount_allowed_bases paths work.
 //   - Symlinks in the path. The policy rejects any path that has a

@@ -312,4 +312,53 @@ Error ReadAll(const int fd, const Image& image, const Sink& sink, std::string* d
 	return Error::None;
 }
 
+Error ContentCrc(const int fd, const Image& image, uint32_t* crc, std::string* detail)
+{
+	if (!crc) {
+		return Error::OpenFailed;
+	}
+	constexpr uint64_t RawWindow = 64 * 1024;
+	auto ranges = std::vector<std::pair<uint64_t, uint64_t>>{};
+	if (image.chunks.empty()) {
+		const auto window = std::min(RawWindow, image.total_bytes);
+		ranges.emplace_back(image.data_offs, window);
+		if (image.total_bytes > window) {
+			ranges.emplace_back(image.data_offs + image.total_bytes - window,
+			                    window);
+		}
+	} else {
+		const Chunk* first = nullptr;
+		const Chunk* last  = nullptr;
+		for (const auto& chunk : image.chunks) {
+			if (chunk.length == 0) {
+				continue; // Zeros store nothing
+			}
+			if (!first) {
+				first = &chunk;
+			}
+			last = &chunk;
+		}
+		if (first) {
+			ranges.emplace_back(first->offset, first->length);
+		}
+		if (last && last != first) {
+			ranges.emplace_back(last->offset, last->length);
+		}
+	}
+	auto value = crc32(0L, Z_NULL, 0);
+	auto bytes = std::vector<uint8_t>{};
+	for (const auto& [offset, size] : ranges) {
+		if (const auto error = read_range(fd, offset, size, bytes);
+		    error != Error::None) {
+			if (detail) {
+				*detail = "cannot read the image's content field";
+			}
+			return error;
+		}
+		value = crc32(value, bytes.data(), static_cast<uInt>(bytes.size()));
+	}
+	*crc = static_cast<uint32_t>(value);
+	return Error::None;
+}
+
 } // namespace Isz

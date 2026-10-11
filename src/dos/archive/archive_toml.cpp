@@ -6,6 +6,7 @@
 
 #include "dos/archive/descriptor.h"
 #include "dos/archive/exclusive_file.h"
+#include "dos/archive/member_path.h"
 #include "utils/checks.h"
 
 #include <algorithm>
@@ -487,7 +488,7 @@ std::optional<Document> ReadFile(const std::filesystem::path& path, std::string*
 {
 	const auto fail = [&](const char* why) -> std::optional<Document> {
 		if (error) {
-			*error = path.string() + ": " + why;
+			*error = ArchiveMount::PathToUtf8(path) + ": " + why;
 		}
 		return {};
 	};
@@ -522,7 +523,7 @@ std::optional<Document> ReadFile(const std::filesystem::path& path, std::string*
 	auto why = std::string();
 	auto doc = Parse(text, &why);
 	if (!doc && error) {
-		*error = path.string() + ": " + why;
+		*error = ArchiveMount::PathToUtf8(path) + ": " + why;
 	}
 	return doc;
 }
@@ -531,12 +532,12 @@ bool WriteAtomically(const std::filesystem::path& path,
                      const Document& document, std::string* error)
 {
 	const auto text = Serialize(document);
-	const auto temp = path.parent_path() / (path.filename().string() + "." +
-	                                        ArchiveMount::RandomHex(4) + ".tmp");
-	FILE* f         = ArchiveMount::OpenExclusive(temp);
+	auto temp       = path;
+	temp += "." + ArchiveMount::RandomHex(4) + ".tmp";
+	FILE* f = ArchiveMount::OpenExclusive(temp);
 	if (!f) {
 		if (error) {
-			*error = "cannot create " + temp.string();
+			*error = "cannot create " + ArchiveMount::PathToUtf8(temp);
 		}
 		return false;
 	}
@@ -547,7 +548,7 @@ bool WriteAtomically(const std::filesystem::path& path,
 	if (!written || !closed) {
 		std::filesystem::remove(temp, ec);
 		if (error) {
-			*error = "cannot write " + temp.string();
+			*error = "cannot write " + ArchiveMount::PathToUtf8(temp);
 		}
 		return false;
 	}
@@ -555,7 +556,8 @@ bool WriteAtomically(const std::filesystem::path& path,
 	if (ec) {
 		std::filesystem::remove(temp, ec);
 		if (error) {
-			*error = "cannot rename into " + path.string();
+			*error = "cannot rename into " +
+			         ArchiveMount::PathToUtf8(path);
 		}
 		return false;
 	}

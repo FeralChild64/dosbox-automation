@@ -56,6 +56,12 @@ using Sink = std::function<bool(const uint8_t*, size_t)>;
 ArchiveMount::Error ReadAll(int fd, const Image& image, const Sink& sink,
                             std::string* detail);
 
+// The identity's content field (ada-ciru item 6), so images equal in size,
+// date and container length still differ by bytes: CRC32 of the first and
+// last stored chunk, or of the first and last 64 KiB of a raw image.
+ArchiveMount::Error ContentCrc(int fd, const Image& image, uint32_t* crc,
+                               std::string* detail);
+
 } // namespace Isz
 
 #endif // DOSBOX_ARCHIVE_ISZ_IMAGE_H

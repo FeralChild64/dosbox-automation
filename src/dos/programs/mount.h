@@ -8,6 +8,7 @@
 
 #include "dos/dos.h"
 #include "dos/programs.h"
+#include "dos/archive/archive_management.h"
 #include "dos/archive/member_path.h"
 #include "dos/programs/mount_policy.h"
 #include "shell/command_line.h"
@@ -72,6 +73,9 @@ struct MountParameters {
 	                               // D10's rule
 	bool no_sidecar = false;       // D1: no sidecar, read-only
 	std::string sidecar_path = ""; // -sidecar PATH, else D2 decides
+	bool scratch = false; // -scratch: writes into a cache scratch, gone at unmount
+	// The scratch MOUNT made for a member mount, until the drive registers.
+	std::optional<ArchiveMount::ArchiveCache::Scratch> scratch_made = {};
 	// Design D7: host file of each image named inside an archive, with
 	// what keeps it valid until the mount registers it.
 	std::map<std::string, std::shared_ptr<ArchiveImages::Hold>> member_holds = {};
@@ -96,6 +100,15 @@ public:
 
 	// Archive mounts (archive mount design, Phase 2c)
 	bool HandleReconnect();
+	// Design 6.1: MOUNT -cache shows the store, -cache trim runs the
+	// cleanup now. True when the line was a cache command.
+	bool HandleCache();
+	static std::string CacheOverviewText(const ArchiveManagement::CacheOverview& overview);
+	// The -cache text for the engine's settings: the path check first.
+	static std::string CacheOverviewForSettings();
+	// What -cache trim removed; nothing when the store cannot be opened.
+	static std::optional<ArchiveMount::ArchiveCache::CleanupReport> TrimCache(
+	        std::string* detail);
 	bool MountArchive(MountParameters& params);
 	// The engine's one cache store is opened on the first archive
 	// mount; the tests close it between cases.
@@ -111,6 +124,12 @@ public:
 	// Drops the in-process sidecar key and lock of a drive being unmounted;
 	// a no-op for other drives (3.2).
 	static void ReleaseSidecar(char drive_letter);
+	// Phase 6.4: the scratch a -scratch mount writes into, kept per drive
+	// letter and discarded by ReleaseSidecar.
+	static void KeepScratch(char drive_letter,
+	                        ArchiveMount::ArchiveCache::Scratch&& scratch);
+	// The scratch of this MOUNT line, made once; false with the reason set.
+	static bool EnsureScratch(MountParameters& params, std::string* why);
 	// PROGRAM_MOUNT_ARCHIVE_UNSUPPORTED's text; the unit tests link a
 	// message stub, so they read it here.
 	static const char* const ArchiveUnsupportedMessage;

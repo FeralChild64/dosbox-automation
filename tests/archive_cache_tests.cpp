@@ -663,6 +663,51 @@ TEST_F(ArchiveCacheTest, CleanupSweepsTrashAndScratchNobodyHolds)
 	EXPECT_FALSE(fs::exists(trash));
 }
 
+// A union writes directories into its scratch (Phase 6.4); the sweep
+// removes the whole tree, not only the files at the top.
+TEST_F(ArchiveCacheTest, CleanupSweepsAScratchWithDirectories)
+{
+	auto cache   = OpenOk();
+	auto scratch = cache->MakeScratch();
+	ASSERT_TRUE(scratch);
+	fs::create_directories(scratch->dir / "SAVES" / "DEEP");
+	Touch(scratch->dir / "SAVES" / "DEEP" / "GAME.SAV", "x");
+	Touch(scratch->dir / "TOP.TXT", "y");
+	const auto dir = scratch->dir;
+	scratch.reset(); // the mount is gone, the lock is free
+	cache->Cleanup();
+	EXPECT_FALSE(fs::exists(dir));
+}
+
+TEST_F(ArchiveCacheTest, CleanupKeepsAScratchHoldingALink)
+{
+	auto cache   = OpenOk();
+	auto scratch = cache->MakeScratch();
+	ASSERT_TRUE(scratch);
+	fs::create_directories(tmp / "outside");
+	Touch(tmp / "outside" / "KEEP.TXT", "z");
+	fs::create_directory_symlink(tmp / "outside", scratch->dir / "LINK");
+	const auto dir = scratch->dir;
+	scratch.reset();
+	cache->Cleanup();
+	EXPECT_TRUE(fs::exists(dir / "LINK"));
+	EXPECT_TRUE(fs::exists(tmp / "outside" / "KEEP.TXT"));
+}
+
+TEST_F(ArchiveCacheTest, DiscardScratchRemovesTheTreeAndReleasesTheLock)
+{
+	auto cache   = OpenOk();
+	auto scratch = cache->MakeScratch();
+	ASSERT_TRUE(scratch);
+	fs::create_directories(scratch->dir / "A" / "B");
+	Touch(scratch->dir / "A" / "B" / "F.DAT", "f");
+	const auto dir = scratch->dir;
+	ArchiveCache::DiscardScratch(*scratch);
+	EXPECT_FALSE(fs::exists(dir));
+	EXPECT_FALSE(scratch->lock);
+	EXPECT_TRUE(scratch->dir.empty());
+}
+
 TEST_F(ArchiveCacheTest, AcquireIsBusyWhileCleanupHoldsTheEntryAndSharedBetweenTwoMounts)
 {
 	const auto archive = Built("doom.zip", Kind::ZipStored, Game());

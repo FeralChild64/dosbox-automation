@@ -497,3 +497,58 @@ def test_status_shows_the_archive_while_mount_prepares_it(dosbox_e2e, tmp_path):
     assert all(0 <= s["bytes_done"] <= s["bytes_total"] for s in seen), seen[:3]
     wait_text(inst.client, "MOUNTED", timeout=60)
     assert "archive" not in inst.client.status().json()
+
+
+def build_installer_zip(path: Path) -> Path:
+    """A zip whose INSTALL.BAT writes to its own drive, as the Apogee
+    installers do (showroom probe 0.4)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for name, data in [
+            ("install.bat",
+             b"@echo installed> INSTALLD.TXT\r\n@md DATA\r\n@echo x> DATA\\X.DAT\r\n"),
+            ("readme.txt", b"installer\r\n"),
+        ]:
+            info = zipfile.ZipInfo(name, date_time=STAMP)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(info, data)
+    return path
+
+
+def installer_scratches(tmp_path):
+    # Every archive mount also owns a helper scratch; the union's one holds
+    # what the installer wrote.
+    scratch = tmp_path / "cache" / "scratch"
+    if not scratch.is_dir():
+        return []
+    return [d for d in scratch.iterdir() if (d / "INSTALLD.TXT").is_file()]
+
+
+def test_a_scratch_mount_discards_the_installers_writes(dosbox_e2e, tmp_path):
+    """Phase 6.4: installer media mount -scratch; the installer writes to its
+    drive, nothing lands in a sidecar, the unmount removes the scratch."""
+    zip_path = build_installer_zip(tmp_path / "game" / "setup.zip")
+    inst = dosbox_e2e(
+        autoexec_lines=[f"mount c {zip_path} -scratch -run install.bat"],
+        conf_dir=tmp_path / "game",
+        settings=settings_for(tmp_path),
+    )
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and not installer_scratches(tmp_path):
+        time.sleep(0.2)
+    found = installer_scratches(tmp_path)
+    assert len(found) == 1, screen(inst.client)
+    written = found[0]
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not (written / "DATA" / "X.DAT").is_file():
+        time.sleep(0.2)
+    assert (written / "DATA" / "X.DAT").is_file(), screen(inst.client)
+    assert not (tmp_path / "saves").exists()
+    wait_text(inst.client, "C:\\>")
+    r = inst.client.type_string("z:\nmount -u c\n")
+    assert r.status_code == 200, r.text
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and written.exists():
+        time.sleep(0.2)
+    assert not written.exists(), screen(inst.client)
+    assert not (tmp_path / "saves").exists()

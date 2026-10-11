@@ -6,14 +6,20 @@
 #include "archive_fixtures.h"
 #include "config/setup.h"
 #include "dos/archive/archive_helper_client.h"
+#include "dos/archive/sidecar_record.h"
 #include "dos/cdrom.h"
+#include "dos/drive_swap.h"
 #include "dos/programs/mount.h"
 #include "dos/programs/mount_policy.h"
 #include "dosbox_test_fixture.h"
+#include "ints/bios_disk.h"
+#include "misc/cross.h"
 #include "test_temp_dir.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -69,6 +75,8 @@ protected:
 		        {
 		                {"disks/", "", true},
 		                {"disks/disk1.img", FloppyBytes(), false, false, 700000000},
+		                {"disks/disk2.img", FloppyBytes(), false, false, 700000002},
+		                {"disks/diskette-three.img", FloppyBytes(), false, false, 700000003},
 		                {"cd/", "", true},
 		                {"cd/game.iso", MinimalIso()},
 		                {"cd/track.bin", MinimalIso()},
@@ -83,6 +91,8 @@ protected:
 	}
 	void TearDown() override
 	{
+		imageDiskList.fill(nullptr);
+		diskSwap.fill(nullptr);
 		ArchiveImages::ReleaseAllForTests();
 		ArchiveMount::SetHelperPathOverride({});
 		MOUNT::ResetArchiveCacheForTests();
@@ -101,13 +111,40 @@ protected:
 	ArchiveImages::Result Resolve(const std::string& member,
 	                              const bool read_only = false)
 	{
+		return ArchiveImages::Resolve(RequestFor(member, read_only));
+	}
+	// What MOUNT sends for a drive's first image, or the swap for a
+	// later one (drive_index set, nothing known about the drive's mode).
+	ArchiveImages::Request RequestFor(const std::string& member,
+	                                  const bool read_only        = false,
+	                                  const std_fs::path& archive = {})
+	{
 		ArchiveImages::Request request = {};
-		request.member.archive         = tmp / "game.zip";
-		request.member.member          = member;
-		request.read_only              = read_only;
+		request.member.archive = archive.empty() ? tmp / "game.zip" : archive;
+		request.member.member       = member;
+		request.read_only           = read_only;
 		request.allowed_image_roots = MountPolicy::AllowedImageRoots();
 		request.conf_anchor         = MountPolicy::ConfAnchor();
+		return request;
+	}
+	ArchiveImages::Result SwapInto(const int drive, const std::string& member,
+	                               const std_fs::path& archive = {})
+	{
+		auto request        = RequestFor(member, false, archive);
+		request.drive_index = drive;
 		return ArchiveImages::Resolve(request);
+	}
+	// MOUNT keeps the first image's hold and records the drive's mode.
+	void MountOnDrive(const int drive, ArchiveImages::Result& first,
+	                  const bool read_only, const std::string& sidecar = {})
+	{
+		ASSERT_TRUE(first.resolved) << first.detail;
+		ArchiveImages::Keep(drive, {first.resolved->hold});
+		ArchiveImages::DriveMode mode = {};
+		mode.archive      = std_fs::canonical(tmp / "game.zip");
+		mode.read_only    = read_only;
+		mode.sidecar_path = sidecar;
+		ArchiveImages::SetDriveMode(drive, mode);
 	}
 	// Plan 4b: the container itself is the member path.
 	ArchiveImages::Result ResolveLone(const std_fs::path& container,
@@ -348,6 +385,350 @@ TEST_F(ArchiveImagesTest, TheRegistryReleasesByDrive)
 	EXPECT_TRUE(Resolve("disks/disk1.img").resolved);
 }
 
+// ada-ciru item 4: the swap on a -ro or -nosidecar drive serves the next
+// disk from the cache too, instead of copying it into a sidecar.
+TEST_F(ArchiveImagesTest, ADriveMountedReadOnlyKeepsItsSwapsReadOnly)
+{
+	auto first = Resolve("disks/disk1.img", true);
+	MountOnDrive(2, first, true);
+	const auto swapped = SwapInto(2, "disks/disk2.img");
+	ASSERT_TRUE(swapped.resolved) << swapped.detail;
+	EXPECT_TRUE(swapped.resolved->hold->lease);
+	EXPECT_FALSE(swapped.resolved->hold->image_lock);
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+}
+
+// ada-ciru item 2: a drive mounted with -sidecar X keeps its later disks
+// in X as well, not in a fresh default sidecar.
+TEST_F(ArchiveImagesTest, ADriveWithANamedSidecarKeepsItsSwapsInIt)
+{
+	const auto named = tmp / "named";
+	ASSERT_TRUE(std_fs::create_directories(named));
+	auto request         = RequestFor("disks/disk1.img");
+	request.sidecar_path = named.string();
+	auto first           = ArchiveImages::Resolve(request);
+	MountOnDrive(2, first, false, named.string());
+	const auto swapped = SwapInto(2, "disks/disk2.img");
+	ASSERT_TRUE(swapped.resolved) << swapped.detail;
+	EXPECT_EQ(swapped.resolved->host_file,
+	          named / ".images" / "DISKS" / "DISK2.IMG");
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+}
+
+// ada-ciru item 2: the held member is found by the resolved entry, so a
+// swap back under another spelling reuses the copy instead of a busy refusal.
+TEST_F(ArchiveImagesTest, AHeldMemberIsFoundUnderAnySpelling)
+{
+	auto first = Resolve("disks/diskette-three.img");
+	MountOnDrive(2, first, false);
+	const auto kept = first.resolved->hold;
+	// As typed with DOS separators and case, and the 8.3 alias the drive
+	// shows, which only the entry's DOS name can match.
+	for (const auto* spelling : {"DISKS\\DISKETTE-THREE.IMG",
+	                             "disks/Diskette-Three.img",
+	                             "DISKS\\DISKET~1.IMG",
+	                             "disks/disket~1.img"}) {
+		const auto again = SwapInto(2, spelling);
+		ASSERT_TRUE(again.resolved) << spelling << ": " << again.detail;
+		EXPECT_EQ(again.resolved->hold, kept) << spelling;
+		EXPECT_EQ(again.resolved->host_file, kept->host_file) << spelling;
+		// As the swap does after resolving: the same hold is not
+		// listed twice.
+		ArchiveImages::Keep(2, {again.resolved->hold});
+	}
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(2), 1u);
+}
+
+TEST_F(ArchiveImagesTest, AHeldMemberOfAnotherArchiveIsNotReused)
+{
+	// Different bytes: a byte-identical copy would find the first
+	// archive's sidecar by its hash (D2) and be refused as busy.
+	auto other_disk  = FloppyBytes();
+	other_disk[1024] = 'X';
+	auto error       = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "other.zip",
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {"disks/", "", true},
+	                                 {"disks/disk1.img", other_disk}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	auto first = Resolve("disks/disk1.img");
+	MountOnDrive(2, first, false);
+	const auto other = SwapInto(2, "disks/disk1.img", tmp / "other.zip");
+	ASSERT_TRUE(other.resolved) << other.detail;
+	EXPECT_NE(other.resolved->hold, first.resolved->hold);
+	EXPECT_NE(other.resolved->host_file, first.resolved->host_file);
+}
+
+// ada-ciru item 1: BOOT's holds belong to the booted drive, so a swap on
+// that drive finds the image BOOT holds instead of a busy refusal.
+TEST_F(ArchiveImagesTest, AHoldKeptForBootIsFoundByTheSwap)
+{
+	auto first = Resolve("disks/disk1.img");
+	ASSERT_TRUE(first.resolved) << first.detail;
+	const auto kept = first.resolved->hold;
+	ArchiveImages::KeepForBoot({kept});
+	first.resolved.reset();
+	const auto again = SwapInto(0, "disks/disk1.img");
+	ASSERT_TRUE(again.resolved) << again.detail;
+	EXPECT_EQ(again.resolved->hold, kept);
+}
+
+// The swap names a member by FindMember's rules: an exact spelling wins
+// over a case-folded one, so a held DISK1.IMG is not disk1.img.
+TEST_F(ArchiveImagesTest, AHeldMemberIsNotReusedForItsCaseTwin)
+{
+	auto upper     = FloppyBytes();
+	auto lower     = FloppyBytes();
+	upper[0]       = 'U';
+	lower[0]       = 'l';
+	auto error     = std::string();
+	const auto zip = tmp / "twins.zip";
+	ASSERT_TRUE(WriteArchive(zip,
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {"DISK1.IMG", upper},
+                                         {"disk1.img", lower}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	auto first = ArchiveImages::Resolve(RequestFor("DISK1.IMG", false, zip));
+	ASSERT_TRUE(first.resolved) << first.detail;
+	ArchiveImages::Keep(0, {first.resolved->hold});
+	const auto again = SwapInto(0, "disk1.img", zip);
+	ASSERT_TRUE(again.resolved) << again.detail;
+	EXPECT_NE(again.resolved->hold, first.resolved->hold);
+	EXPECT_EQ(Slurp(again.resolved->host_file).substr(0, 1), "l");
+}
+
+// BOOT's set cycles through A and B (swapInDisks) whatever drive it boots
+// from: `boot d1.img d2.img` puts d2 in B, `-l c` boots a hard disk.
+TEST_F(ArchiveImagesTest, BootsHoldsAreFoundByASwapOnAOrB)
+{
+	auto first = Resolve("disks/disk1.img");
+	ASSERT_TRUE(first.resolved) << first.detail;
+	const auto kept = first.resolved->hold;
+	ArchiveImages::KeepForBoot({kept});
+	first.resolved.reset();
+	for (const int drive : {0, 1}) {
+		const auto again = SwapInto(drive, "disks/disk1.img");
+		ASSERT_TRUE(again.resolved)
+		        << "swap " << drive << ": " << again.detail;
+		EXPECT_EQ(again.resolved->hold, kept);
+	}
+}
+
+// A cache file is shared by every engine that leases the entry, so a disk
+// swapped in from it on a -ro drive must not take writes.
+TEST_F(ArchiveImagesTest, ARawSwapOnAReadOnlyDriveCannotWriteTheCache)
+{
+	auto first = Resolve("disks/disk1.img", true);
+	ASSERT_TRUE(first.resolved) << first.detail;
+	auto read_only  = true;
+	const auto host = first.resolved->host_file.string();
+	auto* file      = fopen_wrap_ro_fallback(host, read_only);
+	ASSERT_NE(file, nullptr);
+	imageDiskList[0] = std::make_shared<imageDisk>(file, host.c_str(), 320, false);
+	MountOnDrive(0, first, true);
+
+	const auto swapped = DriveSwap::Swap('A',
+	                                     tmp / "game.zip" / "disks" / "disk2.img",
+	                                     false,
+	                                     MountPolicy::ConfAnchor(),
+	                                     {tmp});
+	ASSERT_TRUE(swapped.ok) << swapped.error;
+	const auto cached = std_fs::path(imageDiskList[0]->diskname);
+	ASSERT_NE(cached.string(), host);
+	const auto before = Slurp(cached);
+	auto sector       = std::array<uint8_t, 512>{};
+	sector.fill(0x5A);
+	EXPECT_NE(imageDiskList[0]->Write_AbsoluteSector(3, sector.data()), 0);
+	imageDiskList.fill(nullptr);
+	EXPECT_TRUE(Slurp(cached) == before);
+}
+
+TEST_F(ArchiveImagesTest, ReleaseForgetsTheDriveMode)
+{
+	auto first = Resolve("disks/disk1.img", true);
+	MountOnDrive(2, first, true);
+	ASSERT_TRUE(ArchiveImages::DriveModeOf(2));
+	EXPECT_TRUE(ArchiveImages::DriveModeOf(2)->read_only);
+	ArchiveImages::Release(2);
+	EXPECT_FALSE(ArchiveImages::DriveModeOf(2));
+	EXPECT_FALSE(ArchiveImages::DriveModeOf(3));
+}
+
+// A path inside base, by the names alone.
+static bool IsInside(const std_fs::path& path, const std_fs::path& base)
+{
+	const auto rel = path.lexically_relative(base);
+	return !rel.empty() && *rel.begin() != "..";
+}
+
+// Phase 6.4: a scratch drive's images copy into the scratch, never into
+// a sidecar.
+TEST_F(ArchiveImagesTest, AScratchRequestCopiesTheImageIntoTheScratch)
+{
+	// Outside the cache: a store refuses a directory it did not tag.
+	const auto scratch = tmp / "scratch-ab";
+	ASSERT_TRUE(std_fs::create_directories(scratch));
+	auto request        = RequestFor("disks/disk1.img");
+	request.scratch_dir = scratch;
+	const auto got      = ArchiveImages::Resolve(request);
+	ASSERT_TRUE(got.resolved) << got.detail;
+	EXPECT_TRUE(IsInside(got.resolved->host_file, scratch))
+	        << got.resolved->host_file;
+	EXPECT_EQ(got.resolved->host_file.filename(), "DISK1.IMG");
+	EXPECT_TRUE(got.resolved->hold->image_lock);
+	EXPECT_FALSE(got.resolved->read_only);
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+}
+
+// Every swap on a scratch drive lands in the scratch, another archive's
+// disk included: the drive has no saves to protect and never grows a
+// sidecar. Two archives with one member path get two copies.
+TEST_F(ArchiveImagesTest, AScratchDriveTakesEverySwapIntoTheScratch)
+{
+	const auto scratch = tmp / "scratch-ab";
+	ASSERT_TRUE(std_fs::create_directories(scratch));
+	auto request        = RequestFor("disks/disk1.img");
+	request.scratch_dir = scratch;
+	auto first          = ArchiveImages::Resolve(request);
+	ASSERT_TRUE(first.resolved) << first.detail;
+	ArchiveImages::Keep(2, {first.resolved->hold});
+	ArchiveImages::DriveMode mode = {};
+	mode.archive                  = std_fs::canonical(tmp / "game.zip");
+	mode.scratch_dir              = scratch;
+	ArchiveImages::SetDriveMode(2, mode);
+	const auto swapped = SwapInto(2, "disks/disk2.img");
+	ASSERT_TRUE(swapped.resolved) << swapped.detail;
+	EXPECT_TRUE(IsInside(swapped.resolved->host_file, scratch))
+	        << swapped.resolved->host_file;
+	EXPECT_EQ(swapped.resolved->host_file.filename(), "DISK2.IMG");
+	auto other_disk  = FloppyBytes();
+	other_disk[1024] = 'X';
+	auto error       = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "other.zip",
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {"disks/", "", true},
+	                                 {"disks/disk1.img", other_disk}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	const auto other = SwapInto(2, "disks/disk1.img", tmp / "other.zip");
+	ASSERT_TRUE(other.resolved) << other.detail;
+	EXPECT_TRUE(IsInside(other.resolved->host_file, scratch))
+	        << other.resolved->host_file;
+	EXPECT_NE(other.resolved->host_file, first.resolved->host_file);
+	EXPECT_EQ(Slurp(other.resolved->host_file), other_disk);
+	EXPECT_EQ(Slurp(first.resolved->host_file), FloppyBytes());
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+}
+
+// Every file and directory under dir, as relative paths; empty when dir is
+// missing.
+static std::vector<std::string> TreeOf(const std_fs::path& dir)
+{
+	auto out           = std::vector<std::string>{};
+	std::error_code ec = {};
+	auto it            = std_fs::recursive_directory_iterator(dir, ec);
+	for (; !ec && it != std_fs::recursive_directory_iterator();
+	     it.increment(ec)) {
+		out.push_back(it->path().lexically_relative(dir).generic_string());
+	}
+	std::sort(out.begin(), out.end());
+	return out;
+}
+
+// ada-lm3d: a member that is no disk image is checked before it is placed,
+// and a refusal leaves no trace in the sidecar or the scratch.
+class NonImageMemberTest : public ArchiveImagesTest {
+protected:
+	std_fs::path Bundle()
+	{
+		auto error = std::string();
+		EXPECT_TRUE(WriteArchive(tmp / "bundle.zip",
+		                         Kind::ZipDeflate,
+		                         {
+		                                 {"disk1.img", FloppyBytes()},
+		                                 {"inner.zip", std::string(5000, 'z')},
+		                                 {"readme.txt", "hello\r\n"}
+                },
+		                         nullptr,
+		                         &error))
+		        << error;
+		return tmp / "bundle.zip";
+	}
+};
+
+TEST_F(NonImageMemberTest, ARefusalLeavesNoSidecarBehind)
+{
+	const auto bundle = Bundle();
+	for (const auto* member : {"inner.zip", "readme.txt"}) {
+		const auto result = ArchiveImages::Resolve(
+		        RequestFor(member, false, bundle));
+		EXPECT_FALSE(result.resolved) << member;
+		EXPECT_EQ(result.verdict.reason, DenyReason::NotADiskImage) << member;
+		EXPECT_TRUE(TreeOf(tmp / "saves").empty()) << member;
+	}
+}
+
+TEST_F(NonImageMemberTest, ARefusalLeavesAnExistingSidecarAsItWas)
+{
+	const auto bundle = Bundle();
+	auto disk = ArchiveImages::Resolve(RequestFor("disk1.img", false, bundle));
+	ASSERT_TRUE(disk.resolved) << disk.detail;
+	const auto before = TreeOf(tmp / "saves");
+	ASSERT_FALSE(before.empty());
+	const auto result = ArchiveImages::Resolve(
+	        RequestFor("inner.zip", false, bundle));
+	EXPECT_FALSE(result.resolved);
+	EXPECT_EQ(result.verdict.reason, DenyReason::NotADiskImage);
+	EXPECT_EQ(TreeOf(tmp / "saves"), before);
+}
+
+// A sidecar whose record is gone is found again as "to create"; a
+// refusal must still leave it and its saves alone.
+TEST_F(NonImageMemberTest, ARefusalKeepsASidecarWithoutItsRecord)
+{
+	const auto bundle = Bundle();
+	auto disk = ArchiveImages::Resolve(RequestFor("disk1.img", false, bundle));
+	ASSERT_TRUE(disk.resolved) << disk.detail;
+	disk.resolved.reset();
+	auto sidecars = std::vector<std_fs::path>{};
+	for (const auto& e : std_fs::directory_iterator(tmp / "saves")) {
+		sidecars.push_back(e.path());
+	}
+	ASSERT_EQ(sidecars.size(), 1u);
+	const auto sidecar = sidecars.front();
+	ASSERT_TRUE(std_fs::remove(sidecar / ".source-archive.toml"));
+	std::ofstream(sidecar / "GAME.SAV") << "level 7";
+	const auto result = ArchiveImages::Resolve(
+	        RequestFor("inner.zip", false, bundle));
+	EXPECT_FALSE(result.resolved);
+	EXPECT_TRUE(std_fs::is_regular_file(sidecar / "GAME.SAV"));
+}
+
+TEST_F(NonImageMemberTest, ARefusalLeavesTheScratchEmpty)
+{
+	const auto bundle  = Bundle();
+	const auto scratch = tmp / "scratch-ab";
+	ASSERT_TRUE(std_fs::create_directories(scratch));
+	auto request        = RequestFor("inner.zip", false, bundle);
+	request.scratch_dir = scratch;
+	const auto result   = ArchiveImages::Resolve(request);
+	EXPECT_FALSE(result.resolved);
+	EXPECT_EQ(result.verdict.reason, DenyReason::NotADiskImage);
+	EXPECT_TRUE(TreeOf(scratch).empty());
+	EXPECT_TRUE(TreeOf(tmp / "saves").empty());
+}
+
 TEST_F(ArchiveImagesTest, ReleasingAHoldRemovesItsScratchDirectory)
 {
 	auto result = Resolve("cd/game.cue");
@@ -363,6 +744,144 @@ TEST_F(ArchiveImagesTest, TheHelperIsGoneAfterResolve)
 	const auto result = Resolve("cd/game.iso");
 	ASSERT_TRUE(result.resolved) << result.detail;
 	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+}
+
+// --- Nested archives (Phase 1) ---
+
+TEST_F(ArchiveImagesTest, ANestedDiskResolvesThroughTheChain)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"game.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("game.zip/disks/disk1.img", false, tmp / "outer.zip"));
+	ASSERT_TRUE(result.resolved) << result.detail;
+	EXPECT_EQ(result.resolved->member_name, "disks/disk1.img");
+	EXPECT_EQ(result.resolved->size, 327680);
+	EXPECT_EQ(Slurp(result.resolved->host_file), FloppyBytes());
+	// The level helpers close with the host's; the hold keeps the leases.
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+}
+
+TEST_F(ArchiveImagesTest, ASwapBackToANestedDiskFindsItsHold)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"game.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	const auto first = SwapInto(2, "game.zip/disks/disk1.img", tmp / "outer.zip");
+	ASSERT_TRUE(first.resolved) << first.detail;
+	ArchiveImages::Keep(2, {first.resolved->hold});
+	const auto other = SwapInto(2, "game.zip/disks/disk2.img", tmp / "outer.zip");
+	ASSERT_TRUE(other.resolved) << other.detail;
+	ArchiveImages::Keep(2, {other.resolved->hold});
+	const auto again = SwapInto(2, "game.zip/disks/disk1.img", tmp / "outer.zip");
+	ASSERT_TRUE(again.resolved) << again.detail;
+	EXPECT_EQ(again.resolved->host_file, first.resolved->host_file);
+	EXPECT_EQ(again.resolved->hold.get(), first.resolved->hold.get());
+}
+
+TEST_F(ArchiveImagesTest, AHostDiskIsNotServedFromANestedHoldOfTheSameName)
+{
+	auto outer_disk    = FloppyBytes();
+	outer_disk[300000] = 'O';
+	auto inner_disk    = FloppyBytes();
+	inner_disk[300000] = 'I';
+	auto error         = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "inner.zip",
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {"disk1.img", inner_disk}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	// Both archives hold "disk1.img" at ordinal 0.
+	ASSERT_TRUE(WriteArchive(tmp / "pair.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"disk1.img",               outer_disk},
+	                                 {"inner.zip", Slurp(tmp / "inner.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	const auto nested = SwapInto(2, "inner.zip/disk1.img", tmp / "pair.zip");
+	ASSERT_TRUE(nested.resolved) << nested.detail;
+	ArchiveImages::Keep(2, {nested.resolved->hold});
+	EXPECT_EQ(Slurp(nested.resolved->host_file)[300000], 'I');
+	const auto host = SwapInto(2, "disk1.img", tmp / "pair.zip");
+	ASSERT_TRUE(host.resolved) << host.detail;
+	EXPECT_NE(host.resolved->host_file, nested.resolved->host_file);
+	EXPECT_EQ(Slurp(host.resolved->host_file)[300000], 'O');
+}
+
+TEST_F(ArchiveImagesTest, ANestedDisksSidecarIsKeyedOnTheHostArchiveAndTheChain)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"game.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	const auto result = ArchiveImages::Resolve(
+	        RequestFor("game.zip/disks/disk1.img", false, tmp / "outer.zip"));
+	ASSERT_TRUE(result.resolved) << result.detail;
+	// The copy lives in a sidecar under saves, never inside the cache.
+	const auto cache_dir = std_fs::weakly_canonical(tmp / "cache");
+	EXPECT_NE(result.resolved->host_file.string().find((tmp / "saves").string()),
+	          std::string::npos)
+	        << result.resolved->host_file;
+	auto records = 0;
+	for (const auto& entry : std_fs::recursive_directory_iterator(tmp / "saves")) {
+		if (entry.path().filename() != ArchiveMount::SidecarTomlName) {
+			continue;
+		}
+		++records;
+		auto detail = std::string();
+		const auto record = ArchiveMount::SidecarRecord::Load(entry.path(),
+		                                                      &detail);
+		ASSERT_TRUE(record) << detail;
+		EXPECT_EQ(record->archive_path,
+		          ArchiveMount::PathToUtf8(tmp / "outer.zip" / "game.zip"));
+		EXPECT_EQ(record->archive_path.find(cache_dir.string()),
+		          std::string::npos);
+	}
+	EXPECT_EQ(records, 1);
+}
+
+TEST_F(ArchiveImagesTest, AFourthNestingLevelIsRefused)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	const auto result = ArchiveImages::Resolve(RequestFor(
+	        "a.zip/b.zip/c.zip/d.zip/disk1.img", false, tmp / "outer.zip"));
+	EXPECT_FALSE(result.resolved);
+	EXPECT_FALSE(result.verdict.allowed);
+	EXPECT_EQ(result.verdict.reason, DenyReason::ArchiveEntryRejected);
+	EXPECT_NE(result.detail.find("nesting depth"), std::string::npos)
+	        << result.detail;
 }
 
 } // namespace

@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "ints/bios_disk.h"
 
@@ -239,6 +240,17 @@ uint8_t imageDisk::Write_AbsoluteSector(uint32_t sectnum, void* data)
 	size_t ret   = fwrite(data, 1, sector_size, diskimg);
 	current_fpos = bytenum + ret;
 	last_action  = WRITE;
+
+	// The sector must be in the file before another open reads it: a
+	// drive swap opens the image again while the replaced drive object
+	// keeps this stream and its buffer alive in the cycle list.
+	if (ret > 0 && fflush(diskimg) != 0) {
+		LOG_ERR("BIOSDISK: Could not flush sector %u to file '%s': %s",
+		        sectnum,
+		        diskname,
+		        strerror(errno));
+		return 0x05;
+	}
 
 	return ((ret > 0) ? 0x00 : 0x05);
 }

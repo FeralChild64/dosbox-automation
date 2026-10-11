@@ -9,6 +9,7 @@
 #include <cassert>
 #include <deque>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -35,6 +36,9 @@ struct CommandLineArguments {
 	bool list_layouts;
 	bool list_code_pages;
 	bool list_shaders;
+	// Design 6.1; present with an empty word when the switch had none.
+	std::optional<std::string> archive_cache;
+	std::optional<std::string> sidecar;
 	bool version;
 	bool help;
 	bool eraseconf;

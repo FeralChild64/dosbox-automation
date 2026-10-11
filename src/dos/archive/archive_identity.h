@@ -38,6 +38,10 @@ std::string SanitizeStem(std::string_view stem);
 // "<sanitized stem>-<first 8 hex digits of the hash>"
 std::string ShortKey(std::string_view stem, std::string_view hash_hex);
 
+// An archive inside another: the host's hash and the chain of member
+// paths down to it ("middle.zip/inner.zip", either separator).
+std::string ChainIdentity(std::string_view host_hash, std::string_view chain);
+
 } // namespace ArchiveIdentity
 
 #endif // DOSBOX_ARCHIVE_IDENTITY_H

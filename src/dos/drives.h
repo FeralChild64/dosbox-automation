@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2021-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #ifndef DOSBOX_DRIVES_H
 #define DOSBOX_DRIVES_H
@@ -61,6 +62,8 @@ public:
 //	static void CycleDrive(bool pressed);
 //	static void CycleDisk(bool pressed);
 	static void CycleDisks(int drive, bool notify);
+	// The Ctrl+F4 position follows a swap to a listed image (ada-99u7).
+	static void SelectDisk(int drive, size_t index);
 	static void CycleAllDisks(void);
 	static char *GetDrivePosition(int drive);
 

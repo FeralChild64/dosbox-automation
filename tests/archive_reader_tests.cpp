@@ -8,6 +8,7 @@
 
 #include <archive.h>
 #include <archive_entry.h>
+#include <zlib.h>
 
 #include <chrono>
 #include <filesystem>
@@ -1088,6 +1089,23 @@ TEST_F(ArchiveReaderTest, ACompressedImageOverTheMemberCapIsTooLarge)
 	EXPECT_FALSE(opened.reader);
 }
 
+// A CD-sized chunk count, so data_offs lies past the 68-byte trailer.
+TEST_F(ArchiveReaderTest, AnIszOfManyChunksOpens)
+{
+	const auto iso = MinimalIso();
+	for (const bool trailer : {true, false}) {
+		auto o          = ArchiveFixtures::IszOptions{};
+		o.block_size    = 2048;
+		o.trailer       = trailer;
+		const auto path = tmp_dir / "many.isz";
+		ASSERT_TRUE(WriteIsz(path, iso, IszChunk::Zlib, o));
+		auto opened = ArchiveReader::Open(path, limits);
+		ASSERT_EQ(opened.error, Error::None)
+		        << "trailer " << trailer << ": " << opened.detail;
+		EXPECT_TRUE(Read(*opened.reader, 0) == iso);
+	}
+}
+
 TEST_F(ArchiveReaderTest, AnIszOpensAsOneIsoAndMaterializesByteForByte)
 {
 	const auto iso = MinimalIso() + std::string(64 * 1024, 'q');
@@ -1116,6 +1134,29 @@ TEST_F(ArchiveReaderTest, AnIszOpensAsOneIsoAndMaterializesByteForByte)
 	}
 }
 
+// Without a chunk table (D13.4) the content CRC covers the first and the
+// last 64 KiB of the raw image after the header.
+TEST_F(ArchiveReaderTest, AnIszWithoutATableTakesItsContentCrcFromTheImagesEnds)
+{
+	const auto iso = MinimalIso() + std::string(200 * 1024, 'q') +
+	                 std::string(2048, 'z');
+	auto o          = IszOptions{};
+	o.table         = false;
+	const auto path = tmp_dir / "raw.isz";
+	ASSERT_TRUE(WriteIsz(path, iso, IszChunk::Stored, o));
+	auto opened = ArchiveReader::Open(path, limits);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	ASSERT_EQ(opened.reader->Entries().size(), 1u);
+	constexpr size_t Window = 64 * 1024;
+	const auto ends = iso.substr(0, Window) + iso.substr(iso.size() - Window);
+	const auto expected = crc32(crc32(0L, Z_NULL, 0),
+	                            reinterpret_cast<const Bytef*>(ends.data()),
+	                            static_cast<uInt>(ends.size()));
+	EXPECT_TRUE(opened.reader->Entries()[0].has_crc);
+	EXPECT_EQ(opened.reader->Entries()[0].crc32, static_cast<uint32_t>(expected));
+	EXPECT_TRUE(Read(*opened.reader, 0) == iso);
+}
+
 TEST_F(ArchiveReaderTest, AnEncryptedOrSegmentedIszIsRefusedByReason)
 {
 	auto enc     = IszOptions{};
@@ -1130,8 +1171,63 @@ TEST_F(ArchiveReaderTest, AnEncryptedOrSegmentedIszIsRefusedByReason)
 	          Error::MultiVolume);
 }
 
+// ada-ciru item 5: the count pass stops at the archive cap, not the 2 GiB
+// member cap; its message ("'name': over N bytes") tells it apart from the
+// later total check ("declared total over N bytes").
+TEST_F(ArchiveReaderTest, ARawCountStopsAtTheArchiveCap)
+{
+	auto capped            = limits;
+	capped.max_total_bytes = 2048;
+	ASSERT_TRUE(WriteCompressed(tmp_dir / "big.img.gz",
+	                            Filter::Gzip,
+	                            std::string(1024 * 1024, 'x')));
+	auto opened = ArchiveReader::Open(tmp_dir / "big.img.gz", capped);
+	EXPECT_EQ(opened.error, Error::TooLarge) << opened.detail;
+	EXPECT_NE(opened.detail.find("'big.img': over 2048 bytes"), std::string::npos)
+	        << opened.detail;
+}
+
+// ada-ciru item 6: two compressed images of the same name, size, date and
+// container length still differ in identity when their content differs.
+TEST_F(ArchiveReaderTest, TheIdentityOfACompressedImageFollowsItsContent)
+{
+	fs::create_directories(tmp_dir / "a");
+	fs::create_directories(tmp_dir / "b");
+	const auto a = tmp_dir / "a" / "disk1.img.gz";
+	const auto b = tmp_dir / "b" / "disk1.img.gz";
+	ASSERT_TRUE(WriteCompressed(a, Filter::Gzip, std::string(1474560, 'a')));
+	ASSERT_TRUE(WriteCompressed(b, Filter::Gzip, std::string(1474560, 'b')));
+	ASSERT_EQ(fs::file_size(a), fs::file_size(b));
+	fs::last_write_time(b, fs::last_write_time(a));
+	auto open_a = ArchiveReader::Open(a, limits);
+	auto open_b = ArchiveReader::Open(b, limits);
+	ASSERT_TRUE(open_a.reader && open_b.reader) << open_a.detail << open_b.detail;
+	EXPECT_NE(open_a.reader->IdentityHash(), open_b.reader->IdentityHash());
+}
+
+// ada-ciru item 6 for ISZ: same name, size, date and container length,
+// different bytes in the image, different identity.
+TEST_F(ArchiveReaderTest, TheIdentityOfAnIszFollowsItsContent)
+{
+	fs::create_directories(tmp_dir / "a");
+	fs::create_directories(tmp_dir / "b");
+	const auto a                  = tmp_dir / "a" / "game.isz";
+	const auto b                  = tmp_dir / "b" / "game.isz";
+	auto image_a                  = MinimalIso();
+	auto image_b                  = image_a;
+	image_b[image_b.size() - 100] = 'X';
+	ASSERT_TRUE(WriteIsz(a, image_a, IszChunk::Stored));
+	ASSERT_TRUE(WriteIsz(b, image_b, IszChunk::Stored));
+	ASSERT_EQ(fs::file_size(a), fs::file_size(b));
+	fs::last_write_time(b, fs::last_write_time(a));
+	auto open_a = ArchiveReader::Open(a, limits);
+	auto open_b = ArchiveReader::Open(b, limits);
+	ASSERT_TRUE(open_a.reader && open_b.reader) << open_a.detail << open_b.detail;
+	EXPECT_NE(open_a.reader->IdentityHash(), open_b.reader->IdentityHash());
+}
+
 // D2's identity for a container: the listing (name, size, the container's
-// date) and the container's length, not a hash of the content.
+// date), the container's length and, since ada-ciru item 6, a content CRC.
 TEST_F(ArchiveReaderTest, TheIdentityOfAContainerFollowsItsListingAndLength)
 {
 	fs::create_directories(tmp_dir / "a");

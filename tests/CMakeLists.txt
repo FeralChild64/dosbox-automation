@@ -43,6 +43,7 @@ add_executable(dosbox_tests
     ansi_code_markup_tests.cpp
     archive_activity_tests.cpp
     archive_cache_tests.cpp
+    archive_chain_tests.cpp
     archive_entry_names_tests.cpp
     archive_cp437_tests.cpp
     archive_cue_rewrite_tests.cpp
@@ -54,6 +55,7 @@ add_executable(dosbox_tests
     archive_isz_tests.cpp
     archive_legacy_zip_tests.cpp
     archive_lock_tests.cpp
+    archive_management_tests.cpp
     archive_member_path_tests.cpp
     archive_random_name_tests.cpp
     archive_reader_tests.cpp

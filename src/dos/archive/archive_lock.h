@@ -20,6 +20,8 @@ public:
 	// path. Nothing when another holder conflicts or on any error.
 	static std::optional<FileLock> TryAcquire(const std::filesystem::path& path,
 	                                          Mode mode);
+	// Someone holds the lock in either mode; creates nothing, keeps nothing.
+	static bool IsHeld(const std::filesystem::path& path);
 
 	~FileLock();
 	FileLock(FileLock&& other) noexcept;

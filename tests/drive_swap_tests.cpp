@@ -3,6 +3,7 @@
 //
 
 #include "dos/drive_swap.h"
+#include "dos/programs/archive_images.h"
 
 #include <array>
 #include <cstdint>
@@ -328,6 +329,62 @@ TEST_F(DriveSwapRawTest, RawSwapKeepsBootsSwapListInStep)
 	ASSERT_TRUE(result.ok) << result.error;
 
 	swapInDisks(0);
+	EXPECT_EQ(FirstByteOfDiskA(), 0x22);
+}
+
+// ada-ciru item 3: the drive a swap replaces stays alive in the cycle
+// list with its stdio buffer, so a sector it wrote must be in the file by
+// the time the swap back opens the image a second time.
+TEST_F(DriveSwapRawTest, AWrittenSectorIsInTheFileBeforeASecondOpen)
+{
+	const auto image = CreateBooterImage("images/disk1.img", 0x11);
+	InsertRawDiskA(image);
+	auto sector = std::array<uint8_t, 512>{};
+	sector.fill(0x5A);
+	ASSERT_EQ(imageDiskList[0]->Write_AbsoluteSector(7, sector.data()), 0);
+
+	auto in = std::ifstream(image, std::ios::binary);
+	in.seekg(7 * 512);
+	auto seen = std::array<char, 512>{};
+	in.read(seen.data(), static_cast<std::streamsize>(seen.size()));
+	EXPECT_EQ(static_cast<uint8_t>(seen[0]), 0x5A);
+	EXPECT_EQ(static_cast<uint8_t>(seen[511]), 0x5A);
+}
+
+// ada-ciru item 1: BOOT already has the image open in its Ctrl+F4 list; a
+// swap to it hands that object to the slot instead of opening the file a
+// second time with its own buffer.
+TEST_F(DriveSwapRawTest, RawSwapReusesTheDiskBootKeepsInItsList)
+{
+	InsertRawDiskA(CreateBooterImage("images/disk1.img", 0x11));
+	diskSwap[0]      = imageDiskList[0];
+	const auto disk2 = CreateBooterImage("images/disk2.img", 0x22);
+	bool is_readonly = false;
+	auto* file       = fopen_wrap_ro_fallback(disk2.string(), is_readonly);
+	ASSERT_NE(file, nullptr);
+	diskSwap[1] = std::make_shared<imageDisk>(file, disk2.string().c_str(), 160, false);
+
+	const auto result = DriveSwap::Swap('A', disk2, false, {}, {root});
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_EQ(imageDiskList[0], diskSwap[1]);
+	EXPECT_EQ(FirstByteOfDiskA(), 0x22);
+}
+
+TEST_F(DriveSwapRawTest, AReadOnlyRawSwapDoesNotTakeBootsWritableDisk)
+{
+	InsertRawDiskA(CreateBooterImage("images/disk1.img", 0x11));
+	diskSwap[0]      = imageDiskList[0];
+	const auto disk2 = CreateBooterImage("images/disk2.img", 0x22);
+	bool is_readonly = false;
+	auto* file       = fopen_wrap_ro_fallback(disk2.string(), is_readonly);
+	ASSERT_NE(file, nullptr);
+	diskSwap[1] = std::make_shared<imageDisk>(file, disk2.string().c_str(), 160, false);
+
+	ArchiveImages::SetDriveMode(0, ArchiveImages::DriveMode{.read_only = true});
+	const auto result = DriveSwap::Swap('A', disk2, false, {}, {root});
+	ArchiveImages::SetDriveMode(0, {});
+	ASSERT_TRUE(result.ok) << result.error;
+	EXPECT_NE(imageDiskList[0], diskSwap[1]);
 	EXPECT_EQ(FirstByteOfDiskA(), 0x22);
 }
 

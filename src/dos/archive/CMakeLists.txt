@@ -10,6 +10,7 @@ add_library(archivereader STATIC
   archive_cache.cpp
   archive_identity.cpp
   archive_lock.cpp
+  archive_management.cpp
   archive_reader.cpp
   archive_toml.cpp
   archive_tree.cpp

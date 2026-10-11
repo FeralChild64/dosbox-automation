@@ -8,6 +8,7 @@
 #include "test_temp_dir.h"
 
 #include <gtest/gtest.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -253,6 +254,31 @@ TEST_F(IszTest, AFileWithoutTheTrailerEndsAtItsLastChunk)
 	auto o    = IszOptions{};
 	o.trailer = false;
 	ExpectRoundTrip(MakeIsz(Image(), IszChunk::Zlib, o), Image());
+}
+
+// 150 chunks of 2048 put data_offs at 500, past UltraISO's 68-byte
+// trailer, so a window shifted by data_offs leaves the file.
+TEST_F(IszTest, TheContentCrcCoversTheFirstAndLastStoredChunk)
+{
+	const auto image = Image();
+	const auto ends = image.substr(0, 2048) + image.substr(image.size() - 2048);
+	const auto expected = crc32(crc32(0L, Z_NULL, 0),
+	                            reinterpret_cast<const Bytef*>(ends.data()),
+	                            static_cast<uInt>(ends.size()));
+	for (const bool trailer : {true, false}) {
+		auto o       = IszOptions{};
+		o.block_size = 2048;
+		o.trailer    = trailer;
+		const auto parsed = ParseBytes(MakeIsz(image, IszChunk::Stored, o));
+		ASSERT_EQ(parsed.error, Error::None) << parsed.detail;
+		ASSERT_GT(parsed.image.data_offs, 68u);
+		auto crc    = uint32_t{0};
+		auto detail = std::string();
+		ASSERT_EQ(Isz::ContentCrc(fd, parsed.image, &crc, &detail),
+		          Error::None)
+		        << "trailer " << trailer << ": " << detail;
+		EXPECT_EQ(crc, expected) << "trailer " << trailer;
+	}
 }
 
 TEST_F(IszTest, AWrongSignatureIsNotAnIsz)
