@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText:  2020-2025 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "shell/shell.h"
 
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <optional>
 
 #include "cpu/callback.h"
 #include "gui/clipboard.h"
@@ -14,6 +16,7 @@
 #include "ints/int10.h"
 #include "hardware/input/keyboard.h"
 #include "cpu/registers.h"
+#include "dos/programs/append.h"
 #include "misc/unicode.h"
 
 [[nodiscard]] static std::vector<std::string> get_completions(std::string_view command);
@@ -555,21 +558,35 @@ std::string DOS_Shell::ResolvePath(const std::string_view name) const
 
 	const bool has_extension = !get_executable_extension(name).empty();
 
-	for (const auto& prefix : prefixes) {
+	// With an extension the name is tried as typed; without one, "DOOM"
+	// is tried as DOOM.COM, DOOM.EXE, DOOM.BAT in that order.
+	const auto names_under = [&](const std::string& prefix) {
+		std::vector<std::string> names = {};
 		if (has_extension) {
-			// User typed in something with an extension.
-			// Don't try to add a 2nd extension.
-			const std::string file = prefix + std::string(name);
+			names.push_back(prefix + std::string(name));
+		} else {
+			for (const auto& extension : Extensions) {
+				names.push_back(prefix + std::string(name) + extension);
+			}
+		}
+		return names;
+	};
+
+	// COMMAND.COM finds NAME.* in the current directory, and APPEND /x
+	// answers that find from its list only when nothing here matched;
+	// the PATH directories come after both.
+	for (const auto& prefix : prefixes) {
+		const auto names = names_under(prefix);
+		for (const auto& file : names) {
 			if (DOS_FileExists(file.c_str())) {
 				return file;
 			}
-		} else {
-			// User typed in a command with no extension. Ex "DOOM".
-			// Try "DOOM.COM", "DOOM.EXE", "DOOM.BAT" in that order.
-			for (const auto& extension : Extensions) {
-				const std::string file = prefix + std::string(name) + extension;
-				if (DOS_FileExists(file.c_str())) {
-					return file;
+		}
+		if (prefix.empty()) {
+			for (const auto& file : names) {
+				if (auto found = AppendCommand::FindInList(
+				            file, AppendCommand::SearchKind::Find)) {
+					return *found;
 				}
 			}
 		}

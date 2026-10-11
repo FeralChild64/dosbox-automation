@@ -1,6 +1,7 @@
 // This file is part of the dosbox-automation Project.
 // License: GPL-2.0-or-later. Contact: dosbox-automation-project@trinity2k.net
 //
+#include "dos/programs/append.h"
 #include "dos/programs/mount_run.h"
 
 #include <filesystem>
@@ -72,6 +73,29 @@ protected:
 	std::filesystem::path tmp                 = {};
 	std::shared_ptr<DOS_Drive> previous_drive = {};
 };
+
+// APPEND /x answers DOS finds from its list; the engine's own probe of
+// the mounted drive must not be answered from somewhere else.
+TEST_F(MountRunTest, ARunTargetIsNeverFoundThroughTheAppendList)
+{
+	// A missing folder is "path not found", which stops APPEND on real
+	// DOS too; the folder exists and the file does not.
+	Folder("GAME");
+	File("UTIL/SETUP.EXE");
+	auto& state        = AppendCommand::ResidentState();
+	const auto before  = state;
+	state.installed    = true;
+	state.enabled      = true;
+	state.exec_allowed = true;
+	state.search_exec  = true;
+	state.list         = "C:\\UTIL";
+	EXPECT_TRUE(DOS_FindFirst("C:\\GAME\\SETUP.EXE",
+	                          FatAttributeFlags::NotVolume));
+	const auto target = Resolve('C', "GAME\\SETUP.EXE");
+	EXPECT_NE(target.refusal, Refusal::None);
+	EXPECT_TRUE(target.lines.empty());
+	state = before;
+}
 
 TEST_F(MountRunTest, ANamedProgramAtTheRootRuns)
 {

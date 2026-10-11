@@ -18,6 +18,7 @@
 #include "cpu/callback.h"
 #include "cpu/registers.h"
 #include "dos/dos_locale.h"
+#include "dos/programs/append.h"
 #include "dos/programs/more_output.h"
 #include "dos/programs/setver.h"
 #include "gui/mapper.h"
@@ -221,6 +222,8 @@ static uint16_t get_output_redirection(const char* out_file, const char* pipe_fi
 		DOS_SetError(DOSERR_ACCESS_DENIED);
 		success = false;
 	} else {
+		// The pipe's temporary file is looked for where it will be made.
+		AppendCommand::Suspend no_append_search;
 		if (pipe_file &&
 		    DOS_FindFirst(pipe_tempfile, FatAttributeFlags::NotVolume) &&
 		    !DOS_UnlinkFile(pipe_tempfile)) {
@@ -409,6 +412,7 @@ void DOS_Shell::ParseLine(char* line)
 			WriteOut(MSG_Get("SHELL_CMD_FAILED_PIPE"));
 			LOG_MSG("SHELL: Failed to write pipe content to temporary file");
 		}
+		AppendCommand::Suspend no_append_search;
 		if (DOS_FindFirst(pipe_tempfile, FatAttributeFlags::NotVolume)) {
 			if (!DOS_UnlinkFile(pipe_tempfile)) {
 				LOG_WARNING("SHELL: Failed to delete the pipe's temporary file, '%s'",

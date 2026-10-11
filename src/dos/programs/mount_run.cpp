@@ -3,6 +3,8 @@
 //
 #include "dos/programs/mount_run.h"
 
+#include "dos/programs/append.h"
+
 #include "dos/dos.h"
 #include "dos/drives.h"
 #include "utils/checks.h"
@@ -130,8 +132,10 @@ private:
 	const RealPt saved_dta;
 };
 
+// The engine's own probes of a drive are never answered from APPEND's list.
 std::vector<std::string> RootPrograms(const char drive)
 {
+	AppendCommand::Suspend no_append_search;
 	std::vector<std::string> programs = {};
 	TempDtaSearch search              = {};
 	auto entry = search.First(std::string(1, drive) + ":\\*.*");
@@ -147,6 +151,7 @@ std::vector<std::string> RootPrograms(const char drive)
 
 std::optional<DOS_DTA::Result> FindExact(const std::string& path)
 {
+	AppendCommand::Suspend no_append_search;
 	TempDtaSearch search = {};
 	return search.First(path);
 }

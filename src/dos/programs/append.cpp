@@ -4,12 +4,16 @@
 
 #include "append.h"
 
+#include "cpu/registers.h"
 #include "dos/dos.h"
+#include "dos/dos_system.h"
+#include "hardware/memory.h"
 #include "misc/messages.h"
 #include "more_output.h"
 #include "utils/checks.h"
 #include "utils/string_utils.h"
 
+#include <algorithm>
 #include <string>
 
 CHECK_NARROWING();
@@ -122,6 +126,180 @@ State& ResidentState()
 	return state;
 }
 
+// APPEND.ASM mode_flags.
+constexpr uint16_t EnabledBit = 0x0001;
+constexpr uint16_t DriveBit   = 0x1000;
+constexpr uint16_t PathBit    = 0x2000;
+constexpr uint16_t EnvBit     = 0x4000;
+constexpr uint16_t ExecBit    = 0x8000;
+
+uint16_t StateBits(const State& state)
+{
+	uint16_t bits = 0;
+	bits |= state.enabled ? EnabledBit : 0;
+	bits |= state.search_with_drive ? DriveBit : 0;
+	bits |= state.search_with_path ? PathBit : 0;
+	bits |= state.store_in_env ? EnvBit : 0;
+	bits |= state.search_exec ? ExecBit : 0;
+	return bits;
+}
+
+void ApplyStateBits(State& state, const uint16_t bits)
+{
+	state.enabled           = (bits & EnabledBit) != 0;
+	state.search_with_drive = (bits & DriveBit) != 0;
+	state.search_with_path  = (bits & PathBit) != 0;
+	state.store_in_env      = (bits & EnvBit) != 0;
+	state.search_exec       = (bits & ExecBit) != 0;
+}
+
+// Room for the longest list plus its terminator, as in APPEND.ASM's dirlst.
+constexpr uint16_t ListParagraphs = 8;
+static_assert(ListParagraphs * 16 > MaxListLength);
+
+static uint16_t list_segment = 0;
+
+static void write_resident_list(const std::string& list)
+{
+	const auto bytes = std::min(list.size(), MaxListLength);
+	MEM_BlockWrite(PhysicalMake(list_segment, 0), list.c_str(), bytes);
+	mem_writeb(PhysicalMake(list_segment, static_cast<uint16_t>(bytes)), 0);
+}
+
+// INT 2Fh AH=B7h per RBIL; AL=03h (TopView) and AL=11h (return the found
+// name) are not answered.
+static bool append_multiplex()
+{
+	if (reg_ah != 0xb7) {
+		return false;
+	}
+	auto& state = ResidentState();
+	switch (reg_al) {
+	case 0x00: reg_al = 0xff; return true;
+	case 0x02: reg_ax = 0xffff; return true;
+	case 0x04:
+		SegSet16(es, list_segment);
+		reg_di = 0;
+		return true;
+	case 0x06: reg_bx = StateBits(state); return true;
+	case 0x07: ApplyStateBits(state, reg_bx); return true;
+	case 0x10:
+		// MS-DOS 5.00 APPEND answers BX = CX = 0 and its own version.
+		reg_ax = StateBits(state);
+		reg_bx = 0;
+		reg_cx = 0;
+		reg_dl = 5;
+		reg_dh = 0;
+		return true;
+	default: return false;
+	}
+}
+
+void InstallResidentPart()
+{
+	// DOS_GetMemory never frees, so the list buffer and the handler are
+	// set up once and stay for the session.
+	if (list_segment == 0) {
+		list_segment = DOS_GetMemory(ListParagraphs);
+		DOS_AddMultiplexHandler(append_multiplex);
+	}
+	write_resident_list(ResidentState().list);
+}
+
+static bool search_suspended = false;
+
+Suspend::Suspend() : was_suspended(search_suspended)
+{
+	search_suspended = true;
+}
+
+Suspend::~Suspend()
+{
+	search_suspended = was_suspended;
+}
+
+// MS-DOS 4.0 APPEND.ASM, address_path: under /e the list is APPEND= of the
+// calling process; the resident copy only when it has no environment.
+static std::string active_list(const State& state)
+{
+	if (!state.store_in_env) {
+		return state.list;
+	}
+	DOS_PSP caller(dos.psp());
+	if (caller.GetEnvironment() == 0) {
+		return state.list;
+	}
+	return caller.GetEnvironmentValue("APPEND").value_or("");
+}
+
+std::vector<std::string> SearchCandidates(const std::string_view name,
+                                          const SearchKind kind, const bool fcb_name)
+{
+	const auto& state = ResidentState();
+	if (search_suspended || !state.installed || !state.enabled) {
+		return {};
+	}
+	if (kind != SearchKind::Open && !state.search_exec) {
+		return {};
+	}
+
+	// APPEND.ASM check_path_mode: with /path:off a drive alone also stops
+	// the search.
+	const bool has_drive = name.size() >= 2 && name[1] == ':';
+	const bool has_path  = name.find_first_of("\\/") != name.npos;
+	if (!fcb_name) {
+		if (has_drive && !state.search_with_drive) {
+			return {};
+		}
+		if (!state.search_with_path && (has_drive || has_path)) {
+			return {};
+		}
+	}
+
+	const auto name_start = name.find_last_of("\\/:");
+	const auto file_name  = name_start == name.npos
+	                              ? name
+	                              : name.substr(name_start + 1);
+	if (file_name.empty()) {
+		return {};
+	}
+
+	// APPEND.ASM treats a value that starts with a blank or ';' as no list.
+	const auto list = active_list(state);
+	if (list.empty() || list.front() == ' ' || list.front() == ';') {
+		return {};
+	}
+
+	std::vector<std::string> candidates = {};
+	for (const auto& directory : split_with_empties(list, ';')) {
+		if (directory.empty()) {
+			continue;
+		}
+		const char last            = directory.back();
+		const bool needs_separator = last != '\\' && last != '/' &&
+		                             last != ':';
+		candidates.push_back(directory + (needs_separator ? "\\" : "") +
+		                     std::string(file_name));
+	}
+	return candidates;
+}
+
+std::optional<std::string> FindInList(const std::string_view name,
+                                      const SearchKind kind)
+{
+	const auto candidates = SearchCandidates(name, kind, false);
+	if (candidates.empty()) {
+		return {};
+	}
+	Suspend no_nested_search;
+	for (const auto& candidate : candidates) {
+		if (DOS_FileExists(candidate.c_str())) {
+			return candidate;
+		}
+	}
+	return {};
+}
+
 } // namespace AppendCommand
 
 using namespace AppendCommand;
@@ -165,6 +343,7 @@ void APPEND::Run()
 		result_errorcode = 1;
 		return;
 	}
+	InstallResidentPart();
 
 	if (request.action == Action::Display) {
 		if (state.list.empty()) {
@@ -183,6 +362,7 @@ void APPEND::Run()
 		DOS_PSP parent(psp->GetParent());
 		if (!parent.SetEnvironmentValue("APPEND", state.list)) {
 			state = before;
+			InstallResidentPart();
 			WriteOut(MSG_Get("SHELL_CMD_SET_OUT_OF_SPACE"));
 			result_errorcode = 1;
 		}
@@ -220,7 +400,8 @@ void APPEND::AddMessages()
 	        "Notes:\n"
 	        "  Running [color=light-green]append[reset] without parameters shows the current list.\n"
 	        "  A new list replaces the old one.\n"
-	        "  Programs do not search the list yet when they open files.\n");
+	        "  New files are always created in the current directory.\n"
+	        "  DIR does not show files found through the list.\n");
 
 	MSG_Add("PROGRAM_APPEND_NO_LIST", "No Append\n");
 	MSG_Add("PROGRAM_APPEND_LIST", "APPEND=%s\n");

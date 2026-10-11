@@ -27,6 +27,7 @@
 #include "cpu/registers.h"
 #include "dos/dos.h"
 #include "dos/drives.h"
+#include "dos/programs/append.h"
 #include "dos/programs/more_output.h"
 #include "hardware/pic.h"
 #include "hardware/timer.h"
@@ -881,6 +882,9 @@ char* format_time(const uint8_t hour, const uint8_t min, const uint8_t sec,
 void DOS_Shell::CMD_DIR(char* args)
 {
 	HELP("DIR");
+
+	// MS-DOS 4.0 COMMAND.COM turns APPEND off while DIR runs (change A020).
+	AppendCommand::Suspend no_append_search;
 
 	std::string line = {};
 	if (const auto envvar = psp->GetEnvironmentValue("DIRCMD")) {

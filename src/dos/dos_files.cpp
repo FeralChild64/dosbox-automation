@@ -18,6 +18,7 @@
 #include "hardware/memory.h"
 #include "cpu/registers.h"
 #include "dos/drives.h"
+#include "dos/programs/append.h"
 #include "misc/cross.h"
 #include "config/setup.h"
 #include "utils/string_utils.h"
@@ -592,7 +593,14 @@ bool DOS_Rename(const char* const oldname, const char* const newname)
 	return false;
 }
 
-bool DOS_FindFirst(const char* search, FatAttributeFlags attr, bool fcb_findfirst)
+static bool is_not_found_error(const uint16_t error_code)
+{
+	return error_code == DOSERR_FILE_NOT_FOUND ||
+	       error_code == DOSERR_PATH_NOT_FOUND ||
+	       error_code == DOSERR_NO_MORE_FILES;
+}
+
+static bool find_first(const char* search, FatAttributeFlags attr, bool fcb_findfirst)
 {
 	LOG(LOG_FILES, LOG_NORMAL)
 	("file search attributes %X name %s", attr._data, search);
@@ -641,6 +649,30 @@ bool DOS_FindFirst(const char* search, FatAttributeFlags attr, bool fcb_findfirs
 		return true;
 	}
 
+	return false;
+}
+
+// APPEND.ASM starts a find's search on "no more files"; our drives answer
+// either that or "file not found" for no match, so both start it here.
+bool DOS_FindFirst(const char* search, FatAttributeFlags attr, bool fcb_findfirst)
+{
+	if (find_first(search, attr, fcb_findfirst)) {
+		return true;
+	}
+	const auto first_error = dos.errorcode;
+	if (first_error != DOSERR_NO_MORE_FILES && first_error != DOSERR_FILE_NOT_FOUND) {
+		return false;
+	}
+	for (const auto& candidate : AppendCommand::SearchCandidates(
+	             search, AppendCommand::SearchKind::Find, fcb_findfirst)) {
+		if (find_first(candidate.c_str(), attr, fcb_findfirst)) {
+			return true;
+		}
+		if (!is_not_found_error(dos.errorcode)) {
+			return false;
+		}
+	}
+	DOS_SetError(first_error);
 	return false;
 }
 
@@ -847,7 +879,7 @@ bool DOS_CreateFile(const char* name, FatAttributeFlags attributes,
 	}
 }
 
-bool DOS_OpenFile(const char* name, uint8_t flags, uint16_t* entry, bool fcb)
+static bool open_file(const char* name, uint8_t flags, uint16_t* entry, bool fcb)
 {
 	/* First check for devices */
 	if (flags>2) LOG(LOG_FILES,LOG_ERROR)("Special file open command %X file %s",flags,name);
@@ -927,6 +959,34 @@ bool DOS_OpenFile(const char* name, uint8_t flags, uint16_t* entry, bool fcb)
 	}
 }
 
+// MS-DOS 4.0 APPEND.ASM, handle_open: only "file not found" starts the
+// search, and the caller sees the first error when no directory has the file.
+static bool open_from_append_list(const char* name, uint8_t flags,
+                                  uint16_t* entry, bool fcb)
+{
+	const auto first_error = dos.errorcode;
+	if (first_error != DOSERR_FILE_NOT_FOUND) {
+		return false;
+	}
+	for (const auto& candidate : AppendCommand::SearchCandidates(
+	             name, AppendCommand::SearchKind::Open, fcb)) {
+		if (open_file(candidate.c_str(), flags, entry, fcb)) {
+			return true;
+		}
+		if (!is_not_found_error(dos.errorcode)) {
+			return false;
+		}
+	}
+	DOS_SetError(first_error);
+	return false;
+}
+
+bool DOS_OpenFile(const char* name, uint8_t flags, uint16_t* entry, bool fcb)
+{
+	return open_file(name, flags, entry, fcb) ||
+	       open_from_append_list(name, flags, entry, fcb);
+}
+
 bool DOS_OpenFileExtended(const char* name, uint16_t flags,
                           FatAttributeFlags createAttr, uint16_t action,
                           uint16_t* entry, uint16_t* status)
@@ -944,7 +1004,14 @@ bool DOS_OpenFileExtended(const char* name, uint16_t flags,
 			return false;
 		}
 	}
-	if (DOS_OpenFile(name, (uint8_t)(flags&0xff), entry)) {
+	// MS-DOS 4.0 APPEND.ASM, ext_handle_open: a call that may create the
+	// file is left alone.
+	const bool may_create = (action & 0xf0) != 0;
+	const auto open_flags = static_cast<uint8_t>(flags & 0xff);
+	const bool opened     = may_create
+	                              ? open_file(name, open_flags, entry, false)
+	                              : DOS_OpenFile(name, open_flags, entry);
+	if (opened) {
 		// File already exists
 		switch (action & 0x0f) {
 			case 0x00:		// failed

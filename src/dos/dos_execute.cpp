@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2021-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 //
 // Portions adapted from dosbox-staging PR #4755
 // (https://github.com/dosbox-staging/dosbox-staging/pull/4755)
@@ -25,6 +26,7 @@
 #include "hardware/memory.h"
 #include "hardware/vmware.h"
 #include "misc/video.h"
+#include "programs/append.h"
 #include "programs/setver.h"
 #include "utils/string_utils.h"
 
@@ -311,7 +313,22 @@ bool DOS_Execute(char * name,PhysPt block_pt,uint8_t flags) {
 	}
 	/* Check for EXE or COM File */
 	bool iscom=false;
-	if (!DOS_OpenFile(name,OPEN_READ,&fhandle)) {
+	// EXEC searches the APPEND list only under /x, so its own open must not
+	// search it; MS-DOS 4.0 APPEND.ASM, exec_pgm, runs the found path.
+	std::string appended_name = {};
+	auto open_program = [&] {
+		AppendCommand::Suspend no_open_search;
+		return DOS_OpenFile(name, OPEN_READ, &fhandle);
+	};
+	bool opened = open_program();
+	if (!opened && dos.errorcode == DOSERR_FILE_NOT_FOUND) {
+		if (auto found = AppendCommand::FindInList(name, AppendCommand::SearchKind::Exec)) {
+			appended_name = std::move(*found);
+			name          = appended_name.data();
+			opened        = open_program();
+		}
+	}
+	if (!opened) {
 		DOS_SetError(DOSERR_FILE_NOT_FOUND);
 		return false;
 	}
