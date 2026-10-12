@@ -42,6 +42,10 @@ public:
 	// innermost first by the destructor; their clients close with the host's.
 	std::vector<ArchiveMount::ChainLink> chain_links = {};
 	std::string chain = {}; // ChainPrefix of the member, "" when not nested
+	// N4: the member the house rule entered for a short path ("" when
+	// the request spelled the chain itself), so a swap back through the
+	// short path finds this hold.
+	std::string house_member = {};
 
 	// The member this hold serves, so its drive can be handed it again,
 	// and the listing it was picked from, so a swap back to it needs no

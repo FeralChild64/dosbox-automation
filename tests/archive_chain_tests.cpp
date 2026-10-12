@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -354,7 +355,9 @@ protected:
 	}
 };
 
-TEST_F(ChainResolveTest, ZipInZipResolvesToTheLeafMember)
+// A deflated outer: the cache path (a stored outer takes the window,
+// Phase 2's tests below).
+TEST_F(ChainResolveTest, ZipInADeflatedZipResolvesThroughTheCache)
 {
 	const auto image = std::string(4096, 'd');
 	const auto inner = Built("inner.zip",
@@ -363,7 +366,7 @@ TEST_F(ChainResolveTest, ZipInZipResolvesToTheLeafMember)
 	                                 {"disk1.img", image}
         });
 	const auto outer = Built("outer.zip",
-	                         Kind::ZipStored,
+	                         Kind::ZipDeflate,
 	                         {
 	                                 {"inner.zip", Slurp(inner)}
         });
@@ -458,7 +461,7 @@ TEST_F(ChainResolveTest, TwoLevelsDeepResolvesThroughBothCaches)
 	                                  {"sub/inner.zip", Slurp(inner)}
         });
 	const auto outer  = Built("outer.zip",
-                                 Kind::ZipStored,
+                                 Kind::ZipDeflate,
 	                          {
                                          {"middle.zip", Slurp(middle)}
         });
@@ -730,7 +733,7 @@ TEST_F(ChainResolveTest, TheSameInnerArchiveTwiceSharesOneCacheEntry)
 	                                 {"disk1.img", "x"}
         });
 	const auto outer = Built("outer.zip",
-	                         Kind::ZipStored,
+	                         Kind::ZipDeflate,
 	                         {
 	                                 {"inner.zip", Slurp(inner)}
         });
@@ -746,4 +749,296 @@ TEST_F(ChainResolveTest, TheSameInnerArchiveTwiceSharesOneCacheEntry)
 	ASSERT_EQ(second.links.size(), 1u);
 	EXPECT_EQ(first.links[0].cached_path, second.links[0].cached_path);
 	EXPECT_EQ(cache->Measure().entries, 1);
+}
+
+// --- Phase 2: the window ---
+
+TEST_F(ChainResolveTest, AStoredZipInAStoredZipTakesTheWindow)
+{
+	const auto image = std::string(4096, 'd');
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"disk1.img", image}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"inner.zip", Slurp(inner)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+
+	const auto result = ResolveChain(Chain(outer, "inner.zip/disk1.img"),
+	                                 *host,
+	                                 outer,
+	                                 *cache,
+	                                 Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.links.size(), 1u);
+	ASSERT_TRUE(result.links[0].window);
+	EXPECT_FALSE(result.links[0].lease);
+	EXPECT_TRUE(result.links[0].cached_path.empty());
+	EXPECT_EQ(result.links[0].window->offset,
+	          host->Entries().front().stored_offset);
+	EXPECT_EQ(result.links[0].window->length, host->Entries().front().size);
+	EXPECT_TRUE(result.leaf_window);
+	EXPECT_EQ(result.leaf_archive, outer / "inner.zip");
+	// Nothing was copied: the cache holds no entry.
+	EXPECT_EQ(cache->Measure().entries, 0);
+	const auto* leaf = Leaf(result, "disk1.img");
+	ASSERT_NE(leaf, nullptr);
+	EXPECT_EQ(Read(*result.leaf_client, leaf->ordinal), image);
+}
+
+TEST_F(ChainResolveTest, ADeflatedInnerZipTakesTheCache)
+{
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"disk1.img", std::string(4096, 'd')}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {"inner.zip", Slurp(inner)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto result = ResolveChain(Chain(outer, "inner.zip/disk1.img"),
+	                                 *host,
+	                                 outer,
+	                                 *cache,
+	                                 Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.links.size(), 1u);
+	EXPECT_FALSE(result.links[0].window);
+	EXPECT_TRUE(result.links[0].lease);
+	EXPECT_FALSE(result.leaf_window);
+	EXPECT_EQ(cache->Measure().entries, 1);
+}
+
+TEST_F(ChainResolveTest, ThreeStoredLevelsAreTwoWindowsOnOneDescriptor)
+{
+	const auto image  = std::string(2048, 'x');
+	const auto third  = Built("third.zip",
+                                 Kind::ZipStored,
+	                          {
+                                         {"disk1.img", image}
+        });
+	const auto second = Built("second.zip",
+	                          Kind::ZipStored,
+	                          {
+	                                  {"pad.txt", std::string(333, 'p')},
+	                                  {"third.zip", Slurp(third)}
+        });
+	const auto outer  = Built("outer.zip",
+                                 Kind::ZipStored,
+	                          {
+                                         {"second.zip", Slurp(second)}
+        });
+	auto host         = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto result = ResolveChain(Chain(outer, "second.zip/third.zip/disk1.img"),
+	                                 *host,
+	                                 outer,
+	                                 *cache,
+	                                 Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.links.size(), 2u);
+	ASSERT_TRUE(result.links[0].window);
+	ASSERT_TRUE(result.links[1].window);
+	// The inner window's offset is absolute: outer's member plus the
+	// member's own offset inside second.zip.
+	const Entry* third_entry = nullptr;
+	for (const auto& e : result.links[0].client->Entries()) {
+		if (e.utf8_path == "third.zip") {
+			third_entry = &e;
+		}
+	}
+	ASSERT_NE(third_entry, nullptr);
+	EXPECT_EQ(result.links[1].window->offset,
+	          result.links[0].window->offset + third_entry->stored_offset);
+	EXPECT_EQ(result.links[1].window->length, third_entry->size);
+	EXPECT_EQ(result.leaf_archive, outer / "second.zip" / "third.zip");
+	EXPECT_EQ(cache->Measure().entries, 0);
+	const auto* leaf = Leaf(result, "disk1.img");
+	ASSERT_NE(leaf, nullptr);
+	EXPECT_EQ(Read(*result.leaf_client, leaf->ordinal), image);
+}
+
+TEST_F(ChainResolveTest, AWindowBelowACachedLevelStaysAWindow)
+{
+	// deflated outer -> cached middle (stored zip) -> windowed inner.
+	const auto inner  = Built("inner.zip",
+                                 Kind::ZipStored,
+	                          {
+                                         {"disk1.img", std::string(512, 'i')}
+        });
+	const auto middle = Built("middle.zip",
+	                          Kind::ZipStored,
+	                          {
+	                                  {"inner.zip", Slurp(inner)}
+        });
+	const auto outer  = Built("outer.zip",
+                                 Kind::ZipDeflate,
+	                          {
+                                         {"middle.zip", Slurp(middle)}
+        });
+	auto host         = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto result = ResolveChain(Chain(outer, "middle.zip/inner.zip/disk1.img"),
+	                                 *host,
+	                                 outer,
+	                                 *cache,
+	                                 Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.links.size(), 2u);
+	EXPECT_TRUE(result.links[0].lease);
+	EXPECT_FALSE(result.links[0].window);
+	ASSERT_TRUE(result.links[1].window);
+	EXPECT_FALSE(result.links[1].lease);
+	// The second window reads the cache copy, not the host.
+	EXPECT_EQ(result.links[1].window->offset,
+	          result.links[0].client->Entries().front().stored_offset);
+	EXPECT_EQ(cache->Measure().entries, 1);
+	const auto* leaf = Leaf(result, "disk1.img");
+	ASSERT_NE(leaf, nullptr);
+	EXPECT_EQ(Read(*result.leaf_client, leaf->ordinal), std::string(512, 'i'));
+}
+
+TEST_F(ChainResolveTest, AStoredZipInsideASevenZipTakesTheCache)
+{
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.txt", "aaaa"}
+        });
+	const auto outer = Built("outer.7z",
+	                         Kind::SevenZip,
+	                         {
+	                                 {"inner.zip", Slurp(inner)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	auto options               = Options();
+	options.sequential_allowed = true;
+	const auto result          = ResolveChain(
+                Chain(outer, "inner.zip/a.txt"), *host, outer, *cache, options);
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.links.size(), 1u);
+	EXPECT_FALSE(result.links[0].window);
+	EXPECT_TRUE(result.links[0].lease);
+}
+
+TEST_F(ChainResolveTest, AWindowCostsNoBytesButCountsItsEntries)
+{
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.txt", "a"},
+                                         {"b.txt", "b"},
+                                         {"c.txt", "c"}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"inner.zip", Slurp(inner)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	auto options              = Options();
+	options.max_total_entries = 3; // 1 + 3 is over
+	const auto over           = ResolveChain(
+                Chain(outer, "inner.zip/a.txt"), *host, outer, *cache, options);
+	EXPECT_EQ(over.error, Error::TooManyEntries);
+	EXPECT_EQ(over.failed_level, 0);
+	options.max_total_entries = 4;
+	const auto fits           = ResolveChain(
+                Chain(outer, "inner.zip/a.txt"), *host, outer, *cache, options);
+	EXPECT_EQ(fits.error, Error::None) << fits.detail;
+	EXPECT_EQ(fits.total_entries, 4);
+}
+
+TEST_F(ChainResolveTest, AWindowedChainOutlivesTheHostFilesReplacement)
+{
+	const auto image = std::string(4096, 'd');
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"disk1.img", image}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"inner.zip", Slurp(inner)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto result = ResolveChain(Chain(outer, "inner.zip/disk1.img"),
+	                                 *host,
+	                                 outer,
+	                                 *cache,
+	                                 Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_TRUE(result.leaf_window);
+	const auto other   = Built("other.zip",
+                                 Kind::ZipStored,
+	                           {
+                                         {"z.txt", std::string(9000, 'z')}
+        });
+	std::error_code ec = {};
+	fs::rename(other, outer, ec);
+	if (ec) {
+		GTEST_SKIP() << "rename over an open file refused here: "
+		             << ec.message();
+	}
+	const auto* leaf = Leaf(result, "disk1.img");
+	ASSERT_NE(leaf, nullptr);
+	EXPECT_EQ(Read(*result.leaf_client, leaf->ordinal), image);
+}
+
+// --- Phase 3: a chain with no leaf (the house rule's entering) ---
+
+TEST_F(ChainResolveTest, AChainOfLevelsEntersWithoutALeaf)
+{
+	const auto image = std::string(1024, 'd');
+	const auto inner = Built("game.store.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"disk1.img", image}
+        });
+	const auto outer = Built("house.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",   "[game]\n"},
+	                                 {"game.store.zip", Slurp(inner)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto chain = ChainOfLevels(outer, {"game.store.zip"});
+	ASSERT_EQ(chain.levels.size(), 1u);
+	EXPECT_EQ(chain.levels[0].archive_member, "game.store.zip");
+	EXPECT_TRUE(chain.levels[0].leaf_member.empty());
+	EXPECT_EQ(chain.host.archive, outer);
+	const auto result = ResolveChain(chain, *host, outer, *cache, Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.links.size(), 1u);
+	EXPECT_TRUE(result.leaf_window);
+	const auto* leaf = Leaf(result, "disk1.img");
+	ASSERT_NE(leaf, nullptr);
+	EXPECT_EQ(Read(*result.leaf_client, leaf->ordinal), image);
+	EXPECT_EQ(ChainPrefix(chain), "game.store.zip");
+}
+
+TEST(ComposeWindowOffset, RefusesAnOffsetThatWouldOverflow)
+{
+	EXPECT_EQ(ComposeWindowOffset(0, 104), 104);
+	EXPECT_EQ(ComposeWindowOffset(104, 300), 404);
+	constexpr auto max = std::numeric_limits<int64_t>::max();
+	EXPECT_EQ(ComposeWindowOffset(1, max - 1), max);
+	EXPECT_FALSE(ComposeWindowOffset(1, max));
+	EXPECT_FALSE(ComposeWindowOffset(max, max));
+	EXPECT_FALSE(ComposeWindowOffset(-1, 10));
+	EXPECT_FALSE(ComposeWindowOffset(10, -1));
 }

@@ -114,7 +114,7 @@ ArchiveState state_of(const SidecarRecord& record, const IdentifyArchive& identi
 		return ArchiveState::Missing;
 	}
 	// A nested member's record names the host and the chain below it
-	// (outer.zip/inner.zip); the host carries the identity.
+	// (outer.zip/inner.zip) and carries the leaf's identity (N5).
 	auto chain         = std::string();
 	std::error_code ec = {};
 	if (!fs::is_regular_file(fs::symlink_status(*archive, ec)) || ec) {
@@ -125,15 +125,12 @@ ArchiveState state_of(const SidecarRecord& record, const IdentifyArchive& identi
 		archive = split->archive;
 		chain   = split->member;
 	}
-	const auto hash = identify(*archive);
+	const auto hash = identify(*archive, chain);
 	if (!hash) {
 		return ArchiveState::Unreadable;
 	}
-	const auto expected = chain.empty()
-	                            ? *hash
-	                            : ArchiveIdentity::ChainIdentity(*hash, chain);
-	return expected == record.identity_hash ? ArchiveState::Same
-	                                        : ArchiveState::Changed;
+	return *hash == record.identity_hash ? ArchiveState::Same
+	                                     : ArchiveState::Changed;
 }
 
 } // namespace

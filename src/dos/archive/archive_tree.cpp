@@ -3,9 +3,11 @@
 //
 #include "dos/archive/archive_tree.h"
 
+#include "dos/archive/member_path.h"
 #include "utils/checks.h"
 
 #include <algorithm>
+#include <cctype>
 #include <ctime>
 
 CHECK_NARROWING();
@@ -207,6 +209,31 @@ std::string SoloRootDirectory(const std::vector<Entry>& entries)
 		}
 	}
 	return top;
+}
+
+const Entry* HouseArchiveMember(const std::vector<Entry>& entries)
+{
+	const Entry* archive = nullptr;
+	for (const auto& entry : entries) {
+		if (entry.is_dir || entry.dos_path.find('\\') != std::string::npos) {
+			return nullptr;
+		}
+		auto lower = entry.utf8_path;
+		std::transform(lower.begin(),
+		               lower.end(),
+		               lower.begin(),
+		               [](const unsigned char c) {
+			               return static_cast<char>(std::tolower(c));
+		               });
+		if (lower == "info.toml") {
+			continue;
+		}
+		if (!IsArchiveName(entry.utf8_path) || archive) {
+			return nullptr;
+		}
+		archive = &entry;
+	}
+	return archive;
 }
 
 } // namespace ArchiveMount

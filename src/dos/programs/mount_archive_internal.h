@@ -5,14 +5,19 @@
 #define DOSBOX_MOUNT_ARCHIVE_INTERNAL_H
 
 #include "dos/archive/archive_cache.h"
+#include "dos/archive/archive_helper_client.h"
 #include "dos/archive/archive_source.h"
+#include "dos/archive/chain_resolver.h"
+#include "dos/drives.h"
 #include "dos/programs/mount_policy.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // Shared by mount_archive.cpp, archive_images.cpp and the command line's
 // management switches (main.cpp); nothing else.
@@ -49,6 +54,33 @@ ArchiveMount::ArchiveCache* OpenStore(
 
 MountVerdict Denied(DenyReason reason);
 
+// A resolved chain below a host: the leaf client, what it reads through
+// (held for the drive's life) and the chain prefix. Used by MOUNT's
+// entering (N3), its reconnect, and the sidecar lister's identify.
+struct Entered {
+	std::unique_ptr<ArchiveMount::ArchiveHelperClient> leaf = {};
+	std::vector<ArchiveMount::ChainLink> links              = {};
+	std::string chain                                       = {};
+	bool window                                             = false;
+};
+// members is never empty: a chain of no levels is the host itself.
+std::optional<Entered> EnterChain(ArchiveMount::ArchiveHelperClient& host,
+                                  const std::filesystem::path& host_path,
+                                  const std::vector<std::string>& members,
+                                  ArchiveMount::ArchiveCache& cache,
+                                  const ArchiveMount::ChainOptions& options,
+                                  ArchiveMount::Error* error, std::string* detail);
+
+// The drive's holder for a chain's links (ArchiveDrive::HeldResources).
+struct ChainHold final : public ArchiveDrive::HeldResources {
+	std::vector<ArchiveMount::ChainLink> links = {};
+};
+
+// The chain options MOUNT derives from the settings.
+ArchiveMount::ChainOptions ChainOptionsFor(
+        const ArchiveSettings& settings, const ArchiveMount::Limits& limits,
+        const ArchiveMount::ArchiveHelperClient::Options& helper);
+
 struct SidecarPlace {
 	std::filesystem::path directory = {};
 	const char* how                 = "created";
@@ -60,12 +92,12 @@ struct SidecarPlace {
 };
 
 // Design D2 without the lock: -sidecar through the directory policy, else
-// by path, by hash, beside the archive when the policy allows, or created.
-// For a nested member the archive is the host plus the chain
-// (outer.zip/inner.zip) and the identity is ChainIdentity's.
+// by path, by hash, beside the archive when allowed, or created under
+// key_stem (empty: the archive's stem; a nested member's host, N5).
 SidecarPlace PlaceSidecar(const std::string& sidecar_path,
                           const std::filesystem::path& archive,
-                          std::string_view identity_hash);
+                          std::string_view identity_hash,
+                          std::string_view key_stem = {});
 
 // The record of a created sidecar; false with the detail when not written.
 bool EnsureSidecarRecord(const std::filesystem::path& directory,

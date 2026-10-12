@@ -26,7 +26,7 @@ TEST(HelperProtocol, FrameHeaderIsTwelveBytesLittleEndian)
 	EXPECT_EQ(frame[1], 'B');
 	EXPECT_EQ(frame[2], 'A');
 	EXPECT_EQ(frame[3], 'H');
-	EXPECT_EQ(Version, 2); // 2a: the open request carries a descriptor
+	EXPECT_EQ(Version, 3); // 2a: a descriptor; nested design 2.1: a window
 	EXPECT_EQ(frame[4], Version & 0xff);
 	EXPECT_EQ(frame[5], Version >> 8);
 	EXPECT_EQ(frame[6], static_cast<uint8_t>(Type::Materialize));
@@ -125,10 +125,66 @@ TEST(HelperProtocol, OpenRequestRoundTrips)
 	EXPECT_EQ(out.limits.max_member_bytes, 30);
 	EXPECT_TRUE(out.descriptor_follows);
 	EXPECT_EQ(out.handle, 0x1122334455667788ull);
-	// The flag byte is 0 or 1, nothing else.
-	auto bytes              = EncodeOpenRequest(in);
-	bytes[bytes.size() - 9] = 2;
+	// The flag byte is 0 or 1, nothing else; it sits before the handle
+	// and the two window fields.
+	auto bytes               = EncodeOpenRequest(in);
+	bytes[bytes.size() - 25] = 2;
 	EXPECT_FALSE(DecodeOpenRequest(bytes, out));
+}
+
+TEST(HelperProtocol, AnOpenRequestCarriesAWindow)
+{
+	auto in          = OpenRequest{};
+	in.path          = "house.zip/game.zip";
+	in.window_offset = 104;
+	in.window_length = 737490;
+	auto out         = OpenRequest{};
+	ASSERT_TRUE(DecodeOpenRequest(EncodeOpenRequest(in), out));
+	EXPECT_EQ(out.window_offset, 104);
+	EXPECT_EQ(out.window_length, 737490);
+
+	auto whole = OpenRequest{};
+	ASSERT_TRUE(DecodeOpenRequest(EncodeOpenRequest(whole), out));
+	EXPECT_EQ(out.window_offset, 0);
+	EXPECT_EQ(out.window_length, 0);
+}
+
+TEST(HelperProtocol, ANegativeWindowIsRefusedAtDecode)
+{
+	auto in          = OpenRequest{};
+	in.window_offset = -1;
+	auto out         = OpenRequest{};
+	EXPECT_FALSE(DecodeOpenRequest(EncodeOpenRequest(in), out));
+	in.window_offset = 0;
+	in.window_length = -5;
+	EXPECT_FALSE(DecodeOpenRequest(EncodeOpenRequest(in), out));
+}
+
+TEST(HelperProtocol, AnEntryCarriesItsStoredOffset)
+{
+	auto in           = IndexReply{};
+	auto e            = ArchiveMount::Entry{};
+	e.ordinal         = 0;
+	e.utf8_path       = "game.zip";
+	e.dos_path        = "GAME.ZIP";
+	e.size            = 737490;
+	e.stored_offset   = 104;
+	in.entries        = {e};
+	in.total_bytes    = 737490;
+	in.archive_length = 737734;
+	auto out          = IndexReply{};
+	ASSERT_TRUE(DecodeIndexReply(EncodeIndexReply(in), out));
+	ASSERT_EQ(out.entries.size(), 1u);
+	EXPECT_EQ(out.entries[0].stored_offset, 104);
+
+	e.stored_offset = -1;
+	in.entries      = {e};
+	ASSERT_TRUE(DecodeIndexReply(EncodeIndexReply(in), out));
+	EXPECT_EQ(out.entries[0].stored_offset, -1);
+
+	e.stored_offset = -2;
+	in.entries      = {e};
+	EXPECT_FALSE(DecodeIndexReply(EncodeIndexReply(in), out));
 }
 
 TEST(HelperProtocol, IndexReplyRoundTrips)
@@ -191,8 +247,8 @@ TEST(HelperProtocol, TheFormatByteEndsAtTheLastFormat)
 		EXPECT_EQ(out.format, format);
 	}
 	auto bytes = EncodeIndexReply(in);
-	bytes[0]   = static_cast<uint8_t>(static_cast<uint8_t>(Format::Isz) + 1);
-	auto out   = IndexReply{};
+	bytes[0] = static_cast<uint8_t>(static_cast<uint8_t>(Format::Isz) + 1);
+	auto out = IndexReply{};
 	EXPECT_FALSE(DecodeIndexReply(bytes, out));
 }
 
@@ -487,6 +543,54 @@ TEST(HelperIndexCheck, PathsMustKeepTheReadersShape)
 	EXPECT_EQ(CheckIndex(accepted, ArchiveMount::Limits{}), std::nullopt);
 }
 
+TEST(HelperIndexCheck, AStoredOffsetMustLieInsideTheArchive)
+{
+	auto limits          = ArchiveMount::Limits{};
+	auto index           = IndexReply{};
+	auto e               = ArchiveMount::Entry{};
+	e.ordinal            = 0;
+	e.utf8_path          = "game.zip";
+	e.dos_path           = "GAME.ZIP";
+	e.size               = 100;
+	index.total_bytes    = 100;
+	index.archive_length = 200;
+
+	e.stored_offset = 100; // 100 + 100 == 200: the last byte is inside
+	index.entries   = {e};
+	EXPECT_FALSE(CheckIndex(index, limits));
+
+	e.stored_offset = 101;
+	index.entries   = {e};
+	EXPECT_TRUE(CheckIndex(index, limits));
+
+	e.stored_offset = -1;
+	index.entries   = {e};
+	EXPECT_FALSE(CheckIndex(index, limits));
+
+	auto d          = ArchiveMount::Entry{};
+	d.ordinal       = 1;
+	d.utf8_path     = "dir";
+	d.dos_path      = "DIR";
+	d.is_dir        = true;
+	d.stored_offset = 0;
+	index.entries   = {e, d};
+	EXPECT_TRUE(CheckIndex(index, limits));
+}
+
+TEST(HelperIndexCheck, TheArchiveLengthMustMatchWhatTheEngineKnows)
+{
+	// The stored-offset bound is only as good as archive_length, which
+	// the helper reports; the engine knows the window's length or the
+	// file's size and refuses an index that says otherwise.
+	auto limits          = ArchiveMount::Limits{};
+	auto index           = IndexReply{};
+	index.archive_length = 200;
+	EXPECT_FALSE(CheckIndex(index, limits, 200));
+	EXPECT_TRUE(CheckIndex(index, limits, 199));
+	EXPECT_TRUE(CheckIndex(index, limits, 201));
+	EXPECT_FALSE(CheckIndex(index, limits, std::nullopt));
+}
+
 TEST(HelperIndexCheck, AnEntryPathMustBeInTheReadersNormalForm)
 {
 	for (const auto* utf8 :
@@ -528,9 +632,10 @@ TEST(HelperIndexCheck, TheReadersOwnIndexesPass)
 		const auto limits = ArchiveMount::Limits{};
 		auto opened = ArchiveMount::ArchiveReader::Open(path, limits);
 		ASSERT_EQ(opened.error, Error::None) << opened.detail;
-		auto index        = IndexReply{};
-		index.total_bytes = opened.reader->TotalBytes();
-		index.entries     = opened.reader->Entries();
+		auto index           = IndexReply{};
+		index.total_bytes    = opened.reader->TotalBytes();
+		index.archive_length = opened.reader->ArchiveLength();
+		index.entries        = opened.reader->Entries();
 		EXPECT_EQ(CheckIndex(index, limits), std::nullopt) << path;
 	}
 	std::error_code ec = {};

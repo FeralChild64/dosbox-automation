@@ -39,11 +39,12 @@ class ArchiveReader final : public ArchiveSource {
 public:
 	static OpenResult Open(const std::filesystem::path& path,
 	                       const Limits& limits);
-	// Over a duplicate of fd, which the caller keeps and may close at
-	// once; name is for log lines only. The duplicate shares the file
-	// offset, so the caller must not read through its own descriptor.
+	// Over a duplicate of fd, which the caller keeps and may close at once;
+	// name is for log lines only; the caller must not read through its own
+	// descriptor (shared offset). A window: that range, a zip only (N6, 2.3).
 	static OpenResult Open(int fd, const std::filesystem::path& name,
-	                       const Limits& limits);
+	                       const Limits& limits,
+	                       std::optional<ByteWindow> window = {});
 	~ArchiveReader() override;
 	ArchiveReader(const ArchiveReader&)            = delete;
 	ArchiveReader& operator=(const ArchiveReader&) = delete;

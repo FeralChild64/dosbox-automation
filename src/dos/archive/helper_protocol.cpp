@@ -25,7 +25,7 @@ constexpr auto LastFormat = static_cast<uint8_t>(ArchiveMount::Format::Isz);
 constexpr auto LastAccess = static_cast<uint8_t>(ArchiveMount::Access::Sequential);
 
 // ordinal, two string counts, is_dir, size, mtime, has_crc, crc32
-constexpr size_t MinEncodedEntry = 4 + 4 + 4 + 1 + 8 + 8 + 1 + 4;
+constexpr size_t MinEncodedEntry = 4 + 4 + 4 + 1 + 8 + 8 + 1 + 4 + 8;
 
 constexpr uint32_t MaxOrdinal = std::numeric_limits<int32_t>::max();
 
@@ -96,8 +96,13 @@ bool is_dos_path(const std::string_view path)
 } // namespace
 
 std::optional<std::string> CheckIndex(const IndexReply& index,
-                                      const ArchiveMount::Limits& limits)
+                                      const ArchiveMount::Limits& limits,
+                                      const std::optional<int64_t> expected_archive_length)
 {
+	if (expected_archive_length &&
+	    index.archive_length != *expected_archive_length) {
+		return "an archive length that is not the file's or the window's";
+	}
 	// 78 characters of DOS path hold at most 39 components.
 	constexpr int64_t MaxDepth = (ArchiveNames::DosPathLength - 1) / 2;
 
@@ -112,6 +117,12 @@ std::optional<std::string> CheckIndex(const IndexReply& index,
 		if (e.size < 0 || e.size > limits.max_member_bytes ||
 		    (e.is_dir && e.size != 0)) {
 			return "a size outside the limits: " + e.utf8_path;
+		}
+		if (e.stored_offset < -1 || (e.is_dir && e.stored_offset != -1) ||
+		    (e.stored_offset >= 0 &&
+		     (e.stored_offset > index.archive_length ||
+		      e.size > index.archive_length - e.stored_offset))) {
+			return "a stored offset outside the archive: " + e.utf8_path;
 		}
 		if (e.ordinal == ArchiveMount::ImpliedOrdinal) {
 			if (!e.is_dir) {
@@ -345,6 +356,8 @@ std::vector<uint8_t> EncodeOpenRequest(const OpenRequest& v)
 	w.I64(v.limits.max_member_bytes);
 	w.U8(v.descriptor_follows ? 1 : 0);
 	w.I64(static_cast<int64_t>(v.handle));
+	w.I64(v.window_offset);
+	w.I64(v.window_length);
 	return w.Take();
 }
 
@@ -354,11 +367,12 @@ bool DecodeOpenRequest(const std::span<const uint8_t> bytes, OpenRequest& v)
 	uint8_t follows = 0;
 	int64_t handle  = 0;
 	if (!(r.Str(v.path) && r.I64(v.limits.max_entries) &&
-	      r.I64(v.limits.max_total_bytes) && r.I64(v.limits.max_member_bytes) &&
-	      r.U8(follows) && r.I64(handle) && r.AtEnd())) {
+	      r.I64(v.limits.max_total_bytes) &&
+	      r.I64(v.limits.max_member_bytes) && r.U8(follows) && r.I64(handle) &&
+	      r.I64(v.window_offset) && r.I64(v.window_length) && r.AtEnd())) {
 		return false;
 	}
-	if (follows > 1) {
+	if (follows > 1 || v.window_offset < 0 || v.window_length < 0) {
 		return false;
 	}
 	v.descriptor_follows = follows == 1;
@@ -386,6 +400,7 @@ std::vector<uint8_t> EncodeIndexReply(const IndexReply& v)
 		w.I64(e.mtime);
 		w.U8(e.has_crc ? 1 : 0);
 		w.U32(e.crc32);
+		w.I64(e.stored_offset);
 	}
 	return w.Take();
 }
@@ -416,9 +431,13 @@ bool DecodeIndexReply(const std::span<const uint8_t> bytes, IndexReply& v)
 		uint8_t has_crc  = 0;
 		if (!r.U32(ordinal) ||
 		    static_cast<int32_t>(ordinal) < ArchiveMount::ImpliedOrdinal ||
-		    !r.Str(e.utf8_path) || !r.Str(e.dos_path) ||
-		    !r.U8(is_dir) || !r.I64(e.size) || !r.I64(e.mtime) ||
-		    !r.U8(has_crc) || !r.U32(e.crc32)) {
+		    !r.Str(e.utf8_path) || !r.Str(e.dos_path) || !r.U8(is_dir) ||
+		    !r.I64(e.size) || !r.I64(e.mtime) || !r.U8(has_crc) ||
+		    !r.U32(e.crc32) || !r.I64(e.stored_offset)) {
+			v.entries.clear();
+			return false;
+		}
+		if (e.stored_offset < -1) {
 			v.entries.clear();
 			return false;
 		}

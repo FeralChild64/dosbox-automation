@@ -423,11 +423,24 @@ int main(int argc, char** argv)
 				break;
 #endif
 			}
+			auto window = std::optional<ArchiveMount::ByteWindow>{};
+			if (request.window_length > 0) {
+				window = ArchiveMount::ByteWindow{request.window_offset,
+				                                  request.window_length};
+			}
+			if (window && archive_fd < 0) {
+				if (!send_status(Error::OpenFailed,
+				                 "an archive window needs a descriptor")) {
+					return ExitClean;
+				}
+				break;
+			}
 			auto opened = archive_fd >= 0
 			                    ? ArchiveReader::Open(archive_fd,
 			                                          path_from_utf8(
 			                                                  request.path),
-			                                          request.limits)
+			                                          request.limits,
+			                                          window)
 			                    : ArchiveReader::Open(
 			                              path_from_utf8(request.path),
 			                              request.limits);

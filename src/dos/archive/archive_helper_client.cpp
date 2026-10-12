@@ -179,9 +179,10 @@ struct ArchiveHelperClient::Impl {
 	static inline std::unordered_set<Impl*> registry = {};
 
 	std::filesystem::path archive = {};
-	int archive_fd  = -1; // the descriptor the policy validated
-	Limits limits   = {};
-	Options options = {};
+	int archive_fd    = -1; // the descriptor the policy validated
+	ByteWindow window = {}; // length 0: the whole file
+	Limits limits     = {};
+	Options options   = {};
 	std::unique_ptr<ChildProcess> child = {};
 	int served                          = 0; // requests sent to this helper
 	int respawns                        = 0;
@@ -270,9 +271,11 @@ struct ArchiveHelperClient::Impl {
 		if (options.test_hooks) {
 			argv.emplace_back("--test-hooks");
 		}
-		auto request   = OpenRequest{};
-		request.path   = PathToUtf8(archive);
-		request.limits = limits;
+		auto request          = OpenRequest{};
+		request.path          = PathToUtf8(archive);
+		request.limits        = limits;
+		request.window_offset = window.offset;
+		request.window_length = window.length;
 #if defined(WIN32)
 		// SDL spawns with inheritance on, so the child sees this value.
 		// Another spawn in the window before CreateProcess inherits it
@@ -332,10 +335,16 @@ struct ArchiveHelperClient::Impl {
 		StatDescriptor(archive_fd, on_disk);
 		// The sniff reads through the shared file position; it must be
 		// done before the helper holds the same open file description.
-		const auto budget = OpenBudget(options,
-		                               SniffFile(archive_fd).access,
-		                               on_disk.size,
-		                               limits);
+		// A window holds a zip (per-member); its own length is the size.
+		const auto budget = window.length > 0
+		                          ? OpenBudget(options,
+		                                       Access::PerMember,
+		                                       window.length,
+		                                       limits)
+		                          : OpenBudget(options,
+		                                       SniffFile(archive_fd).access,
+		                                       on_disk.size,
+		                                       limits);
 		++served;
 #if defined(WIN32)
 		const auto sent = child->Write(
@@ -379,7 +388,9 @@ struct ArchiveHelperClient::Impl {
 			set_detail(detail, "malformed index from the archive helper");
 			return Error::HelperFailed;
 		}
-		if (const auto broken = CheckIndex(opened, limits)) {
+		const auto expected_length = window.length > 0 ? window.length
+		                                               : on_disk.size;
+		if (const auto broken = CheckIndex(opened, limits, expected_length)) {
 			child.reset();
 			set_detail(detail, "the archive helper sent " + *broken);
 			return Error::HelperFailed;
@@ -598,6 +609,45 @@ ArchiveHelperClient::OpenResult ArchiveHelperClient::Open(
 	return result;
 }
 
+ArchiveHelperClient::OpenResult ArchiveHelperClient::OpenWindow(
+        const ArchiveHelperClient& parent, const int64_t offset,
+        const int64_t length, const std::filesystem::path& label,
+        const Limits& limits, const Options& options)
+{
+	auto result = OpenResult{};
+	if (offset < 0 || length <= 0) {
+		result.error = Error::OpenFailed;
+		result.detail = "archive window with a negative offset or no length";
+		return result;
+	}
+	auto client = std::unique_ptr<ArchiveHelperClient>(new ArchiveHelperClient());
+	client->impl          = std::make_unique<Impl>();
+	client->impl->archive = label;
+	client->impl->limits  = limits;
+	client->impl->options = options;
+	client->impl->window  = ByteWindow{offset, length};
+	if (client->impl->options.helper_path.empty()) {
+		client->impl->options.helper_path = DefaultHelperPath();
+	}
+	client->impl->archive_fd = DuplicateNoInherit(parent.impl->archive_fd);
+	if (client->impl->archive_fd < 0) {
+		result.error = Error::OpenFailed;
+		result.detail = "cannot duplicate the host archive's descriptor";
+		return result;
+	}
+	Activity::Snapshot identify = {};
+	identify.kind               = Activity::Kind::Identifying;
+	identify.archive            = PathToUtf8(label.stem());
+	identify.bytes_total        = length;
+	const Activity::Guard guard(identify);
+	result.error = client->impl->Spawn(true, &result.detail);
+	if (result.error != Error::None) {
+		return result; // the client's destructor quits the helper
+	}
+	result.client = std::move(client);
+	return result;
+}
+
 std::filesystem::path ArchiveHelperClient::DefaultHelperPath()
 {
 	if (!helper_path_override.empty()) {
@@ -637,6 +687,10 @@ const std::string& ArchiveHelperClient::IdentityHash() const
 StatPair ArchiveHelperClient::IndexedStat() const
 {
 	return impl->index.stat;
+}
+ByteWindow ArchiveHelperClient::Window() const
+{
+	return impl->window;
 }
 int ArchiveHelperClient::RespawnCount() const
 {

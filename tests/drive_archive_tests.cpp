@@ -485,15 +485,16 @@ protected:
 		EXPECT_EQ(got.status, CacheStatus::Ok) << got.detail;
 		drive_options.reconnect = ArchiveDrive::ReconnectSpec{};
 		drive_options.reconnect->backoff_seconds = 5;
-		drive_options.reconnect->now    = [this]() { return now; };
-		drive_options.reconnect->reopen = [this](std::string* detail) {
+		drive_options.reconnect->now = [this]() { return now; };
+		drive_options.reconnect->reopen =
+		        [this](std::string* detail) -> ArchiveDrive::Reopened {
 			++reopen_calls;
 			if (!next_source) {
 				if (detail) {
 					*detail = "nothing to reopen";
 				}
 			}
-			return std::move(next_source);
+			return {std::move(next_source), std::move(next_held)};
 		};
 		auto made = ArchiveDrive::Create(std::move(failing),
 		                                 std::move(got.lease),
@@ -510,10 +511,11 @@ protected:
 		EXPECT_EQ(opened.error, Error::None) << opened.detail;
 		return std::move(opened.reader);
 	}
-	FailingSource* source                      = nullptr;
-	std::unique_ptr<ArchiveSource> next_source = {};
-	int reopen_calls                           = 0;
-	int64_t now                                = 1'700'000'000;
+	FailingSource* source                                  = nullptr;
+	std::unique_ptr<ArchiveSource> next_source             = {};
+	std::shared_ptr<ArchiveDrive::HeldResources> next_held = {};
+	int reopen_calls                                       = 0;
+	int64_t now                                            = 1'700'000'000;
 };
 
 TEST_F(ArchiveDriveStateTest, AChangedArchiveTakesTheDriveOutOfReadyAndDosSeesNotReady)
@@ -608,11 +610,11 @@ TEST_F(ArchiveDriveStateTest, WithoutALeaseTheDriveItselfRefusesAnotherArchive)
 	auto opened        = ArchiveReader::Open(archive, limits);
 	ASSERT_EQ(opened.error, Error::None);
 	auto failing = std::make_unique<FailingSource>(std::move(opened.reader));
-	auto* raw                       = failing.get();
-	drive_options.reconnect         = ArchiveDrive::ReconnectSpec{};
-	drive_options.reconnect->now    = [this]() { return now; };
-	drive_options.reconnect->reopen = [this](std::string*) {
-		return std::move(next_source);
+	auto* raw                    = failing.get();
+	drive_options.reconnect      = ArchiveDrive::ReconnectSpec{};
+	drive_options.reconnect->now = [this]() { return now; };
+	drive_options.reconnect->reopen = [this](std::string*) -> ArchiveDrive::Reopened {
+		return {std::move(next_source), {}};
 	};
 	auto made = ArchiveDrive::Create(
 	        std::move(failing), {}, "", "DOOM", archive.string(), drive_options);
@@ -817,3 +819,142 @@ TEST_F(ArchiveDriveDosTest, AbandonedSearchesAreEvictedBeforeTheSearchStillReadi
 }
 
 } // namespace
+
+// --- Phase 3: what the drive holds for its source ---
+
+namespace {
+
+// Records destruction order: the held resources must go after the source.
+struct DestructionLog {
+	std::vector<std::string> order = {};
+};
+
+struct LoggedHeld final : public ArchiveDrive::HeldResources {
+	DestructionLog* log = nullptr;
+	~LoggedHeld() override
+	{
+		log->order.push_back("held");
+	}
+};
+
+// Forwards every call to an inner reader; only the destructor logs.
+class LoggedSource final : public ArchiveSource {
+public:
+	LoggedSource(std::unique_ptr<ArchiveSource> in, DestructionLog* l)
+	        : inner(std::move(in)),
+	          log(l)
+	{}
+	~LoggedSource() override
+	{
+		log->order.push_back("source");
+	}
+	Format GetFormat() const override
+	{
+		return inner->GetFormat();
+	}
+	Access GetAccess() const override
+	{
+		return inner->GetAccess();
+	}
+	const std::vector<Entry>& Entries() const override
+	{
+		return inner->Entries();
+	}
+	int64_t TotalBytes() const override
+	{
+		return inner->TotalBytes();
+	}
+	int64_t ArchiveLength() const override
+	{
+		return inner->ArchiveLength();
+	}
+	const std::string& IdentityHash() const override
+	{
+		return inner->IdentityHash();
+	}
+	StatPair IndexedStat() const override
+	{
+		return inner->IndexedStat();
+	}
+	Error Materialize(const int o, std::vector<uint8_t>& out, std::string* d) override
+	{
+		return inner->Materialize(o, out, d);
+	}
+	Error MaterializeToFile(const int o, const std::filesystem::path& t,
+	                        std::string* d) override
+	{
+		return inner->MaterializeToFile(o, t, d);
+	}
+	Error MaterializeAll(const std::filesystem::path& dir, std::string* d) override
+	{
+		return inner->MaterializeAll(dir, d);
+	}
+
+private:
+	std::unique_ptr<ArchiveSource> inner = {};
+	DestructionLog* log                  = nullptr;
+};
+
+} // namespace
+
+TEST_F(ArchiveDriveTest, HeldResourcesAreReleasedAfterTheSource)
+{
+	DestructionLog log = {};
+	auto held          = std::make_shared<LoggedHeld>();
+	held->log          = &log;
+	auto source        = std::make_unique<LoggedSource>(
+                Reader(Built("doom.zip", Kind::ZipStored, Game())), &log);
+	ArchiveDrive::Options options = {};
+	options.held                  = held;
+	held.reset();
+	auto made = ArchiveDrive::Create(
+	        std::move(source), nullptr, "", "DOOM", "doom.zip", options);
+	ASSERT_TRUE(made.drive) << made.error;
+	options.held.reset(); // the drive holds the only reference now
+	made.drive.reset();
+	ASSERT_EQ(log.order.size(), 2u);
+	EXPECT_EQ(log.order[0], "source");
+	EXPECT_EQ(log.order[1], "held");
+}
+
+namespace {
+struct NamedHeld final : public ArchiveDrive::HeldResources {
+	std::vector<std::string>* log = nullptr;
+	std::string name              = {};
+	~NamedHeld() override
+	{
+		log->push_back(name);
+	}
+};
+} // namespace
+
+TEST_F(ArchiveDriveStateTest, AReconnectReplacesTheHeldResources)
+{
+	// What the old source read through goes with it; what the fresh one
+	// reads through stays for the drive's life.
+	auto log           = std::vector<std::string>{};
+	auto old_held      = std::make_shared<NamedHeld>();
+	old_held->log      = &log;
+	old_held->name     = "old";
+	drive_options.held = old_held;
+	old_held.reset();
+	const auto archive = Built("doom.zip", Kind::ZipStored, Game());
+	auto drive         = StatefulDrive(archive);
+	ASSERT_TRUE(drive);
+	drive_options.held.reset();
+	// A Ready drive reconnects nothing; a Changed one does.
+	source->fail_with = Error::Changed;
+	EXPECT_FALSE(drive->FileOpen("GAME\\README.TXT", OPEN_READ));
+	ASSERT_EQ(drive->State(), ArchiveMountState::Changed);
+	auto fresh_held  = std::make_shared<NamedHeld>();
+	fresh_held->log  = &log;
+	fresh_held->name = "fresh";
+	next_held        = fresh_held;
+	fresh_held.reset();
+	next_source = FreshReader(archive);
+	auto detail = std::string();
+	ASSERT_TRUE(drive->Reconnect(&detail)) << detail;
+	EXPECT_EQ(log, std::vector<std::string>{"old"});
+	drive.reset();
+	EXPECT_EQ(log, (std::vector<std::string>{"old", "fresh"}));
+}

@@ -27,6 +27,7 @@
 #include "debugger/debugger.h"
 #include "dos/archive/archive_helper_client.h"
 #include "dos/archive/archive_management.h"
+#include "dos/archive/archive_tree.h"
 #include "dos/archive/member_path.h"
 #include "dos/drives.h"
 #include "dos/programs/mount.h"
@@ -470,15 +471,65 @@ static int sidecar_action(const std::string& action)
 	ArchiveMount::Limits limits = {};
 	limits.max_entries          = settings.max_entries;
 	limits.max_total_bytes      = settings.max_size_bytes;
-	const auto identify =
-	        [&](const std::filesystem::path& archive) -> std::optional<std::string> {
+	// A house archive answers for the archive it enters (N3); a nested
+	// record's chain is followed to its leaf (N5). Both need the store,
+	// opened on the first such record only (its open runs a cleanup).
+	auto store_why                       = std::string();
+	ArchiveMount::ArchiveCache* store    = nullptr;
+	bool store_tried                     = false;
+	const auto identify = [&](const std::filesystem::path& archive,
+	                          const std::string& chain) -> std::optional<std::string> {
+		ArchiveMount::ArchiveHelperClient::Options helper = {};
 		auto opened = ArchiveMount::ArchiveHelperClient::Open(archive,
 		                                                      limits,
-		                                                      {});
+		                                                      helper);
 		if (opened.error != ArchiveMount::Error::None || !opened.client) {
 			return {};
 		}
-		return opened.client->IdentityHash();
+		auto members = std::vector<std::string>();
+		if (!chain.empty()) {
+			// A leaf after the chain makes SplitChain cut every
+			// archive name into a level (a trailing one is a file).
+			ArchiveMount::MemberPath spelled = {};
+			spelled.archive                  = archive;
+			spelled.member                   = chain + "/leaf";
+			const auto split = ArchiveMount::SplitChain(spelled);
+			if (!split) {
+				return {};
+			}
+			for (const auto& level : split->levels) {
+				members.push_back(level.archive_member);
+			}
+		} else if (const auto* house = ArchiveMount::HouseArchiveMember(
+		                   opened.client->Entries())) {
+			members.push_back(house->utf8_path);
+		}
+		if (members.empty()) {
+			return opened.client->IdentityHash();
+		}
+		if (!store_tried) {
+			store_tried = true;
+			store       = OpenStore(settings, &store_why);
+			if (!store) {
+				fprintf(stderr, "cannot open the archive cache: %s\n", store_why.c_str());
+			}
+		}
+		if (!store) {
+			return {};
+		}
+		auto error   = ArchiveMount::Error::None;
+		auto detail  = std::string();
+		auto entered = EnterChain(*opened.client,
+		                          archive,
+		                          members,
+		                          *store,
+		                          ChainOptionsFor(settings, limits, helper),
+		                          &error,
+		                          &detail);
+		if (!entered) {
+			return {};
+		}
+		return entered->leaf->IdentityHash();
 	};
 	auto problem  = std::string();
 	auto sidecars = ArchiveManagement::ListSidecars(SavesDirectory(),

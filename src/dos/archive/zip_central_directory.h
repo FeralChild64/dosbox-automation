@@ -24,6 +24,9 @@ struct Record {
 	uint64_t uncompressed_size   = 0;
 	uint64_t local_header_offset = 0;
 	uint32_t external_attributes = 0;
+	// Where the member's bytes start, from the local header's own name
+	// and extra lengths; filled by Read, 0 after a bare Parse.
+	uint64_t data_offset = 0;
 };
 
 enum class Error {
@@ -57,6 +60,11 @@ Result Read(const std::filesystem::path& path, uint64_t max_entries);
 // The same over an open descriptor, which the caller keeps: the read
 // works on a duplicate, so the caller's position is untouched.
 Result Read(int fd, uint64_t max_entries);
+
+// The same over the bytes [offset, offset + length) of the descriptor's
+// file, with every offset in the records relative to that range (the
+// nested design's window). IoFailed when the range runs past the file.
+Result Read(int fd, uint64_t offset, uint64_t length, uint64_t max_entries);
 
 // size bytes at offset through a duplicate of fd; the caller's position
 // is untouched. Truncated when the range runs past the end of the file.

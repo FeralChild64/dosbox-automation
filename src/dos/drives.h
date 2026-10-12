@@ -447,10 +447,21 @@ enum class ArchiveMountState { Ready, Changed, Lost, Disconnected };
 class ArchiveDrive final : public DOS_Drive,
                            public std::enable_shared_from_this<ArchiveDrive> {
 public:
+	// Anything the source reads through and must outlive it: the chain
+	// links of an entered or nested archive (a window's parent, a cache
+	// copy's lease). Opaque here so this header stays free of the helper.
+	struct HeldResources {
+		virtual ~HeldResources() = default;
+	};
+	// What a reopen hands back: the fresh source and what it reads
+	// through, which replaces the drive's held resources after the source.
+	struct Reopened {
+		std::unique_ptr<ArchiveMount::ArchiveSource> source = {};
+		std::shared_ptr<HeldResources> held                 = {};
+	};
 	struct ReconnectSpec {
-		// A new source on the same path, or null with the detail set.
-		std::function<std::unique_ptr<ArchiveMount::ArchiveSource>(std::string* detail)>
-		        reopen               = {};
+		// A new source on the same path, or a null source with the detail set.
+		std::function<Reopened(std::string* detail)> reopen = {};
 		int64_t backoff_seconds      = 5;
 		std::function<int64_t()> now = {}; // unix seconds; empty: the
 		                                   // system clock
@@ -468,6 +479,8 @@ public:
 		// that keeps Cleanup away from it.
 		std::filesystem::path owned_scratch_dir = {};
 		std::shared_ptr<ArchiveMount::FileLock> scratch_lock = {};
+		// Released after the source, by the drive.
+		std::shared_ptr<HeldResources> held = {};
 	};
 	struct CreateResult {
 		enum class Failure {

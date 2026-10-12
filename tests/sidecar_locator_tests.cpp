@@ -179,4 +179,20 @@ TEST_F(SidecarLocatorTest, TheKeyIsTheSanitizedStemAndHash8)
 	EXPECT_EQ(SidecarKey("doom.tar.gz", hash_a), "doom.tar-aaaaaaaa");
 }
 
+TEST_F(SidecarLocatorTest, ACreatedSidecarIsNamedByTheGivenStem)
+{
+	// Nothing recorded: Create, named after the stem the caller gives,
+	// which is the host's for a nested or an entered archive (N5).
+	const auto host    = fs::canonical(archive);
+	const auto by_file = LocateSidecar(saves, host, hash_a, "");
+	EXPECT_EQ(by_file.kind, SidecarLocation::Kind::Create);
+	EXPECT_EQ(by_file.directory.filename().string(), "doom-aaaaaaaa");
+	const auto by_stem = LocateSidecar(saves, host / "game.store.zip", hash_a, "doom");
+	EXPECT_EQ(by_stem.kind, SidecarLocation::Kind::Create);
+	EXPECT_EQ(by_stem.directory.filename().string(), "doom-aaaaaaaa");
+	const auto odd = LocateSidecar(saves, host / "game.store.zip", hash_a, "Odd Name!");
+	EXPECT_EQ(odd.directory.filename().string(), "Odd_Name_-aaaaaaaa");
+	EXPECT_EQ(SidecarKeyForStem("house", hash_a), "house-aaaaaaaa");
+}
+
 } // namespace

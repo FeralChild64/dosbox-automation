@@ -161,6 +161,7 @@ struct SearchCursor {
 } // namespace
 
 struct ArchiveDrive::Impl {
+	std::shared_ptr<HeldResources> held        = {}; // dies after source
 	std::unique_ptr<ArchiveSource> source      = {};
 	std::unique_ptr<ArchiveCache::Lease> lease = {}; // dies before source
 	std::optional<ArchiveTree> tree            = {};
@@ -223,28 +224,29 @@ struct ArchiveDrive::Impl {
 		}
 		auto why   = std::string();
 		auto fresh = options.reconnect->reopen(&why);
-		if (!fresh) {
+		if (!fresh.source) {
 			state = ArchiveMountState::Lost;
 			if (detail) {
 				*detail = why;
 			}
 			return false;
 		}
-		if (fresh->IdentityHash() != source->IdentityHash()) {
+		if (fresh.source->IdentityHash() != source->IdentityHash()) {
 			state = ArchiveMountState::Lost;
 			if (detail) {
 				*detail = "a different archive is at the path now";
 			}
 			return false;
 		}
-		if (lease && !lease->Rebind(*fresh)) {
+		if (lease && !lease->Rebind(*fresh.source)) {
 			state = ArchiveMountState::Lost;
 			if (detail) {
 				*detail = "the cache lease could not follow";
 			}
 			return false;
 		}
-		source = std::move(fresh);
+		source = std::move(fresh.source);
+		held   = std::move(fresh.held); // after the old source is gone
 		state  = ArchiveMountState::Ready;
 		augra::log_info(LogComponent, "%s: reconnected", label.c_str());
 		return true;
@@ -543,6 +545,7 @@ ArchiveDrive::CreateResult ArchiveDrive::Create(
 	drive->impl->lease  = std::move(lease);
 	drive->impl->tree   = std::move(*tree);
 	drive->impl->options = options;
+	drive->impl->held    = std::move(drive->impl->options.held);
 	drive->impl->label   = FoldLabel(label);
 	drive->impl->allocation = ComputeAllocation(drive->impl->tree->TotalBytes());
 	drive->type = DosDriveType::Archive;

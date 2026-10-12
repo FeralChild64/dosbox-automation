@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,13 +18,15 @@
 
 namespace ArchiveMount {
 
-// A resolved intermediate archive in the chain: the lease keeps the
-// cached copy alive, the client reads it.
+// A resolved intermediate archive in the chain. A cached level holds a
+// lease on its copy; a windowed level (nested design 2.1) holds nothing
+// but the client, which reads a range of the level above it.
 struct ChainLink {
 	std::unique_ptr<ArchiveCache::Lease> lease  = {};
 	std::unique_ptr<ArchiveHelperClient> client = {};
-	std::filesystem::path cached_path           = {};
-	std::string resolved_member                 = {};
+	std::filesystem::path cached_path           = {}; // empty for a window
+	std::optional<ByteWindow> window = {}; // absolute in the file read
+	std::string resolved_member      = {};
 };
 
 struct ChainResult {
@@ -36,6 +39,9 @@ struct ChainResult {
 	ArchiveHelperClient* leaf_client = nullptr;
 	// The archive path the leaf client reads (cached copy or host).
 	std::filesystem::path leaf_archive = {};
+	// True when the leaf client reads a window: leaf_archive is then the
+	// path above it joined with the member name, a name with no file.
+	bool leaf_window = false;
 	// N7: total entries across all levels.
 	int64_t total_entries = 0;
 
@@ -56,6 +62,16 @@ struct ChainOptions {
 
 // The levels' archive members joined with '/': "" when not nested.
 std::string ChainPrefix(const ChainedPath& chain);
+
+// A window's absolute offset from its parent's and the member's stored
+// offset; nothing when either is negative or the sum would overflow.
+std::optional<int64_t> ComposeWindowOffset(int64_t parent_offset,
+                                           int64_t stored_offset);
+
+// A chain of intermediate archives with no leaf member: the house rule's
+// entering (N3) and a recorded chain (outer.zip/inner.zip) in the lister.
+ChainedPath ChainOfLevels(const std::filesystem::path& host,
+                          const std::vector<std::string>& members);
 
 // Walks the levels: per intermediate archive, find the member, lease it
 // from the cache, open a helper on the cached copy. The host client is

@@ -6,6 +6,7 @@
 #include <fcntl.h>
 
 #include <filesystem>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include "archive_fixtures.h"
+#include "dos/archive/descriptor.h"
 #include "test_temp_dir.h"
 
 namespace {
@@ -60,6 +62,76 @@ TEST_F(ZipCentralDirectoryTest, ReadsNamesSizesAndCrcs)
 	EXPECT_EQ(result.records[1].local_header_offset, 30u + 8u + 5u);
 	EXPECT_FALSE(result.records[0].utf8_flag);
 	EXPECT_FALSE(result.records[0].encrypted);
+}
+
+TEST_F(ZipCentralDirectoryTest, ASpanReadsAZipEmbeddedAtAnOffset)
+{
+	const auto inner = MakeStoredZip({
+	        {"disk1.img", std::string(600, 'd')},
+	        {"readme.txt", "hi"},
+	});
+	// 104 bytes of something else before, 40 after: the way a stored
+	// member sits inside its outer zip.
+	auto file = std::vector<uint8_t>(104, 0xAA);
+	file.insert(file.end(), inner.begin(), inner.end());
+	file.insert(file.end(), 40, 0xBB);
+	const auto path = Write("outer.bin", file);
+	const int fd    = ArchiveMount::OpenReadOnlyShared(path);
+	ASSERT_GE(fd, 0);
+	const auto length = static_cast<uint64_t>(inner.size());
+
+	const auto by_span = Read(fd, 104, length, 100);
+	ASSERT_EQ(by_span.error, Error::None) << ErrorText(by_span.error);
+	ASSERT_EQ(by_span.records.size(), 2u);
+	EXPECT_EQ(by_span.records[0].raw_name, "disk1.img");
+	// Offsets are relative to the span, as a windowed libarchive sees them.
+	EXPECT_EQ(by_span.records[0].local_header_offset, 0u);
+	EXPECT_EQ(by_span.records[0].data_offset, 30u + 9u);
+	EXPECT_EQ(by_span.records[1].local_header_offset, 30u + 9u + 600u);
+
+	// A span short by one byte at either end is not a zip.
+	EXPECT_EQ(Read(fd, 104, length - 1, 100).error, Error::NotAZip);
+	EXPECT_EQ(Read(fd, 103, length, 100).error, Error::NotAZip);
+	// A span past the end of the file is refused before any read.
+	EXPECT_EQ(Read(fd, 104, static_cast<uint64_t>(file.size()), 100).error,
+	          Error::IoFailed);
+	ArchiveMount::CloseDescriptor(fd);
+}
+
+TEST_F(ZipCentralDirectoryTest, ASpanRefusesAnOffsetThatWrapsBeforeTheWindow)
+{
+	// A zip64 record claiming a local header at 2^64 - 8: the old check
+	// `offset + 30 > size` wraps to 22 and the read lands before the
+	// window, in the outer file's bytes.
+	auto lying           = StoredEntry{};
+	lying.name           = "a.txt";
+	lying.data           = "aaaa";
+	lying.central_offset = std::numeric_limits<uint64_t>::max() - 7;
+	const auto inner     = MakeStoredZip({lying}, "", true);
+	auto file            = std::vector<uint8_t>(104, 0xAA);
+	file.insert(file.end(), inner.begin(), inner.end());
+	const auto path = Write("wrap.bin", file);
+	const int fd    = ArchiveMount::OpenReadOnlyShared(path);
+	ASSERT_GE(fd, 0);
+	const auto result = Read(fd, 104, static_cast<uint64_t>(inner.size()), 100);
+	EXPECT_EQ(result.error, Error::Truncated) << ErrorText(result.error);
+	ArchiveMount::CloseDescriptor(fd);
+}
+
+TEST_F(ZipCentralDirectoryTest, EveryRecordCarriesItsDataOffset)
+{
+	// data_offset comes from the local header's own name and extra
+	// lengths, which the central record does not carry.
+	const auto path   = Write("plain.zip",
+                                MakeStoredZip({
+                                        {"a.txt", "aaaa"},
+                                        {"b.txt",   "bb"},
+        }));
+	const auto result = Read(path, 100);
+	ASSERT_EQ(result.error, Error::None);
+	ASSERT_EQ(result.records.size(), 2u);
+	EXPECT_EQ(result.records[0].data_offset, 30u + 5u);
+	EXPECT_EQ(result.records[1].data_offset, 30u + 5u + 4u + 30u + 5u);
 }
 
 TEST_F(ZipCentralDirectoryTest, ReadsTheSameDirectoryThroughADescriptor)

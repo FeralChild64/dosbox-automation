@@ -2,7 +2,7 @@
 // License: GPL-2.0-or-later. Contact: dosbox-automation-project@trinity2k.net
 //
 #include "dos/programs/archive_images.h"
-#include "dos/archive/archive_identity.h"
+#include "dos/archive/archive_tree.h"
 
 #include "augra/log.h"
 #include "dos/archive/archive_helper_client.h"
@@ -305,8 +305,15 @@ std::shared_ptr<Hold> find_held(const int drive_index, const fs::path& archive,
 		leaf_request.member.member = chained->levels.back().leaf_member;
 	}
 	for (const auto& hold : found->second) {
+		// A short path through a house archive (N4) spells no chain;
+		// the hold that entered it matches on its own member.
+		const bool chain_matches = hold &&
+		                           (hold->chain == chain ||
+		                            (chain.empty() &&
+		                             !hold->house_member.empty() &&
+		                             hold->chain == hold->house_member));
 		if (!hold || !hold->entries || hold->archive != archive ||
-		    hold->key != key || hold->chain != chain) {
+		    hold->key != key || !chain_matches) {
 			continue;
 		}
 		auto rejection   = ArchiveNames::Rejection::None;
@@ -470,23 +477,47 @@ Result Resolve(const Request& given)
 		              "nesting depth exceeds " +
 		                      std::to_string(MaxNestingDepth));
 	}
-	if (!chained->levels.empty()) {
+	// N4: a plain member absent from a house archive's own listing is
+	// looked for inside the archive it enters.
+	auto effective    = *chained;
+	auto house_member = std::string();
+	if (effective.levels.empty() && !request.member.lone) {
+		auto ignored = ArchiveNames::Rejection::None;
+		if (!FindMember(client.Entries(), request.member.member, &ignored)) {
+			if (const auto* house = HouseArchiveMember(client.Entries())) {
+				house_member = house->utf8_path;
+				effective = ChainOfLevels(archive, {house_member});
+				effective.levels.back().leaf_member =
+				        request.member.member;
+			}
+		}
+	}
+	if (!effective.levels.empty()) {
 		ChainOptions chain_opts       = {};
 		chain_opts.helper_options     = options;
 		chain_opts.limits             = limits;
 		chain_opts.sequential_allowed = settings.sequential_allowed;
-		auto chain_result = ResolveChain(*chained, client, archive, *cache, chain_opts);
+		auto chain_result             = ResolveChain(
+                        effective, client, archive, *cache, chain_opts);
 		if (chain_result.error != Error::None) {
 			return refuse(MountPolicy::DenyReasonForArchiveError(
 			                      chain_result.error),
 			              chain_result.detail);
 		}
-		resolve_client      = chain_result.leaf_client;
-		resolve_archive     = chain_result.leaf_archive;
-		hold->chain_links   = std::move(chain_result.links);
-		hold->chain         = ChainPrefix(*chained);
+		resolve_client     = chain_result.leaf_client;
+		resolve_archive    = chain_result.leaf_archive;
+		hold->chain_links  = std::move(chain_result.links);
+		hold->chain        = ChainPrefix(effective);
+		hold->house_member = house_member;
+		augra::log_info(LogComponent,
+		                "%s: nested chain %s, %zu level(s), leaf %s",
+		                PathToUtf8(archive).c_str(),
+		                hold->chain.c_str(),
+		                hold->chain_links.size(),
+		                chain_result.leaf_window ? "read in place"
+		                                         : "from the cache");
 		leaf_request.member = MemberPath{resolve_archive,
-		                                 chained->levels.back().leaf_member};
+		                                 effective.levels.back().leaf_member};
 	}
 
 	auto entries = std::make_shared<const std::vector<Entry>>(
@@ -598,22 +629,22 @@ Result Resolve(const Request& given)
 		auto lock        = std::optional<FileLock>();
 		auto undo        = PlacementUndo();
 		undo.lock        = &lock;
-		// A nested member's sidecar is keyed on the host archive and
-		// the chain, never on the cache's copy of the inner archive.
-		const auto sidecar_archive = hold->chain.empty()
-		                                   ? archive
-		                                   : archive / fs::path(hold->chain);
-		const auto sidecar_identity =
-		        hold->chain.empty()
-		                ? client.IdentityHash()
-		                : ArchiveIdentity::ChainIdentity(client.IdentityHash(),
-		                                                 hold->chain);
+		// N5: a nested member's sidecar carries the leaf archive's
+		// identity under the host file's name; the record names the
+		// host and the chain (outer.zip/inner.zip) for the lister.
+		const auto sidecar_archive   = hold->chain.empty()
+		                                     ? archive
+		                                     : archive / fs::path(hold->chain);
+		const auto& sidecar_identity = resolve_client->IdentityHash();
+		const auto sidecar_stem      = PathToUtf8(archive.stem());
 		if (!place_dir.empty()) {
-			per_archive = SidecarKey(sidecar_archive, sidecar_identity);
+			per_archive = SidecarKeyForStem(sidecar_stem,
+			                                sidecar_identity);
 		} else {
 			auto place = PlaceSidecar(leaf_request.sidecar_path,
 			                          sidecar_archive,
-			                          sidecar_identity);
+			                          sidecar_identity,
+			                          sidecar_stem);
 			if (place.refusal.reason != DenyReason::None) {
 				return refuse(place.refusal.reason, place.detail);
 			}
@@ -623,7 +654,7 @@ Result Resolve(const Request& given)
 			if (!EnsureSidecarRecord(place.directory,
 			                         sidecar_archive,
 			                         sidecar_identity,
-			                         client,
+			                         *resolve_client,
 			                         &detail)) {
 				return refuse(DenyReason::SidecarUnavailable, detail);
 			}

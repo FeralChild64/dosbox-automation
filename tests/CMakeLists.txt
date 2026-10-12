@@ -59,6 +59,7 @@ add_executable(dosbox_tests
     archive_member_path_tests.cpp
     archive_random_name_tests.cpp
     archive_reader_tests.cpp
+    archive_window_tests.cpp
     archive_toml_tests.cpp
     archive_tree_tests.cpp
     archive_zip_central_directory_tests.cpp

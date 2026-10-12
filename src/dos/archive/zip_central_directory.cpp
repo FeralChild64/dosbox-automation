@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <optional>
 #include <system_error>
 
 #if defined(WIN32)
@@ -243,22 +244,27 @@ Result Parse(const std::span<const uint8_t> central_directory,
 // libarchive decodes by the local header and only warns when its CRC or
 // size disagrees with the directory, so the bytes would pass under the
 // directory's name. A 0 (or 0xffffffff) local field defers, as libarchive's does.
-static Error check_local_headers(File& file, const std::vector<Record>& records,
-                                 const uint64_t file_size)
+static Error check_local_headers(File& file, std::vector<Record>& records,
+                                 const uint64_t file_size, const uint64_t base)
 {
 	std::vector<uint8_t> local = {};
-	for (const auto& record : records) {
-		if (record.local_header_offset + LocalHeaderSize > file_size) {
+	for (auto& record : records) {
+		if (record.local_header_offset > file_size ||
+		    LocalHeaderSize > file_size - record.local_header_offset) {
 			return Error::Truncated;
 		}
-		if (!read_at(file.handle, record.local_header_offset, local, LocalHeaderSize)) {
+		if (!read_at(file.handle,
+		             base + record.local_header_offset,
+		             local,
+		             LocalHeaderSize)) {
 			return Error::IoFailed;
 		}
 		if (le32(local.data()) != LocalHeaderSignature ||
 		    le16(local.data() + 8) != record.method) {
 			return Error::LocalHeaderMismatch;
 		}
-		// Implode's window and tree bits decide the decoding (APPNOTE 4.4.4).
+		// Implode's window and tree bits decide the decoding
+		// (APPNOTE 4.4.4).
 		if (record.method == 6 &&
 		    ((le16(local.data() + 6) ^ record.flags) & 0x0006) != 0) {
 			return Error::LocalHeaderMismatch;
@@ -277,18 +283,20 @@ static Error check_local_headers(File& file, const std::vector<Record>& records,
 		    usize != record.uncompressed_size) {
 			return Error::LocalHeaderMismatch;
 		}
+		record.data_offset = record.local_header_offset +
+		                     LocalHeaderSize + le16(local.data() + 26) +
+		                     le16(local.data() + 28);
 	}
 	return Error::None;
 }
 
-static Result read_from(File& file, const uint64_t max_entries)
+// The bytes [base, base + file_size) of the file read as the archive;
+// base is 0 for a whole file and the window's offset for a nested zip
+// read in place, with every offset in the records relative to it.
+static Result read_from(File& file, const uint64_t base,
+                        const uint64_t file_size, const uint64_t max_entries)
 {
 	auto result = Result{};
-	if (seek_to(file.handle, 0, SEEK_END) != 0) {
-		result.error = Error::NotAZip;
-		return result;
-	}
-	const auto file_size = static_cast<uint64_t>(tell(file.handle));
 	if (file_size < EndRecordSize) {
 		result.error = Error::NotAZip;
 		return result;
@@ -300,7 +308,7 @@ static Result read_from(File& file, const uint64_t max_entries)
 	const auto tail_size = static_cast<size_t>(
 	        std::min<uint64_t>(file_size, LibarchiveSearchWindow));
 	std::vector<uint8_t> tail = {};
-	if (!read_at(file.handle, file_size - tail_size, tail, tail_size)) {
+	if (!read_at(file.handle, base + file_size - tail_size, tail, tail_size)) {
 		result.error = Error::IoFailed;
 		return result;
 	}
@@ -328,7 +336,7 @@ static Result read_from(File& file, const uint64_t max_entries)
 	if (eocd >= Zip64LocatorSize) {
 		std::vector<uint8_t> locator = {};
 		if (read_at(file.handle,
-		            eocd_file_offset - Zip64LocatorSize,
+		            base + eocd_file_offset - Zip64LocatorSize,
 		            locator,
 		            Zip64LocatorSize) &&
 		    le32(locator.data()) == Zip64LocatorSignature &&
@@ -338,12 +346,13 @@ static Result read_from(File& file, const uint64_t max_entries)
 			// the record's own size field, 56 to 16384 with the
 			// 12-byte head, all of it readable; the signature is
 			// not checked
-			if (zip64_offset + Zip64EndRecordSize <= file_size &&
-			    read_at(file.handle, zip64_offset, z64, Zip64EndRecordSize)) {
+			if (zip64_offset <= file_size &&
+			    Zip64EndRecordSize <= file_size - zip64_offset &&
+			    read_at(file.handle, base + zip64_offset, z64, Zip64EndRecordSize)) {
 				const auto record_size = le64(z64.data() + 4) + 12;
 				if (record_size >= Zip64EndRecordSize &&
 				    record_size <= Zip64EndRecordMaxSize &&
-				    zip64_offset + record_size <= file_size &&
+				    record_size <= file_size - zip64_offset &&
 				    le32(z64.data() + 16) == 0 &&
 				    le32(z64.data() + 20) == 0 &&
 				    le64(z64.data() + 24) == le64(z64.data() + 32)) {
@@ -384,7 +393,7 @@ static Result read_from(File& file, const uint64_t max_entries)
 		return result;
 	}
 	std::vector<uint8_t> directory = {};
-	if (!read_at(file.handle, cd_start, directory, static_cast<size_t>(cd_size))) {
+	if (!read_at(file.handle, base + cd_start, directory, static_cast<size_t>(cd_size))) {
 		result.error = Error::Truncated;
 		return result;
 	}
@@ -408,8 +417,20 @@ static Result read_from(File& file, const uint64_t max_entries)
 		result.error = Error::DuplicateOffset;
 		return result;
 	}
-	result.error = check_local_headers(file, result.records, file_size);
+	result.error = check_local_headers(file, result.records, file_size, base);
 	return result;
+}
+
+static std::optional<uint64_t> size_of(File& file)
+{
+	if (seek_to(file.handle, 0, SEEK_END) != 0) {
+		return {};
+	}
+	const auto end = tell(file.handle);
+	if (end < 0) {
+		return {};
+	}
+	return static_cast<uint64_t>(end);
 }
 
 Result Read(const std::filesystem::path& path, const uint64_t max_entries)
@@ -427,7 +448,13 @@ Result Read(const std::filesystem::path& path, const uint64_t max_entries)
 		result.error = Error::IoFailed;
 		return result;
 	}
-	return read_from(file, max_entries);
+	const auto size = size_of(file);
+	if (!size) {
+		auto result  = Result{};
+		result.error = Error::NotAZip;
+		return result;
+	}
+	return read_from(file, 0, *size, max_entries);
 }
 
 namespace {
@@ -442,7 +469,7 @@ public:
 #if defined(WIN32)
 		caller_offset    = _telli64(fd);
 		const int dup_fd = ArchiveMount::DuplicateNoInherit(fd);
-		file.handle      = dup_fd >= 0 ? _fdopen(dup_fd, "rb") : nullptr;
+		file.handle = dup_fd >= 0 ? _fdopen(dup_fd, "rb") : nullptr;
 		if (!file.handle && dup_fd >= 0) {
 			_close(dup_fd);
 		}
@@ -484,12 +511,34 @@ private:
 Result Read(const int fd, const uint64_t max_entries)
 {
 	DuplicateFile dup(fd);
+	auto result = Result{};
 	if (!dup.file.handle) {
-		auto result  = Result{};
 		result.error = Error::IoFailed;
 		return result;
 	}
-	return read_from(dup.file, max_entries);
+	const auto size = size_of(dup.file);
+	if (!size) {
+		result.error = Error::IoFailed;
+		return result;
+	}
+	return read_from(dup.file, 0, *size, max_entries);
+}
+
+Result Read(const int fd, const uint64_t offset, const uint64_t length,
+            const uint64_t max_entries)
+{
+	DuplicateFile dup(fd);
+	auto result = Result{};
+	if (!dup.file.handle) {
+		result.error = Error::IoFailed;
+		return result;
+	}
+	const auto size = size_of(dup.file);
+	if (!size || offset > *size || length > *size - offset) {
+		result.error = Error::IoFailed;
+		return result;
+	}
+	return read_from(dup.file, offset, length, max_entries);
 }
 
 Error ReadRange(const int fd, const uint64_t offset, const uint64_t size,

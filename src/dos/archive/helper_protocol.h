@@ -20,7 +20,7 @@
 namespace ArchiveHelper {
 
 constexpr uint32_t Magic    = 0x48414244u; // "DBAH" read as little-endian
-constexpr uint16_t Version  = 2;
+constexpr uint16_t Version  = 3;
 constexpr size_t HeaderSize = 12;
 
 // Requests carry a path and limits; the index reply for 65536 entries
@@ -99,6 +99,10 @@ struct OpenRequest {
 	// (the same value as in the engine), 0 when none.
 	bool descriptor_follows = false;
 	uint64_t handle         = 0;
+	// Nested design 2.1: the archive is this range of the descriptor's
+	// file; both zero for the whole file.
+	int64_t window_offset = 0;
+	int64_t window_length = 0;
 };
 
 struct IndexReply {
@@ -127,8 +131,11 @@ struct StatusReply {
 
 // Nothing the helper reports is trusted: the reason an index breaks the
 // limits or the reader's own shape (sizes, ordinals, paths), or nothing.
-std::optional<std::string> CheckIndex(const IndexReply& index,
-                                      const ArchiveMount::Limits& limits);
+// expected_archive_length is the window's length or the file's size, the
+// bound every stored offset is checked against.
+std::optional<std::string> CheckIndex(
+        const IndexReply& index, const ArchiveMount::Limits& limits,
+        std::optional<int64_t> expected_archive_length = {});
 
 std::vector<uint8_t> EncodeHelloReply(const HelloReply& v);
 bool DecodeHelloReply(std::span<const uint8_t> bytes, HelloReply& v);

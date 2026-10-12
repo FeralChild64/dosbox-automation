@@ -69,10 +69,11 @@ struct SidecarInfo {
 	ArchiveState state              = ArchiveState::Missing;
 };
 
-// The archive's identity hash, nothing when it cannot be indexed. The
-// command line passes the helper (D15), so no archive is parsed in-process.
-using IdentifyArchive =
-        std::function<std::optional<std::string>(const std::filesystem::path&)>;
+// The archive's identity hash through the helper (D15), nothing when it
+// cannot be indexed: the file itself for an empty chain (a house archive
+// answers for what it enters, N3), else the leaf of the chain below it.
+using IdentifyArchive = std::function<std::optional<std::string>(
+        const std::filesystem::path& host, const std::string& chain)>;
 
 // Every directory under saves with a readable record; links and
 // record-less folders are skipped. identify runs once per present archive;

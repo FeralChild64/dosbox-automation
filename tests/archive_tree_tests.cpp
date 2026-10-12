@@ -111,6 +111,57 @@ TEST(ArchiveTree, SoloRootDirectoryIsTheOneTopDirectoryEverythingLivesUnder)
 	EXPECT_EQ(SoloRootDirectory(implied), "GAME");
 }
 
+TEST(ArchiveTree, HouseArchiveMemberIsTheOneArchiveBesideInfoToml)
+{
+	const auto house = std::vector<Entry>{
+	        File(0, "info.toml", "INFO.TOML", 300),
+	        File(1, "game.store.zip", "GAME~1.ZIP", 5000),
+	};
+	const auto* member = HouseArchiveMember(house);
+	ASSERT_NE(member, nullptr);
+	EXPECT_EQ(member->utf8_path, "game.store.zip");
+	// The inner archive alone is a house archive too.
+	const auto alone_entries = std::vector<Entry>{
+	        File(0, "game.zip", "GAME.ZIP", 5000)};
+	const auto* alone = HouseArchiveMember(alone_entries);
+	ASSERT_NE(alone, nullptr);
+	EXPECT_EQ(alone->ordinal, 0);
+	// Case does not matter for info.toml.
+	const auto upper = std::vector<Entry>{File(0, "INFO.TOML", "INFO.TOML", 1),
+	                                      File(1, "x.7z", "X.7Z", 1)};
+	EXPECT_NE(HouseArchiveMember(upper), nullptr);
+}
+
+TEST(ArchiveTree, HouseArchiveMemberRefusesTheNearMisses)
+{
+	// An archive plus a readme: a wild archive, a file on the drive.
+	EXPECT_EQ(HouseArchiveMember({File(0, "game.zip", "GAME.ZIP", 1),
+	                              File(1, "readme.txt", "README.TXT", 1)}),
+	          nullptr);
+	// Two archives.
+	EXPECT_EQ(HouseArchiveMember({File(0, "a.zip", "A.ZIP", 1),
+	                              File(1, "b.zip", "B.ZIP", 1)}),
+	          nullptr);
+	// A directory beside the archive, even an empty one.
+	EXPECT_EQ(HouseArchiveMember({Dir(0, "docs", "DOCS"),
+	                              File(1, "game.zip", "GAME.ZIP", 1)}),
+	          nullptr);
+	// info.toml in a subdirectory is not the house layout.
+	EXPECT_EQ(HouseArchiveMember({Dir(0, "meta", "META"),
+	                              File(1, "meta/info.toml", "META\\INFO.TOML", 1),
+	                              File(2, "game.zip", "GAME.ZIP", 1)}),
+	          nullptr);
+	// A directory named like an archive is not a member to enter.
+	EXPECT_EQ(HouseArchiveMember({Dir(0, "game.zip", "GAME.ZIP")}), nullptr);
+	// Only info.toml, or nothing.
+	EXPECT_EQ(HouseArchiveMember({File(0, "info.toml", "INFO.TOML", 1)}), nullptr);
+	EXPECT_EQ(HouseArchiveMember({}), nullptr);
+	// A disk image is not an archive name.
+	EXPECT_EQ(HouseArchiveMember({File(0, "info.toml", "INFO.TOML", 1),
+	                              File(1, "disk1.img", "DISK1.IMG", 1)}),
+	          nullptr);
+}
+
 TEST(ArchiveTree, RefusesAMissingParentADuplicateAndAFileUsedAsADirectory)
 {
 	auto error = std::string();

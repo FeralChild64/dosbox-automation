@@ -13,6 +13,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <thread>
 #include <tuple>
 
@@ -185,10 +186,12 @@ TEST_F(ArchiveHelperClientTest, PkzipShrunkAndImplodedMembersComeThroughTheHelpe
 		auto client = OpenOk(legacy / zip);
 		ASSERT_NE(client, nullptr) << zip;
 		for (const auto& e : client->Entries()) {
-			std::ifstream in(legacy / "inputs" / e.utf8_path, std::ios::binary);
+			std::ifstream in(legacy / "inputs" / e.utf8_path,
+			                 std::ios::binary);
 			const std::string expected{std::istreambuf_iterator<char>(in),
 			                           std::istreambuf_iterator<char>()};
-			EXPECT_EQ(Read(*client, e.ordinal), expected) << zip << " " << e.utf8_path;
+			EXPECT_EQ(Read(*client, e.ordinal), expected)
+			        << zip << " " << e.utf8_path;
 		}
 	}
 }
@@ -211,6 +214,133 @@ TEST_F(ArchiveHelperClientTest, MaterializeToFileWritesTheWholeMember)
 
 // Plan 4b: the helper serves the single-image containers with the same
 // reader, so the index and the bytes match the in-process ones.
+namespace {
+std::string slurp_file(const fs::path& path)
+{
+	std::ifstream in(path, std::ios::binary);
+	std::stringstream out;
+	out << in.rdbuf();
+	return out.str();
+}
+} // namespace
+
+TEST_F(ArchiveHelperClientTest, AWindowThroughTheHelperMatchesTheInnerZipAsAFile)
+{
+	const auto image = std::string(4096, 'd');
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 { "disk1.img", image},
+                                         {"readme.txt",  "hi"}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"inner.zip", slurp_file(inner)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const Entry* member = nullptr;
+	for (const auto& e : host->Entries()) {
+		if (e.utf8_path == "inner.zip") {
+			member = &e;
+		}
+	}
+	ASSERT_NE(member, nullptr);
+	ASSERT_GE(member->stored_offset, 0);
+
+	auto windowed = ArchiveHelperClient::OpenWindow(*host,
+	                                                member->stored_offset,
+	                                                member->size,
+	                                                outer / "inner.zip",
+	                                                limits,
+	                                                options);
+	ASSERT_EQ(windowed.error, Error::None) << windowed.detail;
+	auto as_file = OpenOk(inner);
+	ASSERT_TRUE(as_file);
+	EXPECT_EQ(windowed.client->IdentityHash(), as_file->IdentityHash());
+	EXPECT_EQ(windowed.client->ArchiveLength(), member->size);
+	EXPECT_EQ(windowed.client->IndexedStat().size, host->IndexedStat().size);
+	ASSERT_EQ(windowed.client->Entries().size(), 2u);
+	EXPECT_EQ(Read(*windowed.client, 0), image);
+	EXPECT_EQ(windowed.client->Window().offset, member->stored_offset);
+	EXPECT_EQ(windowed.client->Window().length, member->size);
+	EXPECT_EQ(host->Window().length, 0);
+}
+
+TEST_F(ArchiveHelperClientTest, AWindowSurvivesTheHelpersRespawn)
+{
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.txt", "aaaa"}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"inner.zip", slurp_file(inner)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto& m = host->Entries().front();
+	auto windowed = ArchiveHelperClient::OpenWindow(
+	        *host, m.stored_offset, m.size, outer / "inner.zip", limits, options);
+	ASSERT_EQ(windowed.error, Error::None) << windowed.detail;
+	ASSERT_TRUE(windowed.client->ArmTestCrash(0, /*persistent=*/false));
+	EXPECT_EQ(Read(*windowed.client, 0), "aaaa");
+	EXPECT_EQ(windowed.client->RespawnCount(), 1);
+}
+
+TEST_F(ArchiveHelperClientTest, AWindowPastTheHostFileIsRefused)
+{
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.txt", "aaaa"}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	auto windowed = ArchiveHelperClient::OpenWindow(
+	        *host, host->ArchiveLength() - 4, 100, outer / "x", limits, options);
+	EXPECT_EQ(windowed.error, Error::OpenFailed);
+	EXPECT_NE(windowed.detail.find("window"), std::string::npos)
+	        << windowed.detail;
+}
+
+TEST_F(ArchiveHelperClientTest, AWindowedZipOutlivesTheHostFilesReplacement)
+{
+	// D16: the window lives on the kept descriptor. Renaming another
+	// file over the host changes nothing the client reads.
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.txt", "aaaa"}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"inner.zip", slurp_file(inner)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto& m = host->Entries().front();
+	auto windowed = ArchiveHelperClient::OpenWindow(
+	        *host, m.stored_offset, m.size, outer / "inner.zip", limits, options);
+	ASSERT_EQ(windowed.error, Error::None) << windowed.detail;
+	const auto other   = Built("other.zip",
+                                 Kind::ZipStored,
+	                           {
+                                         {"z.txt", std::string(9000, 'z')}
+        });
+	std::error_code ec = {};
+	fs::rename(other, outer, ec);
+	if (ec) {
+		GTEST_SKIP() << "rename over an open file refused here: "
+		             << ec.message();
+	}
+	EXPECT_EQ(Read(*windowed.client, 0), "aaaa");
+}
+
 TEST_F(ArchiveHelperClientTest, ContainersComeThroughTheHelper)
 {
 	std::string floppy(368640, '\0');
@@ -220,9 +350,10 @@ TEST_F(ArchiveHelperClientTest, ContainersComeThroughTheHelper)
 	const auto iso = ArchiveFixtures::MinimalIso() + std::string(65536, 'i');
 	ASSERT_TRUE(WriteCompressed(tmp_dir / "disk1.img.xz", Filter::Xz, floppy));
 	ASSERT_TRUE(WriteIsz(tmp_dir / "game.isz", iso, IszChunk::Bzip2));
-	for (const auto& [name, bytes, format] :
-	     {std::tuple{std::string("disk1.img.xz"), floppy, Format::Raw},
-	      std::tuple{std::string("game.isz"), iso, Format::Isz}}) {
+	for (const auto& [name, bytes, format] : {
+	             std::tuple{std::string("disk1.img.xz"), floppy, Format::Raw},
+	             std::tuple{    std::string("game.isz"),    iso, Format::Isz}
+        }) {
 		auto client = OpenOk(tmp_dir / name);
 		ASSERT_TRUE(client) << name;
 		EXPECT_EQ(client->GetFormat(), format) << name;
@@ -230,7 +361,8 @@ TEST_F(ArchiveHelperClientTest, ContainersComeThroughTheHelper)
 		EXPECT_TRUE(Read(*client, 0) == bytes) << name;
 		const auto target = tmp_dir / ("out-" + name);
 		auto detail       = std::string();
-		ASSERT_EQ(client->MaterializeToFile(0, target, &detail), Error::None) << detail;
+		ASSERT_EQ(client->MaterializeToFile(0, target, &detail), Error::None)
+		        << detail;
 		std::ifstream in(target, std::ios::binary);
 		const auto written = std::string(std::istreambuf_iterator<char>(in),
 		                                 std::istreambuf_iterator<char>());
@@ -606,7 +738,7 @@ TEST_F(ArchiveHelperClientTest, TheActivityShowsAMemberWhileTheHelperWorks)
 	        {"a.txt", "a"},
 	        {"big.bin", std::string(9000, 'b')},
 	};
-	const auto path = Built("doom.zip", Kind::ZipStored, entries);
+	const auto path      = Built("doom.zip", Kind::ZipStored, entries);
 	options.base_timeout = 500ms;
 	auto client          = OpenOk(path);
 	ASSERT_TRUE(client);
@@ -662,8 +794,8 @@ TEST_F(ArchiveHelperClientTest, TheIdentificationAndEachRequestSetTheActivity)
 	        {"dir/b.txt", "bb"},
 	};
 	const auto path = Built("keen.tar", Kind::Tar, entries);
-	auto observing = std::make_unique<ObserverScope>();
-	auto client    = OpenOk(path);
+	auto observing  = std::make_unique<ObserverScope>();
+	auto client     = OpenOk(path);
 	ASSERT_TRUE(client);
 	EXPECT_EQ(Read(*client, 0), "a");
 	auto detail = std::string();

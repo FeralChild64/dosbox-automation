@@ -10,6 +10,7 @@
 #include "dos/archive/archive_helper_client.h"
 #include "dos/archive/archive_lock.h"
 #include "dos/archive/archive_tree.h"
+#include "dos/archive/chain_resolver.h"
 #include "dos/archive/head_sniff.h"
 #include "dos/archive/member_path.h"
 #include "dos/archive/sidecar_locator.h"
@@ -179,7 +180,8 @@ MountVerdict Denied(const DenyReason reason)
 
 // Design D2 without the lock, shared with the image copies of 4a (D17).
 SidecarPlace PlaceSidecar(const std::string& sidecar_path, const std_fs::path& archive,
-                          const std::string_view identity_hash)
+                          const std::string_view identity_hash,
+                          const std::string_view key_stem)
 {
 	SidecarPlace place = {};
 	std::error_code ec = {};
@@ -200,7 +202,7 @@ SidecarPlace PlaceSidecar(const std::string& sidecar_path, const std_fs::path& a
 	const auto saves = SavesDirectory();
 	std_fs::create_directories(saves, ec);
 	std_fs::permissions(saves, std_fs::perms::owner_all, ec);
-	auto location = LocateSidecar(saves, archive, identity_hash);
+	auto location = LocateSidecar(saves, archive, identity_hash, key_stem);
 	switch (location.kind) {
 	case SidecarLocation::Kind::ByPath:
 		place.directory = location.directory;
@@ -251,6 +253,43 @@ SidecarPlace PlaceSidecar(const std::string& sidecar_path, const std_fs::path& a
 		break;
 	}
 	return place;
+}
+
+ChainOptions ChainOptionsFor(const ArchiveSettings& settings, const Limits& limits,
+                             const ArchiveHelperClient::Options& helper)
+{
+	ChainOptions out       = {};
+	out.helper_options     = helper;
+	out.limits             = limits;
+	out.sequential_allowed = settings.sequential_allowed;
+	return out;
+}
+
+std::optional<Entered> EnterChain(ArchiveHelperClient& host,
+                                  const std_fs::path& host_path,
+                                  const std::vector<std::string>& members,
+                                  ArchiveCache& cache, const ChainOptions& options,
+                                  Error* error, std::string* detail)
+{
+	assert(!members.empty());
+	const auto chain = ChainOfLevels(host_path, members);
+	auto result      = ResolveChain(chain, host, host_path, cache, options);
+	if (result.error != Error::None || result.links.empty()) {
+		if (error) {
+			*error = result.error == Error::None ? Error::OpenFailed
+			                                     : result.error;
+		}
+		if (detail) {
+			*detail = result.detail;
+		}
+		return {};
+	}
+	Entered out = {};
+	out.chain   = ChainPrefix(chain);
+	out.window  = result.leaf_window;
+	out.leaf    = std::move(result.links.back().client);
+	out.links   = std::move(result.links);
+	return out;
 }
 
 // A fresh record for a created sidecar; an existing one is the union's.
@@ -493,7 +532,49 @@ bool MOUNT::MountArchive(MountParameters& params)
 		return false;
 	}
 
-	auto leased = cache->Acquire(*opened.client, resolved);
+	// N3: a house archive is entered into its one member; the leaf
+	// client is the drive's source, the chain's links ride with the drive.
+	auto held                             = std::make_shared<ChainHold>();
+	std::unique_ptr<ArchiveSource> source = {};
+	auto source_path                      = resolved;
+	auto house_member                     = std::string();
+	if (const auto* house = HouseArchiveMember(opened.client->Entries())) {
+		house_member = house->utf8_path;
+		auto error   = Error::None;
+		auto entered = EnterChain(*opened.client,
+		                          resolved,
+		                          {house_member},
+		                          *cache,
+		                          ChainOptionsFor(settings, limits, options),
+		                          &error,
+		                          &detail);
+		if (!entered) {
+			drop_scratch();
+			const auto denied = Denied(
+			        MountPolicy::DenyReasonForArchiveError(error));
+			if (MountPolicy::verdict_hook) {
+				MountPolicy::verdict_hook(raw, denied);
+			}
+			ReportMountDenied(params.paths[0], denied, detail);
+			return false;
+		}
+		WriteOut(MSG_Get("PROGRAM_MOUNT_ARCHIVE_ENTERED"),
+		         house_member.c_str());
+		augra::log_info(LogComponent,
+		                "%s: entered %s (N3, %s)",
+		                PathToUtf8(resolved).c_str(),
+		                house_member.c_str(),
+		                entered->window ? "read in place" : "from the cache");
+		source      = std::move(entered->leaf);
+		held->links = std::move(entered->links);
+		source_path = resolved / std_fs::path(house_member);
+		opened.client->Close();
+		opened.client.reset();
+	} else {
+		source = std::move(opened.client);
+	}
+
+	auto leased = cache->Acquire(*source, source_path);
 	if (leased.status != CacheStatus::Ok) {
 		drop_scratch();
 		ReportMountDenied(params.paths[0],
@@ -505,13 +586,13 @@ bool MOUNT::MountArchive(MountParameters& params)
 
 	auto root = NormalizeRoot(params.archive_root);
 	if (root.empty()) {
-		root = SoloRootDirectory(opened.client->Entries());
+		root = SoloRootDirectory(source->Entries());
 		if (!root.empty()) {
 			WriteOut(MSG_Get("PROGRAM_MOUNT_ARCHIVE_ROOT_USED"),
 			         root.c_str());
 			augra::log_info(LogComponent,
 			                "%s: the root is %s (D10)",
-			                PathToUtf8(resolved).c_str(),
+			                PathToUtf8(source_path).c_str(),
 			                root.c_str());
 		}
 	}
@@ -523,10 +604,11 @@ bool MOUNT::MountArchive(MountParameters& params)
 	drive_options.memory_limit_bytes    = settings.memory_limit_bytes;
 	drive_options.owned_scratch_dir     = scratch->dir;
 	drive_options.scratch_lock          = scratch->lock;
+	drive_options.held                  = held;
 	drive_options.reconnect             = ArchiveDrive::ReconnectSpec{};
 	drive_options.reconnect->reopen =
-	        [resolved, limits, options](
-	                std::string* why) -> std::unique_ptr<ArchiveSource> {
+	        [resolved, limits, options, settings, house_member](
+	                std::string* why) -> ArchiveDrive::Reopened {
 		auto again = ArchiveHelperClient::Open(resolved, limits, options);
 		if (again.error != Error::None) {
 			if (why) {
@@ -535,14 +617,48 @@ bool MOUNT::MountArchive(MountParameters& params)
 			}
 			return {};
 		}
-		return std::move(again.client);
+		if (house_member.empty()) {
+			return {std::move(again.client), {}};
+		}
+		// An entered drive re-enters; the drive compares identities and
+		// takes the fresh links in place of the old (a changed host has
+		// a new cache entry).
+		const auto* house = HouseArchiveMember(again.client->Entries());
+		if (!house || house->utf8_path != house_member) {
+			if (why) {
+				*why = "the archive no longer enters " + house_member;
+			}
+			return {};
+		}
+		auto store_why = std::string();
+		auto* store    = OpenStore(settings, &store_why);
+		if (!store) {
+			if (why) {
+				*why = store_why;
+			}
+			return {};
+		}
+		auto error   = Error::None;
+		auto entered = EnterChain(*again.client,
+		                          resolved,
+		                          {house_member},
+		                          *store,
+		                          ChainOptionsFor(settings, limits, options),
+		                          &error,
+		                          why);
+		if (!entered) {
+			return {};
+		}
+		auto fresh_held   = std::make_shared<ChainHold>();
+		fresh_held->links = std::move(entered->links);
+		return {std::move(entered->leaf), std::move(fresh_held)};
 	};
 
-	auto made = ArchiveDrive::Create(std::move(opened.client),
+	auto made = ArchiveDrive::Create(std::move(source),
 	                                 std::move(leased.lease),
 	                                 root,
 	                                 label,
-	                                 resolved.string(),
+	                                 PathToUtf8(source_path),
 	                                 drive_options);
 	if (!made.drive) {
 		drop_scratch();

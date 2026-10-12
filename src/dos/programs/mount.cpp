@@ -2081,6 +2081,8 @@ void MOUNT::AddMessages()
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_IDENTIFYING", "MOUNT: identifying %s ...\n");
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_ROOT_USED",
 	        "Using %s as the root of the archive.\n");
+	MSG_Add("PROGRAM_MOUNT_ARCHIVE_ENTERED",
+	        "Entering %s inside the archive.\n");
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_UNSUPPORTED", ArchiveUnsupportedMessage);
 	MSG_Add("PROGRAM_MOUNT_ARCHIVE_REFUSED",
 	        "%s cannot be mounted as an archive: %s.\n%s");

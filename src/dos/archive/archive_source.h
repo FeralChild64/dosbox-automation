@@ -58,12 +58,23 @@ struct Entry {
 	int64_t mtime         = 0;
 	bool has_crc          = false;
 	uint32_t crc32        = 0;
+	// Nested design 2.2: where the member's bytes start when they can be
+	// read in place as an archive (archive-named, stored, unencrypted, a
+	// zip signature first, inside the file); -1 otherwise and for a directory.
+	int64_t stored_offset = -1;
 };
 
 // The archive file's size and mtime when it was indexed (design 1.6).
 struct StatPair {
 	int64_t size  = 0;
 	int64_t mtime = 0;
+};
+
+// A byte range of a file read as an archive in its own right (nested
+// design N6). Offsets are absolute in the file the descriptor names.
+struct ByteWindow {
+	int64_t offset = 0;
+	int64_t length = 0;
 };
 
 // The in-process reader and the helper client both implement this, so

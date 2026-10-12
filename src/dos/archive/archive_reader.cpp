@@ -25,10 +25,12 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <random>
 #include <span>
@@ -60,24 +62,41 @@ struct Descriptor {
 	}
 };
 
-int duplicate_at_start(const int fd)
+int duplicate_at(const int fd, const int64_t offset)
 {
 	const auto dup_fd = DuplicateNoInherit(fd);
 	if (dup_fd >= 0) {
 #if defined(WIN32)
-		_lseeki64(dup_fd, 0, SEEK_SET);
+		_lseeki64(dup_fd, offset, SEEK_SET);
 #else
-		lseek(dup_fd, 0, SEEK_SET);
+		lseek(dup_fd, offset, SEEK_SET);
 #endif
 	}
 	return dup_fd;
 }
 
+int duplicate_at_start(const int fd)
+{
+	return duplicate_at(fd, 0);
+}
+
+// libarchive over [offset, offset + length) of a descriptor (nested
+// design 2.1): reads stop at the window's end, a seek outside it fails,
+// and a file that ends inside the window is an error, not a short read.
+struct WindowClient {
+	int fd                      = -1;
+	int64_t offset              = 0;
+	int64_t length              = 0;
+	int64_t pos                 = 0;
+	std::vector<uint8_t> buffer = std::vector<uint8_t>(ReadBlockBytes);
+};
+
 // libarchive's fd client never closes the descriptor it is given, so
 // the handle owns its duplicate and closes it after the free.
 struct Handle {
-	struct archive* a = nullptr;
-	int fd            = -1;
+	struct archive* a                    = nullptr;
+	int fd                               = -1;
+	std::unique_ptr<WindowClient> window = {};
 	~Handle()
 	{
 		if (a) {
@@ -86,6 +105,64 @@ struct Handle {
 		CloseDescriptor(fd);
 	}
 };
+
+la_ssize_t window_read(struct archive* a, void* data, const void** out)
+{
+	auto& w = *static_cast<WindowClient*>(data);
+	*out    = w.buffer.data();
+	const auto want = std::min<int64_t>(static_cast<int64_t>(w.buffer.size()),
+	                                    w.length - w.pos);
+	if (want <= 0) {
+		return 0;
+	}
+#if defined(WIN32)
+	if (_lseeki64(w.fd, w.offset + w.pos, SEEK_SET) < 0) {
+		archive_set_error(a, errno, "seek failed inside the archive window");
+		return ARCHIVE_FATAL;
+	}
+	const auto got = _read(w.fd, w.buffer.data(), static_cast<unsigned int>(want));
+#else
+	if (lseek(w.fd, w.offset + w.pos, SEEK_SET) < 0) {
+		archive_set_error(a, errno, "seek failed inside the archive window");
+		return ARCHIVE_FATAL;
+	}
+	const auto got = read(w.fd, w.buffer.data(), static_cast<size_t>(want));
+#endif
+	if (got <= 0) {
+		archive_set_error(a,
+		                  got < 0 ? errno : EIO,
+		                  "the file ends inside the archive window");
+		return ARCHIVE_FATAL;
+	}
+	w.pos += got;
+	return got;
+}
+
+la_int64_t window_seek(struct archive* a, void* data, const la_int64_t where,
+                       const int whence)
+{
+	auto& w        = *static_cast<WindowClient*>(data);
+	int64_t target = where;
+	if (whence == SEEK_CUR) {
+		target = w.pos + where;
+	} else if (whence == SEEK_END) {
+		target = w.length + where;
+	}
+	if (target < 0 || target > w.length) {
+		archive_set_error(a, EINVAL, "seek outside the archive window");
+		return ARCHIVE_FATAL;
+	}
+	w.pos = target;
+	return target;
+}
+
+la_int64_t window_skip(struct archive*, void* data, const la_int64_t request)
+{
+	auto& w         = *static_cast<WindowClient*>(data);
+	const auto step = std::clamp<int64_t>(request, 0, w.length - w.pos);
+	w.pos += step;
+	return step;
+}
 
 enum class HandleStatus {
 	Ok,
@@ -104,10 +181,10 @@ struct Head {
 	}
 };
 
-Head read_head(const int fd)
+Head read_head(const int fd, const int64_t offset)
 {
 	auto head         = Head{};
-	const auto dup_fd = duplicate_at_start(fd);
+	const auto dup_fd = duplicate_at(fd, offset);
 	if (dup_fd < 0) {
 		return head;
 	}
@@ -232,7 +309,9 @@ bool decompressed_head_is_tar(const int fd, const HeadKind kind)
 // dups share one offset, so only one handle reads at a time. The head
 // picks the reader: a zip end record in a RAR's tail outbids libarchive.
 HandleStatus open_handle(const int fd, const HeadKind kind, const bool cd_found,
-                         const bool raw_allowed, Handle& handle, std::string* detail)
+                         const bool raw_allowed,
+                         const std::optional<ByteWindow>& window,
+                         Handle& handle, std::string* detail)
 {
 	handle.a = archive_read_new();
 	switch (kind) {
@@ -278,6 +357,31 @@ HandleStatus open_handle(const int fd, const HeadKind kind, const bool cd_found,
 	archive_read_set_format_option(handle.a, "zip", "mac-ext", nullptr);
 	// tar carries bytes; the house writes UTF-8 names into tars
 	archive_read_set_format_option(handle.a, "tar", "hdrcharset", "UTF-8");
+	if (window) {
+		handle.fd = duplicate_at(fd, window->offset);
+		if (handle.fd < 0) {
+			if (detail) {
+				*detail = "cannot duplicate the archive descriptor";
+			}
+			return HandleStatus::DescriptorFailed;
+		}
+		handle.window         = std::make_unique<WindowClient>();
+		handle.window->fd     = handle.fd;
+		handle.window->offset = window->offset;
+		handle.window->length = window->length;
+		archive_read_set_read_callback(handle.a, window_read);
+		archive_read_set_seek_callback(handle.a, window_seek);
+		archive_read_set_skip_callback(handle.a, window_skip);
+		archive_read_set_callback_data(handle.a, handle.window.get());
+		if (archive_read_open1(handle.a) != ARCHIVE_OK) {
+			if (detail) {
+				const auto* text = archive_error_string(handle.a);
+				*detail = text ? text : "open failed";
+			}
+			return HandleStatus::NotRecognized;
+		}
+		return HandleStatus::Ok;
+	}
 	handle.fd = duplicate_at_start(fd);
 	if (handle.fd < 0) {
 		if (detail) {
@@ -310,6 +414,21 @@ const char* zip_method_name(const uint16_t method)
 	case 99: return "AES encrypted";
 	default: return "unknown";
 	}
+}
+
+// Nested design 2.2: the range of a member stored as plain bytes, from
+// the directory's sizes (check_local_headers judged the local header)
+// and the local header's name and extra lengths; the zip head is Open's.
+int64_t stored_offset_of(const ZipCentralDirectory::Record& rec,
+                         const int64_t archive_length)
+{
+	const auto length = static_cast<uint64_t>(archive_length);
+	if (rec.method != 0 || rec.encrypted ||
+	    rec.compressed_size != rec.uncompressed_size || rec.data_offset > length ||
+	    rec.uncompressed_size > length - rec.data_offset) {
+		return -1;
+	}
+	return static_cast<int64_t>(rec.data_offset);
 }
 
 bool has_control_bytes(const std::string& raw)
@@ -461,13 +580,17 @@ const char* error_text_or(struct archive* a, const char* fallback)
 } // namespace
 
 struct ArchiveReader::Impl {
-	Descriptor file                                 = {};
-	std::filesystem::path path                      = {};
-	HeadKind kind                                   = HeadKind::Unknown;
-	Limits limits                                   = {};
-	Format format                                   = Format::Zip;
-	Access access                                   = Access::Sequential;
-	StatPair indexed_stat                           = {};
+	Descriptor file            = {};
+	std::filesystem::path path = {};
+	HeadKind kind              = HeadKind::Unknown;
+	Limits limits              = {};
+	Format format              = Format::Zip;
+	Access access              = Access::Sequential;
+	StatPair indexed_stat      = {};
+	// Nested design 2.1: set when the archive is a range of the file; the
+	// length below is the window's then, the file's otherwise.
+	std::optional<ByteWindow> window                = {};
+	int64_t archive_length                          = 0;
 	std::vector<Entry> entries                      = {};
 	std::unordered_map<std::string, size_t> by_path = {};
 	std::unordered_map<int, size_t> by_ordinal      = {};
@@ -584,9 +707,15 @@ struct ArchiveReader::Impl {
 			}
 			return Error::Corrupt;
 		};
+		const auto base = window ? static_cast<uint64_t>(window->offset) : 0;
+		const auto end = static_cast<uint64_t>(archive_length);
+		if (rec.local_header_offset > end ||
+		    30 > end - rec.local_header_offset) {
+			return say("local header past the end of the archive");
+		}
 		std::vector<uint8_t> local = {};
 		if (ZipCentralDirectory::ReadRange(
-		            file.fd, rec.local_header_offset, 30, local) !=
+		            file.fd, base + rec.local_header_offset, 30, local) !=
 		    ZipCentralDirectory::Error::None) {
 			return say("cannot read the local header");
 		}
@@ -595,9 +724,12 @@ struct ArchiveReader::Impl {
 		                                         (local[27] << 8)) +
 		                   static_cast<uint64_t>(local[28] |
 		                                         (local[29] << 8));
+		if (start > end || rec.compressed_size > end - start) {
+			return say("member data runs past the end of the archive");
+		}
 		std::vector<uint8_t> data = {};
 		switch (ZipCentralDirectory::ReadRange(
-		        file.fd, start, rec.compressed_size, data)) {
+		        file.fd, base + start, rec.compressed_size, data)) {
 		case ZipCentralDirectory::Error::None: break;
 		case ZipCentralDirectory::Error::Truncated:
 			return say("member data runs past the end of the archive");
@@ -715,8 +847,13 @@ struct ArchiveReader::Impl {
 
 	Error seek_to(Handle& handle, const int ordinal, std::string* detail) const
 	{
-		if (open_handle(file.fd, kind, format == Format::Zip, raw_allowed, handle, detail) !=
-		    HandleStatus::Ok) {
+		if (open_handle(file.fd,
+		                kind,
+		                format == Format::Zip,
+		                raw_allowed,
+		                window,
+		                handle,
+		                detail) != HandleStatus::Ok) {
 			return Error::OpenFailed;
 		}
 		struct archive_entry* ae = nullptr;
@@ -827,7 +964,8 @@ OpenResult ArchiveReader::Open(const std::filesystem::path& path, const Limits& 
 }
 
 OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
-                               const Limits& limits)
+                               const Limits& limits,
+                               const std::optional<ByteWindow> window)
 {
 	auto result     = OpenResult{};
 	auto reader     = std::unique_ptr<ArchiveReader>(new ArchiveReader());
@@ -855,6 +993,22 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 	if (!StatDescriptor(impl.file.fd, impl.indexed_stat)) {
 		return fail(Error::OpenFailed, "fstat failed");
 	}
+	impl.window         = window;
+	impl.archive_length = impl.indexed_stat.size;
+	if (window) {
+		constexpr int64_t EndRecordBytes = 22;
+		if (window->offset < 0 || window->length < EndRecordBytes ||
+		    window->offset > impl.indexed_stat.size ||
+		    window->length > impl.indexed_stat.size - window->offset) {
+			return fail(Error::OpenFailed,
+			            "archive window outside the file: offset " +
+			                    std::to_string(window->offset) +
+			                    ", length " +
+			                    std::to_string(window->length) + ", file " +
+			                    std::to_string(impl.indexed_stat.size));
+		}
+		impl.archive_length = window->length;
+	}
 	const auto finish = [&] {
 		auto listing = std::vector<ArchiveIdentity::ListingEntry>{};
 		for (size_t i = 0; i < impl.entries.size(); ++i) {
@@ -867,14 +1021,22 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 				                   e.crc32});
 			}
 		}
-		impl.identity = ArchiveIdentity::Hash(listing,
-		                                      impl.indexed_stat.size);
+		impl.identity = ArchiveIdentity::Hash(listing, impl.archive_length);
 		result.reader = std::move(reader);
 		return std::move(result);
 	};
 
-	const auto head = read_head(impl.file.fd);
+	const auto head = read_head(impl.file.fd, window ? window->offset : 0);
 	impl.kind       = SniffHead(head.view()).kind;
+	if (window && impl.kind != HeadKind::Zip) {
+		if (impl.kind == HeadKind::Unknown) {
+			return fail(Error::NotAnArchive,
+			            "no zip signature at the start of the archive window");
+		}
+		return fail(Error::Unsupported,
+		            std::string("only a zip is read through an archive window, not ") +
+		                    HeadKindName(impl.kind));
+	}
 	if (!FilterDecodable(impl.kind, host_decoders())) {
 		return fail(Error::Unsupported,
 		            std::string("no built-in ") + HeadKindName(impl.kind) +
@@ -992,9 +1154,15 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 	// The zip central directory is read before the libarchive walk opens,
 	// so the two never move the shared offset under each other. For any
 	// other format the probe answers NotAZip and is ignored.
-	const auto cd       = ZipCentralDirectory::Read(impl.file.fd,
-                                                  static_cast<uint64_t>(
-                                                          limits.max_entries));
+	const auto cd       = window
+	                            ? ZipCentralDirectory::Read(
+                                        impl.file.fd,
+                                        static_cast<uint64_t>(window->offset),
+                                        static_cast<uint64_t>(window->length),
+                                        static_cast<uint64_t>(limits.max_entries))
+	                            : ZipCentralDirectory::Read(impl.file.fd,
+                                                          static_cast<uint64_t>(
+                                                                  limits.max_entries));
 	const auto cd_found = cd.error != ZipCentralDirectory::Error::NotAZip;
 	// A zip by its head, or a zip behind a stub: an unknown head with an
 	// end record in the tail (ada-qbxb). Either way the directory judges.
@@ -1057,16 +1225,6 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 			return fail(verdict->first, verdict->second);
 		}
 	}
-	auto handle = Handle{};
-	auto detail = std::string();
-	switch (open_handle(
-	        impl.file.fd, impl.kind, cd_found, impl.raw_allowed, handle, &detail)) {
-	case HandleStatus::Ok: break;
-	case HandleStatus::DescriptorFailed:
-		return fail(Error::OpenFailed, detail);
-	case HandleStatus::NotRecognized:
-		return fail(Error::NotAnArchive, detail);
-	}
 
 	// zip names and CRCs come from the central directory, paired by
 	// position with libarchive's walk, which goes by ascending local header
@@ -1080,6 +1238,53 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 			                 return a.local_header_offset <
 			                        b.local_header_offset;
 		                 });
+	}
+	// Nested design 2.2: which members can be read in place, decided here
+	// and never in the engine (D15). Only archive-named members get the
+	// head read, which bounds the extra reads on a large stored zip.
+	auto stored_offsets = std::vector<int64_t>(zip_records.size(), -1);
+	for (size_t i = 0; i < zip_records.size(); ++i) {
+		const auto& rec = zip_records[i];
+		const auto candidate = stored_offset_of(rec, impl.archive_length);
+		if (candidate < 0) {
+			continue;
+		}
+		const auto decoded   = ZipCentralDirectory::DecodeName(rec);
+		const auto slash     = decoded.find_last_of("/\\");
+		const auto file_name = slash == std::string::npos
+		                             ? decoded
+		                             : decoded.substr(slash + 1);
+		if (!IsArchiveName(file_name)) {
+			continue;
+		}
+		const auto base = window ? static_cast<uint64_t>(window->offset) : 0;
+		const auto want = std::min<uint64_t>(rec.uncompressed_size, HeadBytes);
+		std::vector<uint8_t> member_head = {};
+		if (ZipCentralDirectory::ReadRange(impl.file.fd,
+		                                   base + static_cast<uint64_t>(candidate),
+		                                   want,
+		                                   member_head) !=
+		    ZipCentralDirectory::Error::None) {
+			continue;
+		}
+		if (SniffHead(member_head).kind == HeadKind::Zip) {
+			stored_offsets[i] = candidate;
+		}
+	}
+	auto handle = Handle{};
+	auto detail = std::string();
+	switch (open_handle(impl.file.fd,
+	                    impl.kind,
+	                    cd_found,
+	                    impl.raw_allowed,
+	                    impl.window,
+	                    handle,
+	                    &detail)) {
+	case HandleStatus::Ok: break;
+	case HandleStatus::DescriptorFailed:
+		return fail(Error::OpenFailed, detail);
+	case HandleStatus::NotRecognized:
+		return fail(Error::NotAnArchive, detail);
 	}
 	auto names        = ArchiveNames::DosNameTable{};
 	auto seen_paths   = std::unordered_set<std::string>{};
@@ -1246,6 +1451,7 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 		if (impl.format == Format::Zip && !entry.is_dir) {
 			entry.size = static_cast<int64_t>(
 			        zip_records[static_cast<size_t>(ordinal)].uncompressed_size);
+			entry.stored_offset = stored_offsets[static_cast<size_t>(ordinal)];
 		}
 		if (impl.format == Format::Raw) {
 			// D13.2: a raw entry declares no size; this one bounded
@@ -1445,7 +1651,7 @@ int64_t ArchiveReader::TotalBytes() const
 }
 int64_t ArchiveReader::ArchiveLength() const
 {
-	return impl->indexed_stat.size;
+	return impl->archive_length;
 }
 StatPair ArchiveReader::IndexedStat() const
 {
@@ -1602,6 +1808,7 @@ Error ArchiveReader::MaterializeAll(const std::filesystem::path& directory,
 	                impl->kind,
 	                impl->format == Format::Zip,
 	                impl->raw_allowed,
+	                impl->window,
 	                handle,
 	                detail) != HandleStatus::Ok) {
 		return Error::OpenFailed;

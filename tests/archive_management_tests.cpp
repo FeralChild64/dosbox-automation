@@ -90,10 +90,17 @@ protected:
 		return Opened(path)->IdentityHash();
 	}
 	// The command line identifies through the helper; in-process here.
+	// A chain below the host is answered by LeafFor, which a test sets.
 	ArchiveManagement::IdentifyArchive Identify()
 	{
-		return [this](const fs::path& path) -> std::optional<std::string> {
+		return [this](const fs::path& path,
+		              const std::string& chain) -> std::optional<std::string> {
 			++identified;
+			if (!chain.empty()) {
+				return leaf_for.count(chain)
+				             ? std::optional(leaf_for.at(chain))
+				             : std::nullopt;
+			}
 			auto opened = ArchiveReader::Open(path, limits);
 			if (!opened.reader) {
 				return {};
@@ -101,7 +108,8 @@ protected:
 			return opened.reader->IdentityHash();
 		};
 	}
-	int identified = 0;
+	std::map<std::string, std::string> leaf_for = {};
+	int identified                              = 0;
 	static int FirstFileOrdinal(const ArchiveSource& source)
 	{
 		for (const auto& e : source.Entries()) {
@@ -448,11 +456,13 @@ TEST_F(ArchiveManagementTest, ListSidecarsTellsSameChangedAndMissing)
 
 TEST_F(ArchiveManagementTest, ListSidecarsIdentifiesANestedRecordThroughItsHost)
 {
-	const auto zip    = Built("game.zip");
-	const auto nested = MakeSidecar(zip / "inner.zip",
-	                                ArchiveIdentity::ChainIdentity(HashOf(zip),
-	                                                               "inner.zip"));
-	const auto stale  = MakeSidecar(zip / "other.zip", HashOf(zip));
+	// N5: a nested record names the host and the chain and carries the
+	// leaf's own identity; identify is asked for the chain below the host.
+	const auto zip        = Built("game.zip");
+	const auto leaf       = std::string(64, 'b');
+	leaf_for["inner.zip"] = leaf;
+	const auto nested     = MakeSidecar(zip / "inner.zip", leaf);
+	const auto stale      = MakeSidecar(zip / "other.zip", HashOf(zip));
 	auto listed = ArchiveManagement::ListSidecars(tmp / "saves", Identify());
 	ASSERT_EQ(listed.size(), 2u);
 	auto by_dir = std::map<fs::path, ArchiveManagement::SidecarInfo>{};
@@ -461,7 +471,32 @@ TEST_F(ArchiveManagementTest, ListSidecarsIdentifiesANestedRecordThroughItsHost)
 	}
 	ASSERT_TRUE(by_dir.count(nested) && by_dir.count(stale));
 	EXPECT_EQ(by_dir[nested].state, ArchiveManagement::ArchiveState::Same);
-	EXPECT_EQ(by_dir[stale].state, ArchiveManagement::ArchiveState::Changed);
+	// other.zip is not a chain identify knows: unreadable, not changed.
+	EXPECT_EQ(by_dir[stale].state, ArchiveManagement::ArchiveState::Unreadable);
+}
+
+TEST_F(ArchiveManagementTest, AHouseRecordIsSameWhenTheHostEntersToItsIdentity)
+{
+	// The record names the host file and carries the leaf's identity;
+	// identify is asked with an empty chain and answers for the entered
+	// archive (N3 and N5).
+	const auto zip  = Built("house.zip");
+	const auto leaf = std::string(64, 'c');
+	const auto dir  = MakeSidecar(zip, leaf);
+	auto calls      = std::vector<std::string>{};
+	const auto identify =
+	        [&](const fs::path& host,
+	            const std::string& chain) -> std::optional<std::string> {
+		calls.push_back(chain);
+		return chain.empty() && host == zip ? std::optional(leaf)
+		                                    : std::nullopt;
+	};
+	const auto listed = ArchiveManagement::ListSidecars(tmp / "saves", identify);
+	ASSERT_EQ(listed.size(), 1u);
+	EXPECT_EQ(listed[0].directory, dir);
+	EXPECT_EQ(listed[0].state, ArchiveManagement::ArchiveState::Same);
+	ASSERT_EQ(calls.size(), 1u);
+	EXPECT_EQ(calls[0], "");
 }
 
 TEST_F(ArchiveManagementTest, ListSidecarsCallsAnArchiveItCannotIdentifyUnreadable)
@@ -469,8 +504,9 @@ TEST_F(ArchiveManagementTest, ListSidecarsCallsAnArchiveItCannotIdentifyUnreadab
 	const auto zip = Built("game.zip");
 	MakeSidecar(zip, HashOf(zip));
 	const auto listed = ArchiveManagement::ListSidecars(
-	        tmp / "saves",
-	        [](const fs::path&) { return std::optional<std::string>(); });
+	        tmp / "saves", [](const fs::path&, const std::string&) {
+		        return std::optional<std::string>();
+	        });
 	ASSERT_EQ(listed.size(), 1u);
 	EXPECT_EQ(listed[0].state, ArchiveManagement::ArchiveState::Unreadable);
 }

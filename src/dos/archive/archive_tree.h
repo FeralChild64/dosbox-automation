@@ -78,6 +78,11 @@ private:
 // "" when the root holds anything else or nothing.
 std::string SoloRootDirectory(const std::vector<Entry>& entries);
 
+// Nested design N3: the one archive-named regular file the archive holds
+// at the top beside nothing but an optional info.toml; nullptr for any
+// other shape (a readme, two archives, a directory). MOUNT enters it.
+const Entry* HouseArchiveMember(const std::vector<Entry>& entries);
+
 } // namespace ArchiveMount
 
 #endif // DOSBOX_ARCHIVE_TREE_H

@@ -9,6 +9,7 @@
 #include "config/setup.h"
 #include "dos/archive/archive_cache.h"
 #include "dos/archive/archive_helper_client.h"
+#include "dos/archive/archive_lock.h"
 #include "dos/archive/archive_reader.h"
 #include "dos/drive_swap.h"
 #include "dos/drives.h"
@@ -201,6 +202,42 @@ protected:
 		        << error;
 		return path;
 	}
+	// augra-pack's shape: info.toml beside one stored inner zip named
+	// after the outer with ".store" (augra-pack deflates the toml, which
+	// changes nothing here). The inner file stays in tmp, never mounted.
+	std_fs::path House(const std::string& name,
+	                   const std::vector<FileEntry>& payload = Game(),
+	                   const std::string& toml = "[game]\nname = \"x\"\n",
+	                   const Kind inner_kind   = Kind::ZipStored)
+	{
+		const auto stem = std_fs::path(name).stem().string();
+		const auto inner = Built(stem + ".store.zip", inner_kind, payload);
+		return Built(name,
+		             Kind::ZipStored,
+		             {
+		                     {        "info.toml",           toml},
+		                     {stem + ".store.zip", ReadAll(inner)}
+                });
+	}
+	// Members copied into the cache: regular files under any entry's
+	// files directory. A lease alone records an entry and copies nothing.
+	static int CacheCopies(const std_fs::path& cache)
+	{
+		auto copies        = 0;
+		std::error_code ec = {};
+		if (!std_fs::is_directory(cache, ec)) {
+			return 0;
+		}
+		for (const auto& item :
+		     std_fs::recursive_directory_iterator(cache, ec)) {
+			if (item.is_regular_file(ec) &&
+			    item.path().parent_path().filename() ==
+			            ArchiveMount::FilesDirName) {
+				++copies;
+			}
+		}
+		return copies;
+	}
 	// ~Program deletes cmd, so the line lives on the heap and the old
 	// one goes before the next (the mount tests leak theirs instead).
 	CommandLine* SetCommand(const std::string& command_params)
@@ -313,6 +350,249 @@ TEST_F(MountArchiveTest, ExplicitTypeArchiveAndTheRootOption)
 	result = Mount("E " + zip.string() + " -root game/data/");
 	ASSERT_TRUE(result.has_value());
 	EXPECT_EQ(result->archive_root, "GAME\\DATA");
+}
+
+TEST_F(MountArchiveTest, AHouseArchiveMountsAsItsGame)
+{
+	const auto house = House("doom.zip");
+	auto result      = Mount("D " + house.string());
+	ASSERT_TRUE(result.has_value());
+	auto drive = DriveAt('D');
+	ASSERT_TRUE(drive);
+	// D10 inside the entered archive: Game() lives under game/.
+	EXPECT_TRUE(drive->FileExists("DOOM.EXE"));
+	EXPECT_TRUE(drive->TestDir("DATA"));
+	EXPECT_FALSE(drive->FileExists("INFO.TOML"));
+	EXPECT_FALSE(drive->FileExists("DOOM~1.ZIP"));
+	EXPECT_FALSE(drive->FileExists("DOOM.STORE.ZIP"));
+	// The info text names the host and the member.
+	EXPECT_NE(drive->GetInfoString().find("doom.store.zip"), std::string::npos)
+	        << drive->GetInfoString();
+	// The entered archive is read in place: nothing was copied.
+	EXPECT_EQ(CacheCopies(tmp / "cache"), 0);
+	drive.reset();
+	UnmountHelper('D');
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+}
+
+TEST_F(MountArchiveTest, AHouseArchiveWithADeflatedMemberEntersThroughTheCache)
+{
+	const auto inner = Built("doom.store.zip", Kind::ZipStored, Game());
+	const auto house = Built("doom.zip",
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {     "info.toml",     "[game]\n"},
+	                                 {"doom.store.zip", ReadAll(inner)}
+        });
+	auto result      = Mount("D " + house.string());
+	ASSERT_TRUE(result.has_value());
+	ASSERT_TRUE(DriveAt('D'));
+	EXPECT_TRUE(DriveAt('D')->FileExists("DOOM.EXE"));
+	// One copy in the cache: the inner zip.
+	EXPECT_EQ(CacheCopies(tmp / "cache"), 1);
+}
+
+TEST_F(MountArchiveTest, TheNearMissesStayFilesOnTheDrive)
+{
+	const auto inner = Built("game.zip", Kind::ZipStored, Game());
+	const auto wild  = Built("wild.zip",
+                                Kind::ZipStored,
+	                         {
+                                        {"readme.txt",        "hello"},
+                                        {  "game.zip", ReadAll(inner)}
+        });
+	ASSERT_TRUE(Mount("D " + wild.string()).has_value());
+	ASSERT_TRUE(DriveAt('D'));
+	EXPECT_TRUE(DriveAt('D')->FileExists("README.TXT"));
+	EXPECT_TRUE(DriveAt('D')->FileExists("GAME.ZIP"));
+	EXPECT_FALSE(DriveAt('D')->FileExists("DOOM.EXE"));
+	UnmountHelper('D');
+	const auto two = Built("two.zip",
+	                       Kind::ZipStored,
+	                       {
+	                               {"a.zip", ReadAll(inner)},
+	                               {"b.zip", ReadAll(inner)}
+        });
+	ASSERT_TRUE(Mount("E " + two.string()).has_value());
+	ASSERT_TRUE(DriveAt('E'));
+	EXPECT_TRUE(DriveAt('E')->FileExists("A.ZIP"));
+	EXPECT_TRUE(DriveAt('E')->FileExists("B.ZIP"));
+}
+
+TEST_F(MountArchiveTest, RootAppliesInsideTheEnteredArchive)
+{
+	const auto house = House("doom.zip");
+	auto result      = Mount("D " + house.string() + " -root game/data");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->archive_root, "GAME\\DATA");
+	ASSERT_TRUE(DriveAt('D'));
+	EXPECT_TRUE(DriveAt('D')->FileExists("LEVEL.WAD"));
+	UnmountHelper('D');
+	EXPECT_FALSE(Mount("E " + house.string() + " -root nope").has_value());
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+}
+
+TEST_F(MountArchiveTest, AnEnteredDrivesSidecarCarriesTheLeafIdentityUnderTheHostsName)
+{
+	const auto house = House("doom.zip");
+	ASSERT_TRUE(Mount("D " + house.string()).has_value());
+	auto drive = UnionAt('D');
+	ASSERT_TRUE(drive);
+	const auto leaf    = ArchiveDriveOf(drive)->Source().IdentityHash();
+	const auto as_file = ArchiveMount::ArchiveReader::Open(
+	        tmp / "doom.store.zip", ArchiveMount::Limits{});
+	ASSERT_EQ(as_file.error, ArchiveMount::Error::None) << as_file.detail;
+	EXPECT_EQ(leaf, as_file.reader->IdentityHash());
+	EXPECT_EQ(drive->SidecarDirectory(),
+	          tmp / "saves" / ("doom-" + leaf.substr(0, 8)));
+	auto detail       = std::string();
+	const auto record = ArchiveMount::SidecarRecord::Load(
+	        drive->SidecarDirectory() / ArchiveMount::SidecarTomlName, &detail);
+	ASSERT_TRUE(record) << detail;
+	EXPECT_EQ(record->archive_path, ArchiveMount::PathToUtf8(house));
+	EXPECT_EQ(record->identity_hash, leaf);
+	auto file = drive->FileCreate("NEW.TXT", {});
+	ASSERT_TRUE(file);
+	file->Close();
+	drive.reset();
+	UnmountHelper('D');
+	// Another collection around the same inner zip shares the saves (N5).
+	const auto other = Built("other.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml","[game]\nname = \"other\"\n"                                            },
+	                                 {"doom.store.zip",
+	                                  ReadAll(tmp / "doom.store.zip")}
+        });
+	ASSERT_TRUE(Mount("E " + other.string()).has_value());
+	ASSERT_TRUE(UnionAt('E'));
+	EXPECT_TRUE(UnionAt('E')->FileExists("NEW.TXT"));
+}
+
+TEST_F(MountArchiveTest, AnEnteredDriveReconnects)
+{
+	const auto house = House("doom.zip");
+	ASSERT_TRUE(Mount("D " + house.string()).has_value());
+	auto drive = DriveAt('D');
+	ASSERT_TRUE(drive);
+	const auto before = drive->Source().IdentityHash();
+	// The window reads the host: a touched host is Changed on the next
+	// read, and only a drive out of Ready reconnects.
+	std::error_code ec = {};
+	std_fs::last_write_time(house,
+	                        std_fs::last_write_time(house, ec) +
+	                                std::chrono::minutes(1),
+	                        ec);
+	ASSERT_FALSE(ec) << ec.message();
+	EXPECT_FALSE(drive->FileOpen("DOOM.EXE", OPEN_READ));
+	ASSERT_EQ(drive->State(), ArchiveMountState::Changed);
+	auto detail = std::string();
+	EXPECT_TRUE(drive->Reconnect(&detail)) << detail;
+	EXPECT_EQ(drive->State(), ArchiveMountState::Ready);
+	EXPECT_EQ(drive->Source().IdentityHash(), before);
+	EXPECT_TRUE(drive->FileExists("DOOM.EXE"));
+	EXPECT_TRUE(drive->FileOpen("DOOM.EXE", OPEN_READ));
+}
+
+TEST_F(MountArchiveTest, AShortMemberPathMountsADiskFromAHouseArchive)
+{
+	const auto house = House("disks.zip", Images());
+	ASSERT_TRUE(Mount("A " + house.string() + "/disks/disk1.img").has_value());
+	ASSERT_TRUE(imageDiskList[0]);
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
+	UnmountHelper('A');
+	ASSERT_TRUE(Mount("A " + house.string() + "/disks.store.zip/disks/disk2.img")
+	                    .has_value());
+	ASSERT_TRUE(imageDiskList[0]);
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
+}
+
+TEST_F(MountArchiveTest, AHouseArchiveWhoseMemberCannotBeEnteredIsRefused)
+{
+	// N3: the shape says enter; a member that is no archive refuses the
+	// mount with its reason instead of falling back to a file listing.
+	const auto junk = Built("junk.zip",
+	                        Kind::ZipStored,
+	                        {
+	                                {"info.toml", "[game]\n"},
+	                                {"junk.store.zip", std::string(5000, 'z')}
+        });
+	EXPECT_FALSE(Mount("D " + junk.string()).has_value());
+	EXPECT_FALSE(Drives.at(drive_index('D')));
+	ASSERT_FALSE(verdicts.empty());
+	EXPECT_FALSE(verdicts.back().second.allowed);
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+	// A sequential member follows archive_sequential (N8), as the leaf
+	// would when spelled out.
+	const auto seven = Built("inner.7z", Kind::SevenZip, Game());
+	const auto house = Built("seven.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"info.toml",     "[game]\n"},
+	                                 { "seven.7z", ReadAll(seven)}
+        });
+	EXPECT_FALSE(Mount("D " + house.string()).has_value());
+	EXPECT_FALSE(Drives.at(drive_index('D')));
+	Set("archive_sequential", "cache");
+	ASSERT_TRUE(Mount("D " + house.string()).has_value());
+	ASSERT_TRUE(DriveAt('D'));
+	EXPECT_TRUE(DriveAt('D')->FileExists("DOOM.EXE"));
+}
+
+TEST_F(MountArchiveTest, AReconnectOfAnEnteredDriveReleasesTheOldHostsEntry)
+{
+	// A deflated member is entered through the cache: the drive holds a
+	// lease on the host's entry. After the host changes and the drive
+	// re-enters, the fresh entry is held and the old one is let go.
+	const auto inner   = Built("doom.store.zip", Kind::ZipStored, Game());
+	const auto house   = Built("doom.zip",
+                                 Kind::ZipDeflate,
+	                           {
+                                         {     "info.toml", "[game]\nname = \"v1\"\n"},
+                                         {"doom.store.zip",            ReadAll(inner)}
+        });
+	const auto hash_of = [&](const std_fs::path& p) {
+		auto opened = ArchiveMount::ArchiveReader::Open(p, ArchiveMount::Limits{});
+		EXPECT_EQ(opened.error, ArchiveMount::Error::None) << opened.detail;
+		return opened.reader ? opened.reader->IdentityHash()
+		                     : std::string();
+	};
+	const auto old_entry = ArchiveMount::ArchiveCache::EntryDirectory(
+	        tmp / "cache", "doom", hash_of(house));
+	ASSERT_TRUE(Mount("D " + house.string()).has_value());
+	auto drive = DriveAt('D');
+	ASSERT_TRUE(drive);
+	EXPECT_TRUE(ArchiveMount::FileLock::IsHeld(old_entry / ArchiveMount::LockName));
+	// The leaf reads the cache copy: a touched copy is Changed on the
+	// next read, which takes the drive out of Ready.
+	std::error_code ec = {};
+	auto copies        = 0;
+	for (const auto& item :
+	     std_fs::directory_iterator(old_entry / ArchiveMount::FilesDirName, ec)) {
+		std_fs::last_write_time(item.path(),
+		                        std_fs::last_write_time(item.path(), ec) +
+		                                std::chrono::minutes(1),
+		                        ec);
+		++copies;
+	}
+	ASSERT_EQ(copies, 1);
+	EXPECT_FALSE(drive->FileOpen("DOOM.EXE", OPEN_READ));
+	ASSERT_EQ(drive->State(), ArchiveMountState::Changed);
+	ASSERT_TRUE(WriteArchive(house,
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {     "info.toml", "[game]\nname = \"v2\"\n"},
+	                                 {"doom.store.zip",            ReadAll(inner)}
+        }));
+	const auto new_entry = ArchiveMount::ArchiveCache::EntryDirectory(
+	        tmp / "cache", "doom", hash_of(house));
+	ASSERT_NE(old_entry, new_entry);
+	auto detail = std::string();
+	ASSERT_TRUE(drive->Reconnect(&detail)) << detail;
+	EXPECT_TRUE(drive->FileExists("DOOM.EXE"));
+	EXPECT_FALSE(ArchiveMount::FileLock::IsHeld(old_entry /
+	                                            ArchiveMount::LockName));
+	EXPECT_TRUE(ArchiveMount::FileLock::IsHeld(new_entry / ArchiveMount::LockName));
 }
 
 TEST_F(MountArchiveTest, JunkWithAnArchiveExtensionIsRefused)

@@ -26,6 +26,12 @@ std::string SidecarKey(const fs::path& archive_path,
 	                                 identity_hash);
 }
 
+std::string SidecarKeyForStem(const std::string_view stem,
+                              const std::string_view identity_hash)
+{
+	return ArchiveIdentity::ShortKey(stem, identity_hash);
+}
+
 namespace {
 
 struct Candidate {
@@ -91,7 +97,8 @@ Matches Classify(const std::vector<Candidate>& candidates,
 
 SidecarLocation LocateSidecar(const fs::path& saves_dir,
                               const fs::path& archive_canonical,
-                              const std::string_view identity_hash)
+                              const std::string_view identity_hash,
+                              const std::string_view key_stem)
 {
 	SidecarLocation loc    = {};
 	const auto path_text   = PathToUtf8(archive_canonical);
@@ -119,8 +126,11 @@ SidecarLocation LocateSidecar(const fs::path& saves_dir,
 	} else if (beside.by_hash) {
 		loc.beside_archive = beside.by_hash->dir;
 	}
-	loc.kind = SidecarLocation::Kind::Create;
-	loc.directory = saves_dir / SidecarKey(archive_canonical, identity_hash);
+	loc.kind      = SidecarLocation::Kind::Create;
+	loc.directory = saves_dir /
+	                (key_stem.empty()
+	                         ? SidecarKey(archive_canonical, identity_hash)
+	                         : SidecarKeyForStem(key_stem, identity_hash));
 	if (saves.by_path_other_hash) {
 		loc.replaced_old = saves.by_path_other_hash->dir;
 	} else if (beside.by_path_other_hash) {

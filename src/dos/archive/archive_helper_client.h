@@ -50,6 +50,13 @@ public:
 	// as the mount: on Linux the helper dies with the thread that started it.
 	static OpenResult Open(const std::filesystem::path& path,
 	                       const Limits& limits, const Options& options);
+	// The archive at [offset, offset + length) of parent's file (nested
+	// 2.1), on the client's own duplicate of parent's descriptor (D16).
+	// label names the window in logs and the activity.
+	static OpenResult OpenWindow(const ArchiveHelperClient& parent,
+	                             int64_t offset, int64_t length,
+	                             const std::filesystem::path& label,
+	                             const Limits& limits, const Options& options);
 	static std::filesystem::path DefaultHelperPath();
 	~ArchiveHelperClient() override;
 	ArchiveHelperClient(const ArchiveHelperClient&)            = delete;
@@ -62,6 +69,8 @@ public:
 	int64_t ArchiveLength() const override;
 	const std::string& IdentityHash() const override;
 	StatPair IndexedStat() const override;
+	// The window this client reads; length 0 for a whole file.
+	ByteWindow Window() const;
 
 	Error Materialize(int ordinal, std::vector<uint8_t>& out,
 	                  std::string* detail) override;
