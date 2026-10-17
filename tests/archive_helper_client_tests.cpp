@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -159,6 +160,58 @@ TEST_F(ArchiveHelperClientTest, TheIndexMatchesTheInProcessReader)
 	EXPECT_EQ(client->MaterializeToFile(ImpliedOrdinal, tmp_dir / "none", &detail),
 	          Error::NotFound);
 	EXPECT_EQ(client->RespawnCount(), 0);
+}
+
+TEST_F(ArchiveHelperClientTest, NamesOutsideAsciiComeThroughTheHelper)
+{
+	// G6: a middle dot (Giana Sisters) and a one-half sign (Spear of
+	// Destiny); 7z stores UTF-16LE, which libarchive converts to the locale.
+	const auto path = Built("names.7z",
+	                        Kind::SevenZip,
+	                        {
+	                                {"LICK\xC2\xB7ME.GER", "giana"},
+	                                {"3\xC2\xBD-inch.txt", "spear"},
+	                                {         "plain.txt", "plain"},
+        });
+	auto client     = OpenOk(path);
+	ASSERT_TRUE(client);
+	auto names = std::vector<std::string>{};
+	for (const auto& e : client->Entries()) {
+		names.push_back(e.utf8_path);
+	}
+	std::ranges::sort(names);
+	EXPECT_EQ(names,
+	          (std::vector<std::string>{"3\xC2\xBD-inch.txt",
+	                                    "LICK\xC2\xB7ME.GER",
+	                                    "plain.txt"}));
+}
+
+TEST_F(ArchiveHelperClientTest, AnIsoComesThroughTheHelperAsTheReaderSeesIt)
+{
+	const auto iso  = ArchiveFixtures::IsoWithFiles({
+                {"README.TXT", "read me"},
+                {"GAMES/A.ZIP", std::string(100, 'z')},
+        });
+	const auto path = tmp_dir / "disc.iso";
+	ArchiveFixtures::WriteBytes(path,
+	                            std::vector<uint8_t>(iso.begin(), iso.end()));
+	auto direct = ArchiveReader::Open(path, limits);
+	ASSERT_EQ(direct.error, Error::None) << direct.detail;
+	auto helped = OpenOk(path);
+	ASSERT_TRUE(helped);
+	EXPECT_EQ(helped->GetFormat(), Format::Iso9660);
+	EXPECT_EQ(helped->GetAccess(), Access::PerMember);
+	EXPECT_EQ(helped->IdentityHash(), direct.reader->IdentityHash());
+	ASSERT_EQ(helped->Entries().size(), direct.reader->Entries().size());
+	for (size_t i = 0; i < direct.reader->Entries().size(); ++i) {
+		EXPECT_EQ(helped->Entries()[i].utf8_path,
+		          direct.reader->Entries()[i].utf8_path);
+	}
+	for (const auto& e : helped->Entries()) {
+		if (e.utf8_path == "README.TXT") {
+			EXPECT_EQ(Read(*helped, e.ordinal), "read me");
+		}
+	}
 }
 
 TEST_F(ArchiveHelperClientTest, MaterializeMatchesTheInProcessReader)

@@ -25,6 +25,8 @@ SETTING_SECTIONS = {
     "window_size": "sdl",
     "ttf_output": "sdl",
     "joysticktype": "joystick",
+    "lpt_dac": "speaker",
+    "ems": "dos",
     "archive_cache_path": "dos",
     "archive_sidecar_path": "dos",
     "archive_cache_max_size": "dos",
@@ -41,7 +43,9 @@ DOSBOX_BIN = os.environ.get(
     str(Path(__file__).resolve().parents[2] / "build" / "debug-linux" / "dosbox-automation"),
 )
 
-WORKSPACE = Path(__file__).resolve().parents[2] / ".workspace" / "test-runs"
+_HOUSE_WORKSPACE = (Path(__file__).resolve().parents[3] / ".workspace"
+                    / "augrudottir-dosbox-automation")
+WORKSPACE = Path(os.environ.get("DA_WORKSPACE", str(_HOUSE_WORKSPACE))) / "test-runs"
 
 
 def find_free_port() -> int:

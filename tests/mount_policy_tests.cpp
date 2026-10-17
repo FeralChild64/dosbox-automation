@@ -1472,6 +1472,25 @@ TEST_F(MountPolicyTest, ArchivePathZipIsAllowedWithItsSniff)
 	EXPECT_EQ(*v.sniff.access, ArchiveMount::Access::PerMember);
 }
 
+TEST_F(MountPolicyTest, ArchivePathIsoPassesUnderItsOwnNameOnly)
+{
+	// N2: an ISO host is judged by its sector 16; D12's rule that the
+	// name and the bytes agree holds for it as for every archive.
+	const auto iso   = ArchiveFixtures::MinimalIso();
+	const auto bytes = std::vector<uint8_t>(iso.begin(), iso.end());
+	ArchiveFixtures::WriteBytes(tmp_dir / "disc.iso", bytes);
+	ArchiveFixtures::WriteBytes(tmp_dir / "isobytes.zip", bytes);
+	const auto as_iso = MountPolicy::ValidateArchivePath(
+	        tmp_dir / "disc.iso", MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_TRUE(as_iso.verdict.allowed)
+	        << MountPolicy::DenyReasonText(as_iso.verdict.reason);
+	EXPECT_EQ(as_iso.sniff.kind, ArchiveMount::HeadKind::Iso9660);
+	const auto as_zip = MountPolicy::ValidateArchivePath(
+	        tmp_dir / "isobytes.zip", MountOrigin::GuestCommand, {}, {}, false);
+	EXPECT_FALSE(as_zip.verdict.allowed);
+	EXPECT_EQ(as_zip.verdict.reason, DenyReason::NotAnArchive);
+}
+
 TEST_F(MountPolicyTest, ArchivePathJunkIsNotAnArchive)
 {
 	const auto junk = tmp_dir / "notes.zip";
@@ -1523,15 +1542,22 @@ TEST_F(MountPolicyTest, ArchivePathSequentialPassesForACompressedImage)
 	EXPECT_TRUE(cd.verdict.allowed);
 	EXPECT_EQ(cd.sniff.kind, ArchiveMount::HeadKind::Isz);
 
-	const auto txz = BuiltArchive(tmp_dir, "game.tar.xz", ArchiveFixtures::Kind::TarXz);
-	EXPECT_EQ(MountPolicy::ValidateArchivePath(txz, MountOrigin::GuestCommand, {}, {}, false)
+	const auto txz = BuiltArchive(tmp_dir,
+	                              "game.tar.xz",
+	                              ArchiveFixtures::Kind::TarXz);
+	EXPECT_EQ(MountPolicy::ValidateArchivePath(
+	                  txz, MountOrigin::GuestCommand, {}, {}, false)
 	                  .verdict.reason,
 	          DenyReason::ArchiveSequential);
-	// A tar.gz renamed to an xz image name: the head is not what the name says.
-	const auto tgz      = BuiltArchive(tmp_dir, "set.tar.gz", ArchiveFixtures::Kind::TarGz);
+	// A tar.gz renamed to an xz image name: the head is not what the name
+	// says.
+	const auto tgz      = BuiltArchive(tmp_dir,
+                                      "set.tar.gz",
+                                      ArchiveFixtures::Kind::TarGz);
 	const auto disguise = tmp_dir / "set.img.xz";
 	std::filesystem::copy_file(tgz, disguise);
-	EXPECT_EQ(MountPolicy::ValidateArchivePath(disguise, MountOrigin::GuestCommand, {}, {}, false)
+	EXPECT_EQ(MountPolicy::ValidateArchivePath(
+	                  disguise, MountOrigin::GuestCommand, {}, {}, false)
 	                  .verdict.reason,
 	          DenyReason::ArchiveSequential);
 }
@@ -1648,6 +1674,14 @@ TEST(MountPolicyArchiveErrors, MemberRefusalsUseTheArchiveRefusedMessage)
 	             "no such member in the archive");
 	EXPECT_STREQ(MountPolicy::DenyReasonText(DenyReason::ArchiveCueRejected),
 	             "the cue sheet cannot be served from the archive");
+}
+
+TEST(MountPolicyArchiveErrors, ASecondArchiveUsesTheArchiveRefusedMessage)
+{
+	EXPECT_STREQ(MountPolicy::DenyMessageId(DenyReason::ArchiveOnePerDrive),
+	             "PROGRAM_MOUNT_ARCHIVE_REFUSED");
+	EXPECT_STREQ(MountPolicy::DenyReasonText(DenyReason::ArchiveOnePerDrive),
+	             "an archive drive takes one archive");
 }
 
 } // namespace

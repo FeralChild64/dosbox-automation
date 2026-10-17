@@ -12,7 +12,8 @@
 
 namespace ArchiveMount {
 
-enum class Format { Zip, Rar, Rar5, SevenZip, Tar, Raw, Isz };
+// Travels over the helper protocol as a byte: append, never reorder.
+enum class Format { Zip, Rar, Rar5, SevenZip, Tar, Raw, Isz, Iso9660 };
 
 // Whether one member can be reached without inflating the ones before
 // it (design D5): zip through the seekable reader, RAR v4 by header

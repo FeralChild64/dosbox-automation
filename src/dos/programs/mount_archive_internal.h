@@ -63,13 +63,31 @@ struct Entered {
 	std::string chain                                       = {};
 	bool window                                             = false;
 };
-// members is never empty: a chain of no levels is the host itself.
-std::optional<Entered> EnterChain(ArchiveMount::ArchiveHelperClient& host,
-                                  const std::filesystem::path& host_path,
-                                  const std::vector<std::string>& members,
-                                  ArchiveMount::ArchiveCache& cache,
-                                  const ArchiveMount::ChainOptions& options,
-                                  ArchiveMount::Error* error, std::string* detail);
+
+// Nested design 4.1: a member path whose leaf is an archive name mounts
+// that leaf, with the levels and the leaf as one member list. Nothing
+// for an image leaf or a lone path; too_deep past N1.
+struct DriveChain {
+	std::vector<std::string> members = {};
+	bool too_deep                    = false;
+};
+std::optional<DriveChain> ArchiveDriveChain(const ArchiveMount::MemberPath& split);
+
+// What a drive enters below its host: the spelled members with the house rule
+// at every step (N3, N4), one walk within MaxNestingDepth; shared by
+// MountArchive, its reopen and the sidecar lister. A plain host enters nothing.
+struct DriveEntry {
+	std::optional<Entered> entered = {};
+	std::string house_member       = {};
+	bool failed                    = false;
+	ArchiveMount::Error error      = ArchiveMount::Error::None;
+	std::string detail             = {};
+};
+DriveEntry EnterForDrive(ArchiveMount::ArchiveHelperClient& host,
+                         const std::filesystem::path& host_path,
+                         const std::vector<std::string>& members,
+                         ArchiveMount::ArchiveCache& cache,
+                         const ArchiveMount::ChainOptions& options);
 
 // The drive's holder for a chain's links (ArchiveDrive::HeldResources).
 struct ChainHold final : public ArchiveDrive::HeldResources {

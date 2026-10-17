@@ -200,6 +200,24 @@ TEST_F(ArchiveCacheTest, OpenCreatesTheDirectoryWithTheTag)
 	EXPECT_TRUE(OpenOk());
 }
 
+TEST_F(ArchiveCacheTest, OpenCreatesTheMissingParentsPrivate)
+{
+	// A fresh account: ~/.cache/dosbox-automation does not exist yet (G1).
+	const auto deep = tmp / "home" / ".cache" / "dosbox-automation" /
+	                  "archive-cache";
+	const auto opened = ArchiveCache::Open(deep, options);
+	ASSERT_EQ(opened.status, CacheStatus::Ok) << opened.detail;
+	EXPECT_TRUE(fs::is_regular_file(deep / CacheTagName));
+#if !defined(WIN32)
+	for (auto p = deep; p != tmp; p = p.parent_path()) {
+		EXPECT_EQ(fs::status(p).permissions() &
+		                  (fs::perms::group_all | fs::perms::others_all),
+		          fs::perms::none)
+		        << p.string();
+	}
+#endif
+}
+
 TEST_F(ArchiveCacheTest, OpenRefusesAFileALinkAndAnUntaggedNonEmptyDirectory)
 {
 	Touch(tmp / "file", "x");

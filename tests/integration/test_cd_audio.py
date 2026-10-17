@@ -21,8 +21,7 @@ from conftest import WORKSPACE, start_dosbox_instance
 
 FIXTURES_DIR = (Path(__file__).resolve().parent.parent
                 / "files" / "audiocd")
-CACHE_DIR = (Path(__file__).resolve().parent.parent.parent
-             / ".workspace" / "cd-audio-cache")
+CACHE_DIR = WORKSPACE.parent / "cd-audio-cache"
 
 
 @pytest.fixture(scope="module")

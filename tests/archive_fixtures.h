@@ -12,11 +12,17 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include <algorithm>
+#include <cassert>
+#include <cctype>
+#include <clocale>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <optional>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace ArchiveFixtures {
@@ -83,6 +89,20 @@ inline int64_t MtimeOf(const std::filesystem::path& path)
 	return static_cast<int64_t>(st.st_mtime);
 }
 
+struct FileEntry {
+	std::string name = {};
+	std::string data = {};
+	bool is_dir      = false;
+	bool is_symlink  = false;
+	int64_t mtime    = 631152000; // 1990-01-01
+};
+
+inline std::string ReadAll(const std::filesystem::path& path)
+{
+	std::ifstream in(path, std::ios::binary);
+	return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
 // The smallest ISO 9660 volume isoDrive mounts: a primary volume descriptor
 // (ECMA-119 8.4), the set terminator (8.3) and an empty root directory.
 inline std::string MinimalIso()
@@ -133,6 +153,298 @@ inline std::string MinimalIso()
 	const size_t root   = 18 * Sector;
 	dir_record(root, '\0');
 	dir_record(root + 34, '\1');
+	return iso;
+}
+
+// An ISO 9660 volume with files at the root or one directory down, as
+// level 1 names with the ";1" version (ECMA-119 7.5). libarchive's isPVD
+// wants what MinimalIso lacks: path tables, version byte, over 20 blocks.
+inline std::string IsoWithFiles(const std::vector<FileEntry>& files)
+{
+	constexpr size_t Sector = 2048;
+	struct Dir {
+		std::string name          = {}; // "" for the root
+		std::vector<size_t> files = {};
+		size_t extent             = 0;
+	};
+	std::vector<Dir> dirs = {Dir{}};
+	for (size_t i = 0; i < files.size(); ++i) {
+		const auto& path = files[i].name;
+		const auto slash = path.find('/');
+		if (slash == std::string::npos) {
+			dirs[0].files.push_back(i);
+			continue;
+		}
+		const auto dir = path.substr(0, slash);
+		auto it = std::find_if(dirs.begin(), dirs.end(), [&](const Dir& d) {
+			return d.name == dir;
+		});
+		if (it == dirs.end()) {
+			dirs.push_back(Dir{dir, {}, 0});
+			it = dirs.end() - 1;
+		}
+		it->files.push_back(i);
+	}
+	// 16 PVD, 17 terminator, 18 and 19 the L and M path tables, 20.. one
+	// sector per directory, then one extent per file in whole sectors.
+	constexpr size_t PathTableL = 18;
+	constexpr size_t PathTableM = 19;
+	size_t next                 = 20;
+	for (auto& d : dirs) {
+		d.extent = next++;
+	}
+	std::vector<size_t> file_extent(files.size(), 0);
+	for (size_t i = 0; i < files.size(); ++i) {
+		file_extent[i] = next;
+		next += (files[i].data.size() + Sector - 1) / Sector;
+	}
+	// libarchive's iso9660 bidder reads 48 KiB (the system area plus eight
+	// blocks) before it looks for the descriptors and refuses a shorter
+	// file (archive_read_format_iso9660_bid); real volumes are far larger.
+	const size_t total = std::max<size_t>(next, 24);
+	std::string iso(total * Sector, '\0');
+	const auto both32 = [&](const size_t at, const uint32_t v) {
+		for (int i = 0; i < 4; ++i) {
+			iso[at + i]     = static_cast<char>(v >> (8 * i));
+			iso[at + 7 - i] = static_cast<char>(v >> (8 * i));
+		}
+	};
+	// A directory record (ECMA-119 9.1): 33 bytes plus the identifier,
+	// padded to an even length; the date is 2000-01-01, offset 0 (9.1.5).
+	const auto record = [&](const size_t at,
+	                        const std::string& ident,
+	                        const uint32_t extent,
+	                        const uint32_t length,
+	                        const bool is_dir) {
+		const size_t len = 33 + ident.size() +
+		                   (ident.size() % 2 == 0 ? 1 : 0);
+		iso[at] = static_cast<char>(len);
+		both32(at + 2, extent);
+		both32(at + 10, length);
+		iso[at + 18] = 100;
+		iso[at + 19] = 1;
+		iso[at + 20] = 1;
+		iso[at + 25] = is_dir ? 2 : 0;
+		iso[at + 28] = 1;
+		iso[at + 31] = 1;
+		iso[at + 32] = static_cast<char>(ident.size());
+		iso.replace(at + 33, ident.size(), ident);
+		return len;
+	};
+	const auto upper = [](std::string s) {
+		for (auto& c : s) {
+			c = static_cast<char>(
+			        std::toupper(static_cast<unsigned char>(c)));
+		}
+		return s;
+	};
+	for (size_t d = 0; d < dirs.size(); ++d) {
+		size_t at = dirs[d].extent * Sector;
+		at += record(at,
+		             std::string(1, '\0'),
+		             static_cast<uint32_t>(dirs[d].extent),
+		             Sector,
+		             true);
+		at += record(at,
+		             std::string(1, '\1'),
+		             static_cast<uint32_t>(dirs[0].extent),
+		             Sector,
+		             true);
+		if (d == 0) {
+			for (size_t s = 1; s < dirs.size(); ++s) {
+				at += record(at,
+				             upper(dirs[s].name),
+				             static_cast<uint32_t>(dirs[s].extent),
+				             Sector,
+				             true);
+			}
+		}
+		for (const auto i : dirs[d].files) {
+			const auto& path = files[i].name;
+			const auto slash = path.find('/');
+			const auto name  = upper(slash == std::string::npos
+                                                        ? path
+                                                        : path.substr(slash + 1)) +
+			                  ";1";
+			at += record(at,
+			             name,
+			             static_cast<uint32_t>(file_extent[i]),
+			             static_cast<uint32_t>(files[i].data.size()),
+			             false);
+		}
+	}
+	for (size_t i = 0; i < files.size(); ++i) {
+		iso.replace(file_extent[i] * Sector,
+		            files[i].data.size(),
+		            files[i].data);
+	}
+	// Path table records (ECMA-119 9.4): the root, then each directory
+	// with the root as its parent; L little-endian, M big-endian.
+	size_t table_size = 0;
+	for (const bool big : {false, true}) {
+		size_t at = (big ? PathTableM : PathTableL) * Sector;
+		for (size_t d = 0; d < dirs.size(); ++d) {
+			const auto ident = d == 0 ? std::string(1, '\0')
+			                          : upper(dirs[d].name);
+			iso[at]          = static_cast<char>(ident.size());
+			const auto extent = static_cast<uint32_t>(dirs[d].extent);
+			for (int i = 0; i < 4; ++i) {
+				iso[at + 2 + (big ? 3 - i : i)] = static_cast<char>(
+				        extent >> (8 * i));
+			}
+			iso[at + 6 + (big ? 1 : 0)] = 1; // the parent is the root
+			iso.replace(at + 8, ident.size(), ident);
+			at += 8 + ident.size() + (ident.size() % 2);
+		}
+		table_size = at - (big ? PathTableM : PathTableL) * Sector;
+	}
+	const size_t pvd = 16 * Sector;
+	iso[pvd]         = 1;
+	iso.replace(pvd + 1, 5, "CD001");
+	iso[pvd + 6] = 1;
+	iso.replace(pvd + 40, 32, "TEST                            ");
+	both32(pvd + 80, static_cast<uint32_t>(total));
+	iso[pvd + 120] = 1;
+	iso[pvd + 123] = 1;
+	iso[pvd + 124] = 1;
+	iso[pvd + 127] = 1;
+	iso[pvd + 129] = 8;
+	iso[pvd + 130] = 8;
+	both32(pvd + 132, static_cast<uint32_t>(table_size));
+	for (int i = 0; i < 4; ++i) {
+		iso[pvd + 140 + i] = static_cast<char>(PathTableL >> (8 * i));
+		iso[pvd + 148 + 3 - i] = static_cast<char>(PathTableM >> (8 * i));
+	}
+	record(pvd + 156,
+	       std::string(1, '\0'),
+	       static_cast<uint32_t>(dirs[0].extent),
+	       Sector,
+	       true);
+	iso[pvd + 881]          = 1; // file structure version (ECMA-119 8.4.31)
+	const size_t terminator = 17 * Sector;
+	iso[terminator]         = static_cast<char>(255);
+	iso.replace(terminator + 1, 5, "CD001");
+	iso[terminator + 6] = 1;
+	return iso;
+}
+
+// One file at the root of a volume with a Joliet tree beside the ISO 9660
+// one (Joliet spec, UCS-2 level 3 "%/E"); the Joliet name is written as
+// given, ASCII only, up to the 110 characters a directory record holds.
+inline std::string IsoWithJolietFile(const std::string& joliet_name,
+                                     const std::string& data)
+{
+	constexpr size_t Sector = 2048;
+	// 16 PVD, 17 SVD, 18 terminator, 19-22 the two trees' L and M path
+	// tables, 23 and 24 the two root directories, then the file.
+	constexpr size_t Pvd = 16, Svd = 17, Terminator = 18;
+	constexpr size_t RootIso = 23, RootJoliet = 24, FileExtent = 25;
+	const size_t total = std::max<size_t>(FileExtent + (data.size() + Sector -
+	                                                    1) / Sector,
+	                                      26);
+	std::string iso(total * Sector, '\0');
+	const auto both32 = [&](const size_t at, const uint32_t v) {
+		for (int i = 0; i < 4; ++i) {
+			iso[at + i]     = static_cast<char>(v >> (8 * i));
+			iso[at + 7 - i] = static_cast<char>(v >> (8 * i));
+		}
+	};
+	const auto record = [&](const size_t at,
+	                        const std::string& ident,
+	                        const uint32_t extent,
+	                        const uint32_t length,
+	                        const bool is_dir) {
+		const size_t len = 33 + ident.size() +
+		                   (ident.size() % 2 == 0 ? 1 : 0);
+		assert(len <= 255);
+		iso[at] = static_cast<char>(len);
+		both32(at + 2, extent);
+		both32(at + 10, length);
+		iso[at + 18] = 100;
+		iso[at + 19] = 1;
+		iso[at + 20] = 1;
+		iso[at + 25] = is_dir ? 2 : 0;
+		iso[at + 28] = 1;
+		iso[at + 31] = 1;
+		iso[at + 32] = static_cast<char>(ident.size());
+		iso.replace(at + 33, ident.size(), ident);
+		return len;
+	};
+	auto ucs2 = std::string();
+	for (const char c : joliet_name) {
+		ucs2 += '\0';
+		ucs2 += c;
+	}
+	const auto file_size = static_cast<uint32_t>(data.size());
+	for (const auto [root, name] : {
+	             std::pair{   RootIso, std::string("LONG.ZIP;1")},
+	             std::pair{RootJoliet,                      ucs2}
+        }) {
+		size_t at = root * Sector;
+		at += record(at,
+		             std::string(1, '\0'),
+		             static_cast<uint32_t>(root),
+		             Sector,
+		             true);
+		at += record(at,
+		             std::string(1, '\1'),
+		             static_cast<uint32_t>(root),
+		             Sector,
+		             true);
+		record(at, name, static_cast<uint32_t>(FileExtent), file_size, false);
+	}
+	iso.replace(FileExtent * Sector, data.size(), data);
+	// Each tree's path tables hold its root alone (ECMA-119 9.4).
+	for (const auto [table_l, root] : {
+	             std::pair{size_t{19},    RootIso},
+	             std::pair{size_t{21}, RootJoliet}
+        }) {
+		for (const bool big : {false, true}) {
+			const size_t at = (table_l + (big ? 1 : 0)) * Sector;
+			iso[at]         = 1;
+			for (int i = 0; i < 4; ++i) {
+				iso[at + 2 + (big ? 3 - i : i)] = static_cast<char>(
+				        root >> (8 * i));
+			}
+			iso[at + 6 + (big ? 1 : 0)] = 1;
+		}
+	}
+	for (const auto [vd, table_l, root] : {
+	             std::tuple{Pvd, size_t{19},    RootIso},
+	             std::tuple{Svd, size_t{21}, RootJoliet}
+        }) {
+		const size_t at = vd * Sector;
+		iso[at]         = vd == Pvd ? 1 : 2;
+		iso.replace(at + 1, 5, "CD001");
+		iso[at + 6] = 1;
+		iso.replace(at + 40, 32, std::string(32, ' '));
+		both32(at + 80, static_cast<uint32_t>(total));
+		if (vd == Svd) {
+			iso.replace(at + 88, 3, "%/E");
+		}
+		iso[at + 120] = 1;
+		iso[at + 123] = 1;
+		iso[at + 124] = 1;
+		iso[at + 127] = 1;
+		iso[at + 129] = 8;
+		iso[at + 130] = 8;
+		both32(at + 132, 10);
+		for (int i = 0; i < 4; ++i) {
+			iso[at + 140 + i] = static_cast<char>(table_l >> (8 * i));
+			iso[at + 148 + 3 - i] = static_cast<char>((table_l + 1) >>
+			                                          (8 * i));
+		}
+		record(at + 156,
+		       std::string(1, '\0'),
+		       static_cast<uint32_t>(root),
+		       Sector,
+		       true);
+		iso[at + 881] = 1;
+	}
+	const size_t end = Terminator * Sector;
+	iso[end]         = static_cast<char>(255);
+	iso.replace(end + 1, 5, "CD001");
+	iso[end + 6] = 1;
 	return iso;
 }
 
@@ -297,15 +609,43 @@ inline void WriteBytes(const std::filesystem::path& path,
 	          static_cast<std::streamsize>(bytes.size()));
 }
 
-struct FileEntry {
-	std::string name = {};
-	std::string data = {};
-	bool is_dir      = false;
-	bool is_symlink  = false;
-	int64_t mtime    = 631152000; // 1990-01-01
+enum class Kind {
+	ZipStored,
+	ZipDeflate,
+	SevenZip,
+	Tar,
+	TarGz,
+	TarXz,
+	TarZst,
+	TarLzma
 };
 
-enum class Kind { ZipStored, ZipDeflate, SevenZip, Tar, TarGz, TarXz, TarZst, TarLzma };
+// libarchive's 7z and ISO writers convert names to UTF-16 from the
+// locale's charset; the test process runs in "C", which has no
+// characters outside ASCII.
+class ScopedUtf8Ctype {
+public:
+	ScopedUtf8Ctype()
+	{
+		const char* current = std::setlocale(LC_CTYPE, nullptr);
+		saved               = current ? current : "C";
+		for (const char* name :
+		     {"C.UTF-8", "C.utf8", "UTF-8", ".UTF-8", "en_US.UTF-8"}) {
+			if (std::setlocale(LC_CTYPE, name)) {
+				break;
+			}
+		}
+	}
+	~ScopedUtf8Ctype()
+	{
+		std::setlocale(LC_CTYPE, saved.c_str());
+	}
+	ScopedUtf8Ctype(const ScopedUtf8Ctype&)            = delete;
+	ScopedUtf8Ctype& operator=(const ScopedUtf8Ctype&) = delete;
+
+private:
+	std::string saved = {};
+};
 
 // Writes an archive with libarchive's writer. Returns false when the
 // writer refuses something (the test then fails with the reason).
@@ -314,8 +654,9 @@ inline bool WriteArchive(const std::filesystem::path& path, const Kind kind,
                          const char* passphrase = nullptr,
                          std::string* error     = nullptr)
 {
-	struct archive* a = archive_write_new();
-	int r             = ARCHIVE_OK;
+	const ScopedUtf8Ctype utf8_names = {};
+	struct archive* a                = archive_write_new();
+	int r                            = ARCHIVE_OK;
 	switch (kind) {
 	case Kind::ZipStored:
 		r = archive_write_set_format_zip(a);
@@ -365,7 +706,7 @@ inline bool WriteArchive(const std::filesystem::path& path, const Kind kind,
 			break;
 		}
 		struct archive_entry* ae = archive_entry_new();
-		archive_entry_set_pathname(ae, e.name.c_str());
+		archive_entry_set_pathname_utf8(ae, e.name.c_str());
 		archive_entry_set_mtime(ae, e.mtime, 0);
 		if (e.is_symlink) {
 			archive_entry_set_filetype(ae, AE_IFLNK);

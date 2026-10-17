@@ -114,6 +114,36 @@ TEST_F(DriveSwapTest, ResolveRelativeMemberUnderRoot)
 	EXPECT_EQ(resolved, root / "game.zip/disk2.img");
 }
 
+TEST_F(DriveSwapTest, ResolveRelativeChainUnderRoot)
+{
+	// A relative chain is found under a root like a one-level member:
+	// the splitter walks the host part on disk and leaves the rest.
+	const auto root = CreateDir("images");
+	auto error      = std::string();
+	ASSERT_TRUE(ArchiveFixtures::WriteArchive(root / "inner.zip",
+	                                          ArchiveFixtures::Kind::ZipStored,
+	                                          {
+	                                                  {"disk2.img",
+	                                                   std::string(4096, 'x')}
+        },
+	                                          nullptr,
+	                                          &error))
+	        << error;
+	ASSERT_TRUE(ArchiveFixtures::WriteArchive(
+	        root / "outer.zip",
+	        ArchiveFixtures::Kind::ZipStored,
+	        {
+	                {"inner.zip", ArchiveFixtures::ReadAll(root / "inner.zip")}
+        },
+	        nullptr,
+	        &error))
+	        << error;
+	const auto resolved = DriveSwap::ResolveImagePath("outer.zip/inner.zip/disk2.img",
+	                                                  {},
+	                                                  {root});
+	EXPECT_EQ(resolved, root / "outer.zip/inner.zip/disk2.img");
+}
+
 TEST_F(DriveSwapTest, ResolveAnchorWinsOverRoot)
 {
 	const auto anchor = CreateDir("game");
@@ -271,6 +301,21 @@ protected:
 	}
 
 	// A booter disk: a floppy-sized image with no FAT, first byte marked
+	// BOOT names a listed disk by the policy's resolved path, so the swap's
+	// match by name sees the spelling it sees in the engine.
+	void BootListDisk(const size_t slot, const fs::path& image)
+	{
+		const auto verdict = MountPolicy::ValidateImagePath(image,
+		                                                    MountOrigin::Api,
+		                                                    {root});
+		ASSERT_TRUE(verdict.allowed);
+		const auto name  = verdict.resolved.string();
+		bool is_readonly = false;
+		auto* file       = fopen_wrap_ro_fallback(name, is_readonly);
+		ASSERT_NE(file, nullptr);
+		diskSwap[slot] = std::make_shared<imageDisk>(file, name.c_str(), 160, false);
+	}
+
 	fs::path CreateBooterImage(const std::string& name, const uint8_t marker)
 	{
 		constexpr size_t SizeBytes = 163840; // 160K, no FAT signature
@@ -359,10 +404,7 @@ TEST_F(DriveSwapRawTest, RawSwapReusesTheDiskBootKeepsInItsList)
 	InsertRawDiskA(CreateBooterImage("images/disk1.img", 0x11));
 	diskSwap[0]      = imageDiskList[0];
 	const auto disk2 = CreateBooterImage("images/disk2.img", 0x22);
-	bool is_readonly = false;
-	auto* file       = fopen_wrap_ro_fallback(disk2.string(), is_readonly);
-	ASSERT_NE(file, nullptr);
-	diskSwap[1] = std::make_shared<imageDisk>(file, disk2.string().c_str(), 160, false);
+	BootListDisk(1, disk2);
 
 	const auto result = DriveSwap::Swap('A', disk2, false, {}, {root});
 	ASSERT_TRUE(result.ok) << result.error;
@@ -375,10 +417,7 @@ TEST_F(DriveSwapRawTest, AReadOnlyRawSwapDoesNotTakeBootsWritableDisk)
 	InsertRawDiskA(CreateBooterImage("images/disk1.img", 0x11));
 	diskSwap[0]      = imageDiskList[0];
 	const auto disk2 = CreateBooterImage("images/disk2.img", 0x22);
-	bool is_readonly = false;
-	auto* file       = fopen_wrap_ro_fallback(disk2.string(), is_readonly);
-	ASSERT_NE(file, nullptr);
-	diskSwap[1] = std::make_shared<imageDisk>(file, disk2.string().c_str(), 160, false);
+	BootListDisk(1, disk2);
 
 	ArchiveImages::SetDriveMode(0, ArchiveImages::DriveMode{.read_only = true});
 	const auto result = DriveSwap::Swap('A', disk2, false, {}, {root});
@@ -407,6 +446,35 @@ TEST_F(DriveSwapRawTest, RawSwapRefusesAnImageThatIsNoFloppySize)
 	EXPECT_FALSE(result.ok);
 	EXPECT_EQ(result.error, "Not a floppy image");
 	EXPECT_EQ(FirstByteOfDiskA(), 0x11);
+}
+
+TEST_F(DriveSwapRawTest, RawSwapTakesAFloppyWithAKilobyteMore)
+{
+	// G14, Super Space Invaders' disks: 720K FAT12 plus 1024 bytes, the
+	// boot sector's BPB naming the 720K geometry.
+	InsertRawDiskA(CreateBooterImage("images/disk1.img", 0x11));
+	const auto disk = tmp_dir / "images" / "ssi.img";
+	{
+		auto buf   = std::vector<char>(737280 + 1024, 0);
+		auto put16 = [&](const size_t at, const uint16_t v) {
+			buf[at]     = static_cast<char>(v & 0xff);
+			buf[at + 1] = static_cast<char>(v >> 8);
+		};
+		buf[0] = static_cast<char>(0xEB);
+		put16(0x0b, 512);
+		put16(0x13, 1440);
+		put16(0x18, 9);
+		put16(0x1a, 2);
+		buf[510] = static_cast<char>(0x55);
+		buf[511] = static_cast<char>(0xAA);
+		auto out = std::ofstream(disk, std::ios::binary);
+		out.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+	}
+
+	const auto result = DriveSwap::Swap('A', disk, false, {}, {root});
+
+	EXPECT_TRUE(result.ok) << result.error;
+	EXPECT_EQ(FirstByteOfDiskA(), 0xEB);
 }
 
 TEST_F(DriveSwapRawTest, RawSwapStillChecksTheMountPolicy)

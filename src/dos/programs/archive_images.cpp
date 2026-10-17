@@ -305,13 +305,10 @@ std::shared_ptr<Hold> find_held(const int drive_index, const fs::path& archive,
 		leaf_request.member.member = chained->levels.back().leaf_member;
 	}
 	for (const auto& hold : found->second) {
-		// A short path through a house archive (N4) spells no chain;
-		// the hold that entered it matches on its own member.
-		const bool chain_matches = hold &&
-		                           (hold->chain == chain ||
-		                            (chain.empty() &&
-		                             !hold->house_member.empty() &&
-		                             hold->chain == hold->house_member));
+		// A short path through a house archive (N4, G11, G16) leaves
+		// out the store: the hold matches on the chain it was asked by.
+		const bool chain_matches = hold && (hold->chain == chain ||
+		                                    hold->spelled_chain == chain);
 		if (!hold || !hold->entries || hold->archive != archive ||
 		    hold->key != key || !chain_matches) {
 			continue;
@@ -477,38 +474,25 @@ Result Resolve(const Request& given)
 		              "nesting depth exceeds " +
 		                      std::to_string(MaxNestingDepth));
 	}
-	// N4: a plain member absent from a house archive's own listing is
-	// looked for inside the archive it enters.
-	auto effective    = *chained;
-	auto house_member = std::string();
-	if (effective.levels.empty() && !request.member.lone) {
-		auto ignored = ArchiveNames::Rejection::None;
-		if (!FindMember(client.Entries(), request.member.member, &ignored)) {
-			if (const auto* house = HouseArchiveMember(client.Entries())) {
-				house_member = house->utf8_path;
-				effective = ChainOfLevels(archive, {house_member});
-				effective.levels.back().leaf_member =
-				        request.member.member;
-			}
-		}
+	// The house rule (N4) runs in the chain walk, at the host too.
+	ChainOptions chain_opts       = {};
+	chain_opts.helper_options     = options;
+	chain_opts.limits             = limits;
+	chain_opts.sequential_allowed = settings.sequential_allowed;
+	auto chain_result = ResolveChain(*chained, client, archive, *cache, chain_opts);
+	if (chain_result.error != Error::None) {
+		return refuse(MountPolicy::DenyReasonForArchiveError(
+		                      chain_result.error),
+		              chain_result.detail);
 	}
+	const auto& effective = chain_result.chain;
 	if (!effective.levels.empty()) {
-		ChainOptions chain_opts       = {};
-		chain_opts.helper_options     = options;
-		chain_opts.limits             = limits;
-		chain_opts.sequential_allowed = settings.sequential_allowed;
-		auto chain_result             = ResolveChain(
-                        effective, client, archive, *cache, chain_opts);
-		if (chain_result.error != Error::None) {
-			return refuse(MountPolicy::DenyReasonForArchiveError(
-			                      chain_result.error),
-			              chain_result.detail);
-		}
-		resolve_client     = chain_result.leaf_client;
-		resolve_archive    = chain_result.leaf_archive;
-		hold->chain_links  = std::move(chain_result.links);
-		hold->chain        = ChainPrefix(effective);
-		hold->house_member = house_member;
+		resolve_client      = chain_result.leaf_client;
+		resolve_archive     = chain_result.leaf_archive;
+		hold->chain_links   = std::move(chain_result.links);
+		hold->chain         = ChainPrefix(effective);
+		hold->spelled_chain = ChainPrefix(*chained);
+		hold->house_member  = chain_result.house_member;
 		augra::log_info(LogComponent,
 		                "%s: nested chain %s, %zu level(s), leaf %s",
 		                PathToUtf8(archive).c_str(),
@@ -632,9 +616,8 @@ Result Resolve(const Request& given)
 		// N5: a nested member's sidecar carries the leaf archive's
 		// identity under the host file's name; the record names the
 		// host and the chain (outer.zip/inner.zip) for the lister.
-		const auto sidecar_archive   = hold->chain.empty()
-		                                     ? archive
-		                                     : archive / fs::path(hold->chain);
+		const auto sidecar_archive = ArchiveMount::PathWithChain(archive,
+		                                                         hold->chain);
 		const auto& sidecar_identity = resolve_client->IdentityHash();
 		const auto sidecar_stem      = PathToUtf8(archive.stem());
 		if (!place_dir.empty()) {

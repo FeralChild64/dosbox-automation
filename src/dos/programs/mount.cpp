@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2026 dosbox-automation contributors
-// Copyright (C) 2026 dosbox-automation contributors
 
 #include "mount.h"
 #include "dos/archive/descriptor.h"
@@ -23,12 +22,14 @@
 #include "config/config.h"
 #include "dos/cdrom.h"
 #include "dos/drives.h"
+#include "dos/floppy_image.h"
 #include "gui/mapper.h"
 #include "hardware/ide.h"
 #include "ints/bios_disk.h"
 #include "ints/int10.h"
 #include "misc/cross.h"
 #include "misc/notifications.h"
+#include "misc/unicode.h"
 #include "more_output.h"
 #include "shell/shell.h"
 #include "utils/fs_utils.h"
@@ -1112,11 +1113,13 @@ std::string MOUNT::GetDosMappedHostPath(const std::string& dos_path) const
 
 // The host path a path argument names: ~ expanded, -pr applied, and a
 // mounted DOS path taken as the host path it maps to (ada-ep2a).
+
 std::string MOUNT::ResolveHostPath(const std::string& arg,
                                    const bool relative_to_last_config) const
 {
-	auto path = ApplyRelativePath(resolve_home(arg).string(),
-	                              relative_to_last_config);
+	auto path = ApplyRelativePath(
+	        resolve_home(MountPolicy::HostPathFromDos(arg)).string(),
+	        relative_to_last_config);
 #if defined(WIN32)
 	// Removing trailing backslash if not root dir so stat will succeed
 	if (path.size() > 3 && path.back() == '\\') {
@@ -1216,14 +1219,9 @@ static void detect_image_type(const std::string& name,
 	           ext == "1200" || ext == "1440") {
 		params.type = MountType::FloppyImage;
 	} else if (ext == "img" || ext == "ima" || ext == "dsk") {
-		const auto file_size_kb = static_cast<uint32_t>(t2.st_size / 1024);
-		const auto& geometries  = BIOS_GetDiskGeometryList();
-		const bool is_floppy    = std::ranges::any_of(
-                        geometries, [file_size_kb](const DiskGeometry& geo) {
-	                        return geo.ksize == file_size_kb;
-                        });
-		params.type = is_floppy ? MountType::FloppyImage
-		                        : MountType::HardDiskImage;
+		params.type = FloppyImage::IsFloppy(std_fs::path(host_file))
+		                    ? MountType::FloppyImage
+		                    : MountType::HardDiskImage;
 	}
 }
 
@@ -1271,6 +1269,32 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 	                              : std::nullopt;
 	const auto names_member = first_member.has_value() || first_lone.has_value();
 
+	// An archive mount takes one path; any further ones are kept so
+	// MountArchive refuses them instead of the drive silently dropping them.
+	auto keep_further_paths = [&] {
+		std::string further = {};
+		for (unsigned int i = 3; cmd->FindCommand(i, further); ++i) {
+			params.paths.push_back(
+			        ResolveHostPath(further,
+			                        path_relative_to_last_config));
+		}
+	};
+
+	// Nested design 4.1: a member path whose leaf is an archive name
+	// mounts that archive as the drive; MountArchive splits it again.
+	if (first_member && !explicit_image_type &&
+	    MountArchiveInternal::ArchiveDriveChain(*first_member)) {
+		params.type          = MountType::Archive;
+		params.is_image_mode = false;
+		params.paths.clear();
+		params.paths.push_back(path_arg_1);
+		keep_further_paths();
+		if (!params.sidecar_path.empty()) {
+			params.sidecar_path = ResolveHostPath(params.sidecar_path,
+			                                      path_relative_to_last_config);
+		}
+		return;
+	}
 	// An archive is its own kind of source (archive mount design D12):
 	// named by -t archive, or a regular file with a listed extension
 	// whose first bytes carry a known signature.
@@ -1290,6 +1314,7 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 		params.is_image_mode = false;
 		params.paths.clear();
 		params.paths.push_back(simplify_path(path_arg_1).string());
+		keep_further_paths();
 		if (!params.sidecar_path.empty()) {
 			params.sidecar_path = ResolveHostPath(params.sidecar_path,
 			                                      path_relative_to_last_config);
@@ -1334,8 +1359,10 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 		while (cmd->FindCommand(arg_idx++, cur_arg)) {
 
 			// Expand ~, then apply relative path logic
-			cur_arg = ApplyRelativePath(resolve_home(cur_arg).string(),
-			                            path_relative_to_last_config);
+			cur_arg = ApplyRelativePath(
+			        resolve_home(MountPolicy::HostPathFromDos(cur_arg))
+			                .string(),
+			        path_relative_to_last_config);
 
 			if (const auto lone = ArchiveMount::LoneImageMember(cur_arg)) {
 				if (!AddArchiveMember(*lone, cur_arg, params)) {

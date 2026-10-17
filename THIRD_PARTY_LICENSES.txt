@@ -2578,6 +2578,9 @@ source tree.
                  License: BSD-2-Clause (text in the vendored libraries section)
                  Seven RAR test fixtures under tests/files/archives/ are
                  taken from its test suite (see the README there)
+                 vcpkg builds use the overlay port vcpkg/ports/libarchive:
+                 3.8.9 with the 3.8.10 ISO 9660 reader and a local change
+                 that keeps Joliet names past 103 characters
 
 --------------------------------------------------------------------------------
 Boost Software License 1.0

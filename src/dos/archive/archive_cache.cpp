@@ -114,6 +114,33 @@ bool MakePrivateDirectory(const fs::path& dir)
 	return !ec;
 }
 
+// Each parent that does not exist yet gets 0700, not the umask default.
+bool MakePrivateDirectories(const fs::path& dir)
+{
+	std::vector<fs::path> missing = {};
+	std::error_code ec            = {};
+	auto existing                 = dir;
+	while (!existing.empty() && !fs::exists(existing, ec)) {
+		if (ec) {
+			return false;
+		}
+		missing.push_back(existing);
+		if (existing == existing.parent_path()) {
+			break;
+		}
+		existing = existing.parent_path();
+	}
+	if (ec || (!existing.empty() && !fs::is_directory(existing, ec))) {
+		return false;
+	}
+	for (auto it = missing.rbegin(); it != missing.rend(); ++it) {
+		if (!MakePrivateDirectory(*it)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 // Deletes the regular files of an entry and then its directories;
 // anything else is left where it is and the entry stays. Returns the
 // bytes it freed.
@@ -548,7 +575,7 @@ ArchiveCache::OpenResult ArchiveCache::Open(const fs::path& directory,
 			return refuse("cannot write the tag");
 		}
 	} else {
-		if (!MakePrivateDirectory(directory) || !WriteTag(directory)) {
+		if (!MakePrivateDirectories(directory) || !WriteTag(directory)) {
 			return refuse("cannot create");
 		}
 	}

@@ -228,4 +228,34 @@ TEST(SidecarRecord, TheRecordRefusesAChangeItCouldNotLoadAgain)
 	fs::remove_all(dir, ec);
 }
 
+TEST(SidecarRecordTest, TrailingDotsAreCanonicalizedToTheSameKey)
+{
+	SidecarRecord r = {};
+	EXPECT_TRUE(r.AddDelete("SKIEGA."));
+	EXPECT_TRUE(r.IsHidden("SKIEGA"));
+	EXPECT_TRUE(r.IsHidden("SKIEGA."));
+	EXPECT_EQ(r.changes.size(), 1u);
+	EXPECT_EQ(r.changes[0].path, "SKIEGA");
+}
+
+TEST(SidecarRecordTest, UnhideByTrailingDotFormRemovesTheCanonicalEntry)
+{
+	SidecarRecord r = {};
+	EXPECT_TRUE(r.AddDelete("DATA"));
+	EXPECT_TRUE(r.IsHidden("DATA"));
+	EXPECT_TRUE(r.Unhide("DATA."));
+	EXPECT_FALSE(r.IsHidden("DATA"));
+	EXPECT_FALSE(r.IsHidden("DATA."));
+	EXPECT_EQ(r.changes.size(), 0u);
+}
+
+TEST(SidecarRecordTest, TrailingDotInSubpathIsCanonicalizedPerComponent)
+{
+	SidecarRecord r = {};
+	EXPECT_TRUE(r.AddDelete("DATA.\\LEVEL."));
+	EXPECT_TRUE(r.IsHidden("DATA\\LEVEL"));
+	EXPECT_TRUE(r.IsHidden("DATA.\\LEVEL."));
+	EXPECT_EQ(r.changes[0].path, "DATA\\LEVEL");
+}
+
 } // namespace

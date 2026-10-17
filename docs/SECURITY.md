@@ -73,10 +73,13 @@ webserver an attack surface by design. The short version:
   as disk images, then a structure check on the file's own bytes, and the
   archive is read by a separate helper process that links the reader
   library alone. The archive itself is never written. A game's writes
-  land in a sidecar directory, created with owner-only permissions under
-  the saves directory (XDG data home, `%LOCALAPPDATA%` or
-  `~/Library/Application Support`) or named with `-sidecar` and validated
-  like any directory mount; a sidecar found beside the archive is adopted
+  land in a sidecar directory under the saves directory (XDG data home,
+  `%LOCALAPPDATA%` or `~/Library/Application Support`). A new saves
+  directory is created with owner-only permissions; an existing one keeps
+  its own. The saves directory is checked for symlinks and system paths
+  the same way the archive cache is. A custom path through `-sidecar` is
+  validated like any directory mount; a sidecar found beside the archive
+  is adopted
   only when that directory passes the directory whitelist for the mount's
   origin. Nothing in the sidecar that is a symlink is written to or
   through, the deletions and renames of base files are kept as DOS names
@@ -112,6 +115,12 @@ webserver an attack surface by design. The short version:
   refused. Our own ISZ reader checks the header, the chunk table and
   every chunk length against the file before it decodes anything, and it
   refuses encrypted and segmented ISZ files.
+  A member path may pass through up to three archives, or an ISO 9660
+  image, inside the file on disk (`outer.zip/game.zip/disk1.img`, and
+  `MOUNT C outer.zip/game.zip` for the inner archive as the drive); the
+  policy judges the file on disk, every level is read by the same helper
+  under the same caps, counted across the whole path, and a zip stored
+  inside a zip is read in place within bounds the engine checks.
   The management commands (`MOUNT -cache`, `--archive-cache`,
   `--sidecar list`) read an archive only through the same helper, and the
   cache's "in use" check creates no lock files.
@@ -123,10 +132,11 @@ webserver an attack surface by design. The short version:
   reads as syntax (`> < | & "` and spaces among them) refuse it, and so
   does a file that is not a .COM, .EXE or .BAT. The program is started by
   its full path on that drive, so a name such as TYPE.EXE cannot reach a
-  built-in command. The command line's `--run` value passes the same rule
-  before it is written into AUTOEXEC.BAT, with `%` doubled for the batch
-  expansion. The name is echoed back with control characters replaced and
-  its length capped.
+  built-in command. `MOUNT -run` queues its lines through the shell's
+  verbatim path, which keeps `%` intact without expansion. The command
+  line's `--run` doubles `%` for the AUTOEXEC.BAT batch expansion.
+  The name is echoed back with control characters replaced and its length
+  capped.
 - Lua scripts run sandboxed: no filesystem or process access, bytecode
   rejected, dangerous globals removed, instruction and pattern-complexity
   limits against runaway scripts.

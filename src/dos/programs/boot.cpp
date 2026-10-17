@@ -97,7 +97,8 @@ FILE* BOOT::getFSFile(const char* filename, uint32_t* ksize, uint32_t* bsize,
 		return tmpfile;
 	}
 	// File not found on mounted filesystem. Try regular filesystem
-	const auto filename_s = resolve_home(filename).string();
+	const auto filename_s =
+	        resolve_home(MountPolicy::HostPathFromDos(filename)).string();
 	tmpfile               = fopen(filename_s.c_str(), "rb+");
 
 	// Used for logging in check_fseek()
@@ -267,7 +268,9 @@ void BOOT::Run(void)
 				return;
 			}
 
-			const auto boot_path = resolve_home(temp_line).string();
+			const auto boot_path = resolve_home(MountPolicy::HostPathFromDos(
+			                                            temp_line))
+			                               .string();
 			auto resolved        = std::string();
 			const auto member    = local_drive_path_exists(boot_path.c_str())
 			                             ? ArchiveMount::LoneImageMember(boot_path)

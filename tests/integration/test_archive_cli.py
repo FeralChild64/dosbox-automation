@@ -93,6 +93,23 @@ def test_sidecar_list_names_the_archive_and_its_state(dosbox_e2e, tmp_path):
     assert "missing" in r.stdout, r.stdout
 
 
+def test_sidecar_list_follows_a_spelled_chain(dosbox_e2e, tmp_path):
+    from test_archive_mount import DONE_BAT, build_collection_zip, settings_for, wait_text
+    zip_path = build_collection_zip(tmp_path / "game" / "coll.zip", "game.zip",
+                                    {"GAME.BAT": DONE_BAT})
+    inst = dosbox_e2e(
+        autoexec_lines=[f"mount c {zip_path}/game.zip", "c:", "call game.bat", "dir /b"],
+        conf_dir=tmp_path / "game",
+        settings=settings_for(tmp_path),
+    )
+    wait_text(inst.client, "DONE.TXT")
+    inst.shutdown()
+    r = run_cli(tmp_path, "--sidecar", "list")
+    assert r.returncode == 0, r.stderr
+    assert f"{zip_path}/game.zip" in r.stdout, r.stdout
+    assert "coll-" in r.stdout and "same" in r.stdout, r.stdout
+
+
 def test_sidecar_list_without_a_saves_directory_says_so(tmp_path):
     r = run_cli(tmp_path, "--sidecar", "list")
     assert r.returncode == 0, r.stderr

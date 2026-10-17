@@ -8,6 +8,7 @@ takes a member path."""
 
 import bz2
 import gzip
+import io
 import lzma
 import os
 import struct
@@ -504,4 +505,175 @@ def test_the_swap_takes_an_imz(dosbox_e2e, tmp_path):
     r = inst.client.type_string("dir a:\n")
     assert r.status_code == 200, r.text
     wait_text(inst.client, "DISKTWO")
+    inst.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Nested archives Phase 4: the ISO level, CD in zip in zip, the consumers
+# ---------------------------------------------------------------------------
+
+
+def iso_with_files(files: dict[str, bytes]) -> bytes:
+    """The unit tests' IsoWithFiles(): files at the root or one directory
+    down, ECMA-119 level 1 names with ";1", both path tables, the file
+    structure version, at least 24 sectors (libarchive's bidder reads
+    48 KiB before it looks at sector 16)."""
+    sector = 2048
+    dirs: dict[str, list[str]] = {"": []}
+    for name in files:
+        d, _, _ = name.rpartition("/")
+        dirs.setdefault(d, []).append(name)
+    table_l, table_m = 18, 19
+    dir_extent = {d: 20 + i for i, d in enumerate(dirs)}
+    nxt = 20 + len(dirs)
+    file_extent = {}
+    for name, data in files.items():
+        file_extent[name] = nxt
+        nxt += (len(data) + sector - 1) // sector
+    total = max(nxt, 24)
+    iso = bytearray(total * sector)
+
+    def both32(at, value):
+        struct.pack_into("<I", iso, at, value)
+        struct.pack_into(">I", iso, at + 4, value)
+
+    def record(at, ident: bytes, extent, length, is_dir):
+        n = 33 + len(ident) + (1 if len(ident) % 2 == 0 else 0)
+        iso[at] = n
+        both32(at + 2, extent)
+        both32(at + 10, length)
+        iso[at + 18:at + 21] = bytes([100, 1, 1])
+        iso[at + 25] = 2 if is_dir else 0
+        iso[at + 28] = 1
+        iso[at + 31] = 1
+        iso[at + 32] = len(ident)
+        iso[at + 33:at + 33 + len(ident)] = ident
+        return n
+
+    for d, names in dirs.items():
+        at = dir_extent[d] * sector
+        at += record(at, b"\x00", dir_extent[d], sector, True)
+        at += record(at, b"\x01", dir_extent[""], sector, True)
+        if d == "":
+            for sub in dirs:
+                if sub:
+                    at += record(at, sub.upper().encode(), dir_extent[sub], sector, True)
+        for name in names:
+            leaf = name.rpartition("/")[2].upper().encode() + b";1"
+            at += record(at, leaf, file_extent[name], len(files[name]), False)
+    for name, data in files.items():
+        at = file_extent[name] * sector
+        iso[at:at + len(data)] = data
+    table_size = 0
+    for big, where in ((False, table_l), (True, table_m)):
+        at = where * sector
+        for d in dirs:
+            ident = b"\x00" if d == "" else d.upper().encode()
+            iso[at] = len(ident)
+            struct.pack_into(">I" if big else "<I", iso, at + 2, dir_extent[d])
+            struct.pack_into(">H" if big else "<H", iso, at + 6, 1)
+            iso[at + 8:at + 8 + len(ident)] = ident
+            at += 8 + len(ident) + (len(ident) % 2)
+        table_size = at - where * sector
+    pvd = 16 * sector
+    iso[pvd] = 1
+    iso[pvd + 1:pvd + 6] = b"CD001"
+    iso[pvd + 6] = 1
+    iso[pvd + 40:pvd + 72] = b"TEST".ljust(32)
+    both32(pvd + 80, total)
+    iso[pvd + 120] = 1
+    iso[pvd + 123] = 1
+    iso[pvd + 124] = 1
+    iso[pvd + 127] = 1
+    iso[pvd + 129] = 8
+    iso[pvd + 130] = 8
+    both32(pvd + 132, table_size)
+    struct.pack_into("<I", iso, pvd + 140, table_l)
+    struct.pack_into(">I", iso, pvd + 148, table_m)
+    record(pvd + 156, b"\x00", dir_extent[""], sector, True)
+    iso[pvd + 881] = 1
+    term = 17 * sector
+    iso[term] = 255
+    iso[term + 1:term + 6] = b"CD001"
+    iso[term + 6] = 1
+    return bytes(iso)
+
+
+def zip_bytes(members: dict[str, bytes], stored: bool = True) -> bytes:
+    out = io.BytesIO()
+    method = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
+    with zipfile.ZipFile(out, "w", compression=method) as z:
+        for name, data in members.items():
+            z.writestr(zipfile.ZipInfo(name, date_time=STAMP), data, compress_type=method)
+    return out.getvalue()
+
+
+def test_a_cd_inside_a_zip_inside_a_zip_mounts(dosbox_e2e, tmp_path):
+    g = tmp_path / "g"
+    g.mkdir(parents=True, exist_ok=True)
+    inner = zip_bytes({"cd/game.iso": minimal_iso()})
+    (g / "outer.zip").write_bytes(zip_bytes({"mid.zip": inner}))
+    inst = dosbox_e2e(
+        autoexec_lines=[
+            f"mount c {g}",
+            f"mount d {g / 'outer.zip'}/mid.zip/cd/game.iso",
+            "dir d:\\ > c:\\cd.txt",
+        ],
+        conf_dir=g,
+        settings=settings_for(tmp_path),
+    )
+    listing = wait_cd_listing(g / "CD.TXT")
+    assert b"Volume in drive D is TEST" in listing, listing
+    assert not (tmp_path / "saves").exists()
+    inst.shutdown()
+
+
+def test_a_floppy_inside_a_zip_inside_an_iso_boots(dosbox_e2e, tmp_path):
+    """The trap disc's shape (N2): a CD with a zip on it, the disk inside."""
+    g = tmp_path / "g"
+    g.mkdir(parents=True, exist_ok=True)
+    inner = zip_bytes({"boot.img": boot_floppy(b"ARCHIVE BOOT OK")})
+    (g / "disc.iso").write_bytes(iso_with_files({"GAMES/THEXDER.ZIP": inner}))
+    inst = dosbox_e2e(
+        autoexec_lines=[f"boot {g / 'disc.iso'}/GAMES/THEXDER.ZIP/boot.img"],
+        conf_dir=g,
+        settings=settings_for(tmp_path),
+    )
+    wait_text(inst.client, "ARCHIVE BOOT OK", timeout=20.0)
+    inst.shutdown()
+
+
+def test_the_swap_and_lua_take_a_nested_member(dosbox_e2e, tmp_path):
+    g = tmp_path / "g"
+    g.mkdir(parents=True, exist_ok=True)
+    inner = zip_bytes({"disks/disk1.img": fat12_floppy(b"DISKONE"),
+                       "disks/disk2.img": fat12_floppy(b"DISKTWO"),
+                       "disks/disk3.img": fat12_floppy(b"DISKTHREE")})
+    (g / "outer.zip").write_bytes(zip_bytes({"game.zip": inner}))
+    chain = f"{g / 'outer.zip'}/game.zip"
+    inst = dosbox_e2e(
+        autoexec_lines=[f"mount a {chain}/disks/disk1.img"],
+        conf_dir=g,
+        allowed_image_roots=[g],
+        settings=settings_for(tmp_path),
+    )
+    wait_text(inst.client, "mounted")
+    r = inst.client.drive_swap("A", f"{chain}/disks/disk2.img")
+    assert r.status_code == 200, r.text
+    assert sidecar_copy(tmp_path, "DISK2.IMG").is_file()
+    r = inst.client.type_string("dir a:\n")
+    assert r.status_code == 200, r.text
+    wait_text(inst.client, "DISKTWO")
+    # Lua goes through the same swap with the script's API trust; a long
+    # bracket string keeps a Windows path's backslashes out of Lua's escapes.
+    r = inst.client.script_load(
+        f'dosbox.drive_swap("A", [[{chain}/disks/disk3.img]])', name="nested")
+    assert r.status_code == 200, r.text
+    assert inst.client.script_start().status_code == 200
+    done = inst.client.wait_script_done()
+    assert done["state"] == "completed", done
+    assert sidecar_copy(tmp_path, "DISK3.IMG").is_file()
+    r = inst.client.type_string("dir a:\n")
+    assert r.status_code == 200, r.text
+    wait_text(inst.client, "DISKTHREE")
     inst.shutdown()

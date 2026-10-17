@@ -1,0 +1,26 @@
+dosbox-automation: keep Joliet names longer than mkisofs' 103-character
+'-joliet-long' limit. The directory record's length check above bounds
+the name; the path buffer is bounds-checked since 3.8.8 (750e8d7b).
+Torture test gap G17: discs authored on Windows carry names up to 110
+characters, which were cut and lost their extension.
+
+--- a/libarchive/archive_read_support_format_iso9660.c	2026-10-16 18:40:52.498435062 +0200
++++ b/libarchive/archive_read_support_format_iso9660.c	2026-10-16 18:40:52.514435150 +0200
+@@ -1901,12 +1901,12 @@
+ 
+ 	if (iso9660->seenJoliet) {
+ 		/* Joliet names are max 64 chars (128 bytes) according to spec,
+-		 * but genisoimage/mkisofs allows recording longer Joliet
+-		 * names which are 103 UCS2 characters(206 bytes) by their
+-		 * option '-joliet-long'.
++		 * but authoring tools record longer ones: genisoimage/mkisofs
++		 * up to 103 UCS2 characters (206 bytes) with '-joliet-long',
++		 * Windows tools up to what the directory record holds. The
++		 * record already bounds name_len (checked above), so the
++		 * whole name is kept.
+ 		 */
+-		if (name_len > 206)
+-			name_len = 206;
+ 		name_len &= ~1;
+ 
+ 		/* trim trailing first version and dot from filename.

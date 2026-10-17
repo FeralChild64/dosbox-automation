@@ -500,11 +500,10 @@ static int sidecar_action(const std::string& action)
 			for (const auto& level : split->levels) {
 				members.push_back(level.archive_member);
 			}
-		} else if (const auto* house = ArchiveMount::HouseArchiveMember(
-		                   opened.client->Entries())) {
-			members.push_back(house->utf8_path);
 		}
-		if (members.empty()) {
+		// A plain host with no house member needs no store.
+		if (members.empty() &&
+		    !ArchiveMount::HouseArchiveMember(opened.client->Entries())) {
 			return opened.client->IdentityHash();
 		}
 		if (!store_tried) {
@@ -517,19 +516,15 @@ static int sidecar_action(const std::string& action)
 		if (!store) {
 			return {};
 		}
-		auto error   = ArchiveMount::Error::None;
-		auto detail  = std::string();
-		auto entered = EnterChain(*opened.client,
-		                          archive,
-		                          members,
-		                          *store,
-		                          ChainOptionsFor(settings, limits, helper),
-		                          &error,
-		                          &detail);
-		if (!entered) {
+		auto entry = EnterForDrive(*opened.client,
+		                           archive,
+		                           members,
+		                           *store,
+		                           ChainOptionsFor(settings, limits, helper));
+		if (entry.failed || !entry.entered) {
 			return {};
 		}
-		return entered->leaf->IdentityHash();
+		return entry.entered->leaf->IdentityHash();
 	};
 	auto problem  = std::string();
 	auto sidecars = ArchiveManagement::ListSidecars(SavesDirectory(),

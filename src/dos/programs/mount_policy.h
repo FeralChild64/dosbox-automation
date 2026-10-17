@@ -44,6 +44,8 @@ enum class DenyReason {
 	// Phase 4a: member paths (design D7, D17)
 	ArchiveMemberNotFound,
 	ArchiveCueRejected,
+	// G12: a second archive on one MOUNT
+	ArchiveOnePerDrive,
 };
 
 struct MountVerdict {
@@ -159,6 +161,11 @@ PolicyPaths ParsePolicyConfig(const std::filesystem::path& config_path);
 // A folder that exists must never be reported as missing.
 const char* DenyReasonText(DenyReason reason);
 const char* DenyMessageId(DenyReason reason);
+
+// A path argument as the host's UTF-8: arguments arrive in the DOS code
+// page, typed or from AUTOEXEC, which autoexec.cpp converts from the conf
+// (G13).
+std::string HostPathFromDos(const std::string& dos_path);
 
 } // namespace MountPolicy
 

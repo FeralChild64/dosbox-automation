@@ -160,6 +160,11 @@ TEST(ArchiveTree, HouseArchiveMemberRefusesTheNearMisses)
 	EXPECT_EQ(HouseArchiveMember({File(0, "info.toml", "INFO.TOML", 1),
 	                              File(1, "disk1.img", "DISK1.IMG", 1)}),
 	          nullptr);
+	// An ISO beside info.toml is a flat package (N3, Mother 2026-10-12):
+	// a CD image on the drive, not a door.
+	EXPECT_EQ(HouseArchiveMember({File(0, "info.toml", "INFO.TOML", 1),
+	                              File(1, "game.iso", "GAME.ISO", 1)}),
+	          nullptr);
 }
 
 TEST(ArchiveTree, RefusesAMissingParentADuplicateAndAFileUsedAsADirectory)

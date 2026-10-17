@@ -91,6 +91,7 @@ add_executable(dosbox_tests
     dosbox_test_fixture.h
     drive_swap_tests.cpp
     drives_tests.cpp
+    floppy_image_tests.cpp
     fraction_tests.cpp
     fs_utils_tests.cpp
     fs_utf8_shortname_tests.cpp

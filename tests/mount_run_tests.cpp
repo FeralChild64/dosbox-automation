@@ -401,4 +401,12 @@ TEST(MountRunDescribe, TheEchoedNameHasNoControlCharactersAndAnEnd)
 	EXPECT_EQ(long_shown.substr(0, 68), std::string(64, 'A') + "... ");
 }
 
+TEST_F(MountRunTest, APercentInTheNameSurvivesTheQueue)
+{
+	File("100%.EXE");
+	const auto target = Resolve('C', "100%.EXE");
+	EXPECT_EQ(target.refusal, Refusal::None);
+	EXPECT_THAT(target.lines, ElementsAre("C:", "C:\\100%.EXE"));
+}
+
 } // namespace

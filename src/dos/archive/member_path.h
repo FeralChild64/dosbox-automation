@@ -52,10 +52,24 @@ std::optional<MemberPath> LoneImageMember(const std::filesystem::path& host_path
 // runs at resolve time, inside the helper).
 bool IsArchiveName(std::string_view file_name);
 
+// A .iso name, without regard to case: an ISO 9660 image is a level in
+// a chain (nested design N2) but never an archive file of its own.
+bool IsIsoName(std::string_view file_name);
+// A component that starts a chain level: an archive name or an ISO name.
+bool IsChainLevelName(std::string_view file_name);
+// The host of a member path: an archive file (D12), or an ISO under its
+// own name whose sector 16 says so. A bare ISO is MOUNT's CD image, so
+// IsArchiveFile stays false for it.
+bool IsMemberHostFile(const std::filesystem::path& host_path);
+
 // Design D7: from the left, the first component that is a regular file
 // and an archive ends the host part. Nothing when the whole path exists,
 // a component before it does not resolve, or no prefix is an archive.
 std::optional<MemberPath> SplitMemberPath(const std::string& raw);
+// The split's inverse for a chain the engine names (records, drive info,
+// cache keys): the host as it is, then '/' and the chain on every host.
+std::filesystem::path PathWithChain(const std::filesystem::path& host,
+                                    const std::string& chain);
 
 // The typed member through the Phase 1 name rules, then matched on the
 // UTF-8 path, the DOS path, and the UTF-8 path without regard to ASCII

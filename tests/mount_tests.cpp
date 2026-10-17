@@ -52,6 +52,35 @@ protected:
 		out.write(buf.data(), static_cast<std::streamsize>(buf.size()));
 	}
 
+	// A boot sector with a DOS 2.0 BPB (512-byte sectors, the FAT layout
+	// of a 720K disk), then zeros to num_bytes.
+	static void write_bpb_floppy(const std_fs::path& path,
+	                             const uint16_t total_sectors,
+	                             const uint8_t sectors_per_track,
+	                             const uint8_t heads, const uint8_t media,
+	                             const size_t num_bytes)
+	{
+		std::vector<char> buf(num_bytes, 0);
+		auto put16 = [&](const size_t at, const uint16_t v) {
+			buf[at]     = static_cast<char>(v & 0xff);
+			buf[at + 1] = static_cast<char>(v >> 8);
+		};
+		put16(11, 512);
+		buf[13] = 2;
+		put16(14, 1);
+		buf[16] = 2;
+		put16(17, 112);
+		put16(19, total_sectors);
+		buf[21] = static_cast<char>(media);
+		put16(22, 3);
+		put16(24, sectors_per_track);
+		put16(26, heads);
+		buf[510] = '\x55';
+		buf[511] = '\xAA';
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+	}
+
 	static void write_iso_image(const std_fs::path& path)
 	{
 		// "CD001" at 0x8001: volume descriptor magic per ECMA-119
@@ -236,6 +265,36 @@ TEST_F(MountTest, RejectsNonexistentPath)
 	// Not a directory or regular file -> PROGRAM_MOUNT_ERROR_2.
 	const auto result = Mount("G " + P("does_not_exist_at_all"));
 	EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(MountTest, ATypedPathInCodePage437ReachesItsUtf8Folder)
+{
+	// G13: the one-half sign is 0xAB in code page 437, as Alt+171 types
+	// it; the host folder's name is UTF-8.
+	std_fs::create_directories(test_file_path / std_fs::path(u8"3\u00BDdir"));
+	const auto typed = (test_file_path / "3").string() + "\xAB" + "dir";
+
+	const auto result = Mount("C " + typed);
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::Directory);
+}
+
+TEST_F(MountTest, ATypedPathThroughADosDriveKeepsItsCodePageBytes)
+{
+	// A-umlaut typed as 0x8E reaches the UTF-8 folder through C: as well;
+	// the drive mapping passes the converted name through to the host.
+	std_fs::create_directories(test_file_path / std_fs::path(u8"\u00C4RGER"));
+	ASSERT_TRUE(Mount("C " + test_file_path.string()).has_value());
+	const auto result = Mount("D C:\\\x8ERGER");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::Directory);
+}
+
+TEST_F(MountTest, AnAsciiPathIsUnchangedByTheConversion)
+{
+	const auto result = Mount("C " + P("plain_dir"));
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::Directory);
 }
 
 TEST_F(MountTest, RejectsOverlayWithoutMountedBase)
@@ -782,6 +841,28 @@ TEST_F(MountTest, GeometryMatchHasKilobyteGranularity)
 	const auto off_result = Mount("C " + off.string());
 	ASSERT_TRUE(off_result.has_value());
 	EXPECT_EQ(off_result->type, MountType::HardDiskImage);
+}
+
+TEST_F(MountTest, AFloppyWithAKilobyteMoreDetectsByItsBootSector)
+{
+	// G14, Super Space Invaders: 720K FAT12 plus 1024 bytes.
+	const auto img = test_file_path / "trailing720.img";
+	write_bpb_floppy(img, 1440, 9, 2, 0xF9, 737280 + 1024);
+
+	const auto result = Mount("A " + img.string());
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::FloppyImage);
+}
+
+TEST_F(MountTest, ABootSectorThatDisagreesWithTheTableIsNoWitness)
+{
+	// The BPB names 1440 sectors, but one head is no 720K geometry.
+	const auto img = test_file_path / "liar720.img";
+	write_bpb_floppy(img, 1440, 9, 1, 0xF9, 737280 + 1024);
+
+	const auto result = Mount("C " + img.string());
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::HardDiskImage);
 }
 
 // ---------------------------------------------------------------------

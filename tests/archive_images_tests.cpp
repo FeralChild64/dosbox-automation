@@ -399,6 +399,35 @@ TEST_F(ArchiveImagesTest, ADriveMountedReadOnlyKeepsItsSwapsReadOnly)
 	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
 }
 
+TEST_F(ArchiveImagesTest, AReadOnlyDriveKeepsItsNestedSwapsReadOnly)
+{
+	// The mode is keyed on the host archive; a chain's host is the outer.
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"game.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	auto first = ArchiveImages::Resolve(
+	        RequestFor("game.zip/disks/disk1.img", true, tmp / "outer.zip"));
+	ASSERT_TRUE(first.resolved) << first.detail;
+	EXPECT_TRUE(first.resolved->read_only);
+	ArchiveImages::Keep(2, {first.resolved->hold});
+	ArchiveImages::DriveMode mode = {};
+	mode.archive                  = std_fs::canonical(tmp / "outer.zip");
+	mode.read_only                = true;
+	ArchiveImages::SetDriveMode(2, mode);
+	const auto second = SwapInto(2, "game.zip/disks/disk2.img", tmp / "outer.zip");
+	ASSERT_TRUE(second.resolved) << second.detail;
+	EXPECT_TRUE(second.resolved->read_only);
+	EXPECT_TRUE(second.resolved->hold->lease);
+	EXPECT_FALSE(second.resolved->hold->image_lock);
+	EXPECT_FALSE(std_fs::exists(tmp / "saves"));
+}
+
 // ada-ciru item 2: a drive mounted with -sidecar X keeps its later disks
 // in X as well, not in a fresh default sidecar.
 TEST_F(ArchiveImagesTest, ADriveWithANamedSidecarKeepsItsSwapsInIt)
@@ -920,7 +949,7 @@ TEST_F(ArchiveImagesTest, ANestedDisksSidecarCarriesTheLeafIdentityUnderTheHosts
 		                                                      &detail);
 		ASSERT_TRUE(record) << detail;
 		EXPECT_EQ(record->archive_path,
-		          ArchiveMount::PathToUtf8(tmp / "outer.zip" / "game.zip"));
+		          ArchiveMount::PathToUtf8(tmp / "outer.zip") + "/game.zip");
 		EXPECT_EQ(record->archive_path.find(cache_dir.string()),
 		          std::string::npos);
 		// N5: the leaf archive's identity, the host file's name.
@@ -1007,6 +1036,299 @@ TEST_F(ArchiveImagesTest, ASwapBackThroughTheShortPathFindsItsHold)
 	ASSERT_TRUE(again.resolved) << again.detail;
 	EXPECT_EQ(again.resolved->hold.get(), first.resolved->hold.get());
 	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+}
+
+// G11, Bard's Tale III: the house store holds a TDC zip, the disks are in
+// that zip, and the short path spells the TDC zip but not the store.
+static void WriteHouseWithInnerZip(const std_fs::path& tmp)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "store.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"tdc.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	ASSERT_TRUE(WriteArchive(tmp / "house.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",               "[game]\n"},
+	                                 {"game.store.zip", Slurp(tmp / "store.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+}
+
+TEST_F(ArchiveImagesTest, AShortPathThroughAFurtherArchiveEntersTheHouse)
+{
+	WriteHouseWithInnerZip(tmp);
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("tdc.zip/disks/disk1.img", false, tmp / "house.zip"));
+	ASSERT_TRUE(result.resolved) << result.detail;
+	EXPECT_EQ(Slurp(result.resolved->host_file), FloppyBytes());
+	EXPECT_EQ(result.resolved->hold->chain, "game.store.zip/tdc.zip");
+	EXPECT_EQ(result.resolved->hold->house_member, "game.store.zip");
+}
+
+TEST_F(ArchiveImagesTest, ASwapBackThroughAShortChainFindsItsHold)
+{
+	WriteHouseWithInnerZip(tmp);
+	const auto first = SwapInto(2, "tdc.zip/disks/disk1.img", tmp / "house.zip");
+	ASSERT_TRUE(first.resolved) << first.detail;
+	ArchiveImages::Keep(2, {first.resolved->hold});
+	const auto other = SwapInto(2, "tdc.zip/disks/disk2.img", tmp / "house.zip");
+	ASSERT_TRUE(other.resolved) << other.detail;
+	ArchiveImages::Keep(2, {other.resolved->hold});
+	const auto again = SwapInto(2, "tdc.zip/disks/disk1.img", tmp / "house.zip");
+	ASSERT_TRUE(again.resolved) << again.detail;
+	EXPECT_EQ(again.resolved->hold.get(), first.resolved->hold.get());
+}
+
+TEST_F(ArchiveImagesTest, AShortChainIntoAWildArchiveIsStillNotFound)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "wild.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"readme.txt",                 "hello"},
+	                                 {  "game.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("tdc.zip/disks/disk1.img", false, tmp / "wild.zip"));
+	ASSERT_FALSE(result.resolved);
+	EXPECT_NE(result.detail.find("no such member"), std::string::npos)
+	        << result.detail;
+}
+
+TEST_F(ArchiveImagesTest, ADiskInsideAZipInsideAnIsoResolves)
+{
+	const auto iso = ArchiveFixtures::IsoWithFiles({
+	        {"GAMES/GAME.ZIP", Slurp(tmp / "game.zip")}
+        });
+	ArchiveFixtures::WriteBytes(tmp / "disc.iso",
+	                            std::vector<uint8_t>(iso.begin(), iso.end()));
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("GAMES/GAME.ZIP/disks/disk1.img", false, tmp / "disc.iso"));
+	ASSERT_TRUE(result.resolved) << result.detail;
+	EXPECT_EQ(result.resolved->member_name, "disks/disk1.img");
+	EXPECT_EQ(Slurp(result.resolved->host_file), FloppyBytes());
+	EXPECT_EQ(result.resolved->hold->chain, "GAMES/GAME.ZIP");
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+}
+
+// G16: a house archive on a disc is a chain level, not the host file.
+static void WriteIsoWith(const std_fs::path& tmp, const std_fs::path& archive)
+{
+	const auto iso = ArchiveFixtures::IsoWithFiles({
+	        {"GAMES/HOUSE.ZIP", Slurp(archive)}
+        });
+	ArchiveFixtures::WriteBytes(tmp / "disc.iso",
+	                            std::vector<uint8_t>(iso.begin(), iso.end()));
+}
+
+static void WriteHouse(const std_fs::path& tmp)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "house.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",              "[game]\n"},
+	                                 {"game.store.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+}
+
+TEST_F(ArchiveImagesTest, AHouseArchiveOnADiscEntersItsStore)
+{
+	WriteHouse(tmp);
+	WriteIsoWith(tmp, tmp / "house.zip");
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("GAMES/HOUSE.ZIP/disks/disk1.img", false, tmp / "disc.iso"));
+	ASSERT_TRUE(result.resolved) << result.detail;
+	EXPECT_EQ(result.resolved->member_name, "disks/disk1.img");
+	EXPECT_EQ(Slurp(result.resolved->host_file), FloppyBytes());
+	EXPECT_EQ(result.resolved->hold->chain, "GAMES/HOUSE.ZIP/game.store.zip");
+	EXPECT_EQ(result.resolved->hold->house_member, "game.store.zip");
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+}
+
+TEST_F(ArchiveImagesTest, AShortChainThroughAHouseArchiveOnADiscEntersItsStore)
+{
+	WriteHouseWithInnerZip(tmp);
+	WriteIsoWith(tmp, tmp / "house.zip");
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("GAMES/HOUSE.ZIP/tdc.zip/disks/disk1.img",
+	                   false,
+	                   tmp / "disc.iso"));
+	ASSERT_TRUE(result.resolved) << result.detail;
+	EXPECT_EQ(Slurp(result.resolved->host_file), FloppyBytes());
+	EXPECT_EQ(result.resolved->hold->chain,
+	          "GAMES/HOUSE.ZIP/game.store.zip/tdc.zip");
+}
+
+TEST_F(ArchiveImagesTest, ASwapBackThroughAHouseArchiveOnADiscFindsItsHold)
+{
+	WriteHouse(tmp);
+	WriteIsoWith(tmp, tmp / "house.zip");
+	const auto first = SwapInto(2,
+	                            "GAMES/HOUSE.ZIP/disks/disk1.img",
+	                            tmp / "disc.iso");
+	ASSERT_TRUE(first.resolved) << first.detail;
+	ArchiveImages::Keep(2, {first.resolved->hold});
+	const auto other = SwapInto(2,
+	                            "GAMES/HOUSE.ZIP/disks/disk2.img",
+	                            tmp / "disc.iso");
+	ASSERT_TRUE(other.resolved) << other.detail;
+	ArchiveImages::Keep(2, {other.resolved->hold});
+	const auto again = SwapInto(2,
+	                            "GAMES/HOUSE.ZIP/disks/disk1.img",
+	                            tmp / "disc.iso");
+	ASSERT_TRUE(again.resolved) << again.detail;
+	EXPECT_EQ(again.resolved->hold.get(), first.resolved->hold.get());
+}
+
+TEST_F(ArchiveImagesTest, AWildArchiveOnADiscIsStillNotFound)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "wild.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"readme.txt",                 "hello"},
+	                                 {  "game.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	WriteIsoWith(tmp, tmp / "wild.zip");
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("GAMES/HOUSE.ZIP/disks/disk1.img", false, tmp / "disc.iso"));
+	ASSERT_FALSE(result.resolved);
+	EXPECT_EQ(result.verdict.reason, DenyReason::ArchiveMemberNotFound);
+}
+
+// A store shaped like a house archive itself: the rule enters one store.
+static void WriteHouseInHouse(const std_fs::path& tmp)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "store.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",              "[game]\n"},
+	                                 {"deep.store.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	ASSERT_TRUE(WriteArchive(tmp / "house.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",               "[game]\n"},
+	                                 {"game.store.zip", Slurp(tmp / "store.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+}
+
+TEST_F(ArchiveImagesTest, AStoreTheHostEnteredIsNotSearchedForAnother)
+{
+	WriteHouseInHouse(tmp);
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("disks/disk1.img", false, tmp / "house.zip"));
+	ASSERT_FALSE(result.resolved);
+	EXPECT_EQ(result.verdict.reason, DenyReason::ArchiveMemberNotFound);
+}
+
+TEST_F(ArchiveImagesTest, AStoreOnADiscIsNotSearchedForAnother)
+{
+	WriteHouseInHouse(tmp);
+	WriteIsoWith(tmp, tmp / "house.zip");
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("GAMES/HOUSE.ZIP/disks/disk1.img", false, tmp / "disc.iso"));
+	ASSERT_FALSE(result.resolved);
+	EXPECT_EQ(result.verdict.reason, DenyReason::ArchiveMemberNotFound);
+}
+
+TEST_F(ArchiveImagesTest, AStoreBelowTheDeepestLevelIsRefused)
+{
+	// Three spelled levels are the cap; the store would be a fourth.
+	WriteHouse(tmp);
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "b.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"house.zip", Slurp(tmp / "house.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	ASSERT_TRUE(WriteArchive(tmp / "a.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"b.zip", Slurp(tmp / "b.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	ASSERT_TRUE(WriteArchive(tmp / "outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.zip", Slurp(tmp / "a.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	auto result = ArchiveImages::Resolve(RequestFor(
+	        "a.zip/b.zip/house.zip/disks/disk1.img", false, tmp / "outer.zip"));
+	ASSERT_FALSE(result.resolved);
+	EXPECT_EQ(result.verdict.reason, DenyReason::ArchiveEntryRejected);
+	EXPECT_NE(result.detail.find("nesting depth"), std::string::npos)
+	        << result.detail;
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+}
+
+TEST_F(ArchiveImagesTest, ADiskInsideAZipWithALongJolietNameResolves)
+{
+	// G17: King's Quest IV's zip on the disc has a 104-character name.
+	const auto name = std::string(100, 'k') + ".zip";
+	const auto iso  = ArchiveFixtures::IsoWithJolietFile(name,
+                                                            Slurp(tmp / "game.zip"));
+	ArchiveFixtures::WriteBytes(tmp / "disc.iso",
+	                            std::vector<uint8_t>(iso.begin(), iso.end()));
+	auto result = ArchiveImages::Resolve(
+	        RequestFor(name + "/disks/disk1.img", false, tmp / "disc.iso"));
+	ASSERT_TRUE(result.resolved) << result.detail;
+	EXPECT_EQ(Slurp(result.resolved->host_file), FloppyBytes());
+	EXPECT_EQ(result.resolved->hold->chain, name);
+}
+
+TEST_F(ArchiveImagesTest, AnIsoLeafInsideAChainIsStillACdImage)
+{
+	auto error = std::string();
+	ASSERT_TRUE(WriteArchive(tmp / "outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"game.zip", Slurp(tmp / "game.zip")}
+        },
+	                         nullptr,
+	                         &error))
+	        << error;
+	auto result = ArchiveImages::Resolve(
+	        RequestFor("game.zip/cd/game.iso", false, tmp / "outer.zip"));
+	ASSERT_TRUE(result.resolved) << result.detail;
+	EXPECT_EQ(result.resolved->hold->chain, "game.zip");
+	EXPECT_TRUE(result.resolved->read_only); // a CD image comes from the cache
+	EXPECT_TRUE(result.resolved->hold->lease);
+	EXPECT_EQ(ArchiveImages::KindOf(result.resolved->member_name),
+	          ArchiveImages::Kind::CdImage);
 }
 
 TEST_F(ArchiveImagesTest, AFourthNestingLevelIsRefused)

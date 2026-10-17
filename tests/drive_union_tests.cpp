@@ -41,6 +41,7 @@ std::vector<FileEntry> Game()
 	        {"game/data/level.wad", std::string(5000, 'w')},
 	        {"game/readme.txt", "hello"},
 	        {"game/save.dat", "old save"},
+	        {"game/skiega", "map data"},
 	};
 }
 
@@ -92,8 +93,8 @@ protected:
 		SidecarRecord identity = {};
 		identity.archive_path  = archive.string();
 		identity.identity_hash = std::string(64, 'a');
-		identity.entry_count   = 6;
-		identity.total_bytes   = 8013;
+		identity.entry_count   = 7;
+		identity.total_bytes   = 8021;
 		auto made              = UnionDrive::Create(
                         lower.drive, sidecar, 'Z', identity, &record_error);
 		EXPECT_TRUE(made) << record_error;
@@ -193,7 +194,7 @@ TEST_F(UnionDriveTest, ReadsFallThroughAndTheListingMergesBothLayers)
 {
 	EXPECT_EQ(ReadDos("Z:\\README.TXT"), "hello");
 	EXPECT_EQ(Dir("Z:\\*.*"),
-	          (std::vector<std::string>{"DOOM.EXE", "DATA", "README.TXT", "SAVE.DAT"}));
+	          (std::vector<std::string>{"DOOM.EXE", "DATA", "README.TXT", "SAVE.DAT", "SKIEGA"}));
 	ASSERT_TRUE(WriteDos("Z:\\NEW.TXT", "new", true));
 	EXPECT_EQ(Host("NEW.TXT"), "new");
 	EXPECT_EQ(ReadDos("Z:\\NEW.TXT"), "new");
@@ -201,7 +202,7 @@ TEST_F(UnionDriveTest, ReadsFallThroughAndTheListingMergesBothLayers)
 	std::sort(listing.begin(), listing.end());
 	EXPECT_EQ(listing,
 	          (std::vector<std::string>{
-	                  "DATA", "DOOM.EXE", "NEW.TXT", "README.TXT", "SAVE.DAT"}));
+	                  "DATA", "DOOM.EXE", "NEW.TXT", "README.TXT", "SAVE.DAT", "SKIEGA"}));
 	EXPECT_TRUE(DOS_FileExists("Z:\\NEW.TXT"));
 	EXPECT_FALSE(union_drive->IsReadOnly());
 	uint16_t bs = 0, tc = 0, fc = 0;
@@ -283,7 +284,7 @@ TEST_F(UnionDriveTest, DeleteAndRenameOfLowerEntriesBecomeChanges)
 	auto listing = Dir("Z:\\*.*");
 	std::sort(listing.begin(), listing.end());
 	EXPECT_EQ(listing,
-	          (std::vector<std::string>{"DATA", "DOOM.EXE", "SAVE.BAK"}));
+	          (std::vector<std::string>{"DATA", "DOOM.EXE", "SAVE.BAK", "SKIEGA"}));
 }
 
 TEST_F(UnionDriveTest, DeleteThenCreateOfOneNameInOneSessionSurvivesAReload)
@@ -637,7 +638,7 @@ TEST_F(UnionDriveTest, DeviceNamesStillOpenWhileTheDefaultDriveIsNotReady)
 TEST_F(UnionDriveTest, ChildSearchesThatRunToTheEndLeaveTheParentSearchAlone)
 {
 	const auto expected = Dir("Z:\\*.*");
-	ASSERT_EQ(expected.size(), 4u);
+	ASSERT_EQ(expected.size(), 5u);
 	DriveSearch parent(*union_drive, 25, dos.dta());
 	DriveSearch child(*union_drive, 25, dos.tables.tempdta);
 	ASSERT_TRUE(parent.First(""));
@@ -674,7 +675,7 @@ TEST_F(UnionDriveTest, AVolumeSearchEndsWithoutTouchingAnotherSearch)
 TEST_F(UnionDriveTest, AbandonedSearchesAreEvictedBeforeTheSearchStillReading)
 {
 	const auto expected = Dir("Z:\\*.*");
-	ASSERT_EQ(expected.size(), 4u);
+	ASSERT_EQ(expected.size(), 5u);
 	DriveSearch parent(*union_drive, 25, dos.dta());
 	DriveSearch abandoned(*union_drive, 25, dos.tables.tempdta);
 	ASSERT_TRUE(parent.First(""));
@@ -833,5 +834,34 @@ TEST_F(UnionDriveTest, ALowercaseLinkInTheSidecarIsRefusedLikeAnUppercaseOne)
 	EXPECT_EQ(Host("../victim.txt"), "keep");
 }
 #endif
+
+// E4: "NAME." and "NAME" are the same file in DOS. The sidecar record
+// must key by the canonical form so DEL one hides both and a create
+// through either unhides.
+TEST_F(UnionDriveTest, ATrailingDotDeleteHidesTheCanonicalName)
+{
+	EXPECT_TRUE(DOS_FileExists("Z:\\SKIEGA"));
+	EXPECT_TRUE(DOS_UnlinkFile("Z:\\SKIEGA."));
+	EXPECT_FALSE(DOS_FileExists("Z:\\SKIEGA"));
+	EXPECT_FALSE(DOS_FileExists("Z:\\SKIEGA."));
+	auto names = Dir("Z:\\*.*");
+	EXPECT_EQ(std::count(names.begin(), names.end(), "SKIEGA"), 0);
+}
+
+TEST_F(UnionDriveTest, ACanonicalDeleteHidesTheTrailingDotForm)
+{
+	EXPECT_TRUE(DOS_UnlinkFile("Z:\\SKIEGA"));
+	EXPECT_FALSE(DOS_FileExists("Z:\\SKIEGA."));
+	EXPECT_FALSE(DOS_FileExists("Z:\\SKIEGA"));
+}
+
+TEST_F(UnionDriveTest, ACreateAfterATrailingDotDeleteUnhides)
+{
+	EXPECT_TRUE(DOS_UnlinkFile("Z:\\SKIEGA."));
+	EXPECT_FALSE(DOS_FileExists("Z:\\SKIEGA"));
+	ASSERT_TRUE(WriteDos("Z:\\SKIEGA", "back", true));
+	EXPECT_EQ(ReadDos("Z:\\SKIEGA"), "back");
+	EXPECT_EQ(ReadDos("Z:\\SKIEGA."), "back");
+}
 
 } // namespace

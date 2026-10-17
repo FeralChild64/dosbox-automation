@@ -44,6 +44,10 @@ struct ChainResult {
 	bool leaf_window = false;
 	// N7: total entries across all levels.
 	int64_t total_entries = 0;
+	// The levels walked: the given chain plus any store the house rule
+	// entered (N4 inside a chain, G16), and the first such store.
+	ChainedPath chain        = {};
+	std::string house_member = {};
 
 	Error error        = Error::None;
 	std::string detail = {};
@@ -58,6 +62,8 @@ struct ChainOptions {
 	// N8: D5 per level. When false, a sequential intermediate archive
 	// is refused.
 	bool sequential_allowed = false;
+	// A drive: a house archive the chain ends on is entered (N3).
+	bool enter_house_leaf = false;
 };
 
 // The levels' archive members joined with '/': "" when not nested.
@@ -75,7 +81,9 @@ ChainedPath ChainOfLevels(const std::filesystem::path& host,
 
 // Walks the levels: per intermediate archive, find the member, lease it
 // from the cache, open a helper on the cached copy. The host client is
-// the caller's, already opened for the policy check.
+// the caller's, already opened for the policy check. A name absent from a
+// house archive's listing, the host's included, is looked for inside its
+// store (N4).
 ChainResult ResolveChain(const ChainedPath& chain, ArchiveHelperClient& host_client,
                          const std::filesystem::path& host_archive,
                          ArchiveCache& cache, const ChainOptions& options);

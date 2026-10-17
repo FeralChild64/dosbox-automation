@@ -18,6 +18,7 @@
 #include "dos/programs/mount_common.h"
 #include "dos/programs/mount_policy.h"
 #include "dosbox_test_fixture.h"
+#include "hardware/dma.h"
 #include "ints/bios_disk.h"
 #include "misc/cross.h"
 #include "shell/shell.h"
@@ -176,6 +177,10 @@ protected:
 		SHELL_TakePendingCommands();
 		ArchiveImages::ReleaseAllForTests();
 		imageDiskList.fill(nullptr);
+		// BOOT touches the DMA controller; its static would otherwise
+		// be destroyed at exit after the logger it reports into
+		// (2026-10-02).
+		DMA_Destroy();
 		MountPolicy::verdict_hook            = nullptr;
 		MountPolicy::drive_construction_hook = nullptr;
 		ArchiveMount::SetHelperPathOverride({});
@@ -217,6 +222,22 @@ protected:
 		             {
 		                     {        "info.toml",           toml},
 		                     {stem + ".store.zip", ReadAll(inner)}
+                });
+	}
+	// A stored outer around a built inner, plus a notes file so the outer
+	// is a wild archive (never a house member): the drive must come from
+	// the spelled chain, not from the rule. Game() has its own readme.
+	std_fs::path Outer(const std::string& name, const std::string& inner_name,
+	                   const Kind inner_kind = Kind::ZipStored,
+	                   const Kind outer_kind = Kind::ZipStored,
+	                   const std::vector<FileEntry>& payload = Game())
+	{
+		const auto inner = Built(inner_name, inner_kind, payload);
+		return Built(name,
+		             outer_kind,
+		             {
+		                     {"notes.txt", "a collection"},
+		                     { inner_name, ReadAll(inner)},
                 });
 	}
 	// Members copied into the cache: regular files under any entry's
@@ -507,6 +528,79 @@ TEST_F(MountArchiveTest, AShortMemberPathMountsADiskFromAHouseArchive)
 	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKTWO");
 }
 
+// G16: on a disc the house archive is a chain level, not the host file.
+static std_fs::path DiscWith(const std_fs::path& tmp, const std_fs::path& archive)
+{
+	const auto iso = ArchiveFixtures::IsoWithFiles({
+	        {"GAMES/HOUSE.ZIP", ReadAll(archive)}
+        });
+	ArchiveFixtures::WriteBytes(tmp / "disc.iso",
+	                            std::vector<uint8_t>(iso.begin(), iso.end()));
+	return tmp / "disc.iso";
+}
+
+TEST_F(MountArchiveTest, AShortMemberPathMountsADiskFromAHouseArchiveOnADisc)
+{
+	const auto disc = DiscWith(tmp, House("disks.zip", Images()));
+	ASSERT_TRUE(Mount("A " + disc.string() + "/GAMES/HOUSE.ZIP/disks/disk1.img")
+	                    .has_value());
+	ASSERT_TRUE(imageDiskList[0]);
+	EXPECT_STREQ(Drives.at(0)->GetLabel(), "DISKONE");
+}
+
+TEST_F(MountArchiveTest, AHouseArchiveOnADiscMountsAsItsGame)
+{
+	const auto disc = DiscWith(tmp, House("doom.zip"));
+	ASSERT_TRUE(Mount("D " + disc.string() + "/GAMES/HOUSE.ZIP").has_value());
+	ASSERT_TRUE(DriveAt('D'));
+	EXPECT_TRUE(DriveAt('D')->FileExists("DOOM.EXE"));
+}
+
+TEST_F(MountArchiveTest, AShortChainThroughAHouseArchiveOnADiscMountsTheInnerArchive)
+{
+	const auto inner = Built("tdc.zip", Kind::ZipStored, Game());
+	const auto disc  = DiscWith(tmp,
+                                   House("doom.zip",
+	                                  {
+                                                 {"tdc.zip", ReadAll(inner)}
+        }));
+	ASSERT_TRUE(Mount("D " + disc.string() + "/GAMES/HOUSE.ZIP/tdc.zip").has_value());
+	auto drive = DriveAt('D');
+	ASSERT_TRUE(drive);
+	EXPECT_TRUE(drive->FileExists("DOOM.EXE"));
+	EXPECT_NE(drive->GetInfoString().find("GAMES/HOUSE.ZIP/doom.store.zip/tdc.zip"),
+	          std::string::npos)
+	        << drive->GetInfoString();
+}
+
+TEST_F(MountArchiveTest, AShortChainThroughAHouseArchiveMountsTheInnerArchive)
+{
+	// The host file itself is the house archive: its store holds tdc.zip.
+	const auto inner = Built("tdc.zip", Kind::ZipStored, Game());
+	const auto house = House("doom.zip",
+	                         {
+	                                 {"tdc.zip", ReadAll(inner)}
+        });
+	ASSERT_TRUE(Mount("D " + house.string() + "/tdc.zip").has_value());
+	auto drive = DriveAt('D');
+	ASSERT_TRUE(drive);
+	EXPECT_TRUE(drive->FileExists("DOOM.EXE"));
+	EXPECT_NE(drive->GetInfoString().find("doom.zip/doom.store.zip/tdc.zip"),
+	          std::string::npos)
+	        << drive->GetInfoString();
+}
+
+TEST_F(MountArchiveTest, ASecondArchiveIsRefusedNotDropped)
+{
+	// G12: MOUNT A d1.zip d2.zip mounted d1.zip and dropped d2.zip silently.
+	const auto one = Built("d1.zip", Kind::ZipStored, Game());
+	const auto two = Built("d2.zip", Kind::ZipStored, Game());
+	EXPECT_FALSE(Mount("A " + one.string() + " " + two.string()).has_value());
+	EXPECT_FALSE(Drives.at(drive_index('A')));
+	ASSERT_FALSE(verdicts.empty());
+	EXPECT_EQ(verdicts.back().second.reason, DenyReason::ArchiveOnePerDrive);
+}
+
 TEST_F(MountArchiveTest, AHouseArchiveWhoseMemberCannotBeEnteredIsRefused)
 {
 	// N3: the shape says enter; a member that is no archive refuses the
@@ -537,6 +631,213 @@ TEST_F(MountArchiveTest, AHouseArchiveWhoseMemberCannotBeEnteredIsRefused)
 	ASSERT_TRUE(Mount("D " + house.string()).has_value());
 	ASSERT_TRUE(DriveAt('D'));
 	EXPECT_TRUE(DriveAt('D')->FileExists("DOOM.EXE"));
+}
+
+TEST_F(MountArchiveTest, AnIsoIsACdImageAndNotAnArchiveDrive)
+{
+	// N2: an ISO is a level in the middle of a chain or a CD at its end,
+	// never a drive over its files; -t archive on one is refused.
+	const auto iso = ArchiveFixtures::IsoWithFiles({
+	        {"README.TXT", "x"}
+        });
+	ArchiveFixtures::WriteBytes(tmp / "disc.iso",
+	                            std::vector<uint8_t>(iso.begin(), iso.end()));
+	EXPECT_FALSE(
+	        Mount("D " + (tmp / "disc.iso").string() + " -t archive").has_value());
+	EXPECT_FALSE(Drives.at(drive_index('D')));
+	ASSERT_FALSE(verdicts.empty());
+	EXPECT_EQ(verdicts.back().second.reason, DenyReason::NotAnArchive);
+	// Without the switch it is the CD image it always was.
+	const auto plain = Mount("D " + (tmp / "disc.iso").string());
+	ASSERT_TRUE(plain.has_value());
+	EXPECT_EQ(plain->type, MountType::CdRomImage);
+}
+
+TEST_F(MountArchiveTest, ASpelledChainMountsTheInnerArchiveAsTheDrive)
+{
+	const auto outer = Outer("coll.zip", "doom.zip");
+	auto result      = Mount("D " + outer.string() + "/doom.zip");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::Archive);
+	auto drive = DriveAt('D');
+	ASSERT_TRUE(drive);
+	EXPECT_TRUE(drive->FileExists("DOOM.EXE"));
+	EXPECT_FALSE(drive->FileExists("NOTES.TXT"));
+	EXPECT_NE(drive->GetInfoString().find("coll.zip/doom.zip"), std::string::npos)
+	        << drive->GetInfoString();
+	// The stored chain is a window: nothing copied.
+	EXPECT_EQ(CacheCopies(tmp / "cache"), 0);
+	drive.reset();
+	UnmountHelper('D');
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+}
+
+TEST_F(MountArchiveTest, ASpelledChainThroughADeflatedOuterUsesTheCache)
+{
+	const auto outer = Outer("coll.zip", "doom.zip", Kind::ZipStored, Kind::ZipDeflate);
+	ASSERT_TRUE(Mount("D " + outer.string() + "/doom.zip").has_value());
+	ASSERT_TRUE(DriveAt('D'));
+	EXPECT_TRUE(DriveAt('D')->FileExists("DOOM.EXE"));
+	EXPECT_EQ(CacheCopies(tmp / "cache"), 1);
+}
+
+TEST_F(MountArchiveTest, ASpelledChainCountsItsLevelsAgainstTheDepth)
+{
+	// N1: three levels below the host mount; a fourth is refused with
+	// the reason Resolve gives a fourth image level.
+	const auto c     = Built("c.zip", Kind::ZipStored, Game());
+	const auto b     = Built("b.zip",
+                             Kind::ZipStored,
+	                         {
+                                     {"c.zip", ReadAll(c)}
+        });
+	const auto a     = Built("a.zip",
+                             Kind::ZipStored,
+	                         {
+                                     {"b.zip", ReadAll(b)}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.zip", ReadAll(a)}
+        });
+	ASSERT_TRUE(Mount("D " + outer.string() + "/a.zip/b.zip/c.zip").has_value());
+	ASSERT_TRUE(DriveAt('D'));
+	EXPECT_TRUE(DriveAt('D')->FileExists("DOOM.EXE"));
+	UnmountHelper('D');
+	const auto four = Built("four.zip",
+	                        Kind::ZipStored,
+	                        {
+	                                {"outer.zip", ReadAll(outer)}
+        });
+	EXPECT_FALSE(
+	        Mount("E " + four.string() + "/outer.zip/a.zip/b.zip/c.zip").has_value());
+	EXPECT_FALSE(Drives.at(drive_index('E')));
+	ASSERT_FALSE(verdicts.empty());
+	EXPECT_EQ(verdicts.back().second.reason, DenyReason::ArchiveEntryRejected);
+}
+
+TEST_F(MountArchiveTest, ASpelledChainWhoseLeafIsAHouseArchiveEntersIt)
+{
+	// N3 applies to the leaf of a chain as to a plain host: a collection
+	// of house zips.
+	const auto house = House("doom.zip");
+	const auto coll  = Built("coll.zip",
+                                Kind::ZipStored,
+	                         {
+                                        {"readme.txt",            "x"},
+                                        {  "doom.zip", ReadAll(house)}
+        });
+	ASSERT_TRUE(Mount("D " + coll.string() + "/doom.zip").has_value());
+	auto drive = DriveAt('D');
+	ASSERT_TRUE(drive);
+	EXPECT_TRUE(drive->FileExists("DOOM.EXE"));
+	EXPECT_FALSE(drive->FileExists("INFO.TOML"));
+	EXPECT_NE(drive->GetInfoString().find("doom.store.zip"), std::string::npos)
+	        << drive->GetInfoString();
+	drive.reset();
+	UnmountHelper('D');
+	// At the depth cap the house step cannot enter: refused, not listed.
+	const auto b     = Built("b.zip",
+                             Kind::ZipStored,
+	                         {
+                                     {"doom.zip", ReadAll(house)}
+        });
+	const auto a     = Built("a.zip",
+                             Kind::ZipStored,
+	                         {
+                                     {"b.zip", ReadAll(b)}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.zip", ReadAll(a)}
+        });
+	EXPECT_FALSE(
+	        Mount("E " + outer.string() + "/a.zip/b.zip/doom.zip").has_value());
+	EXPECT_FALSE(Drives.at(drive_index('E')));
+	EXPECT_EQ(verdicts.back().second.reason, DenyReason::ArchiveEntryRejected);
+}
+
+TEST_F(MountArchiveTest, ASpelledChainsSidecarIsKeyedOnTheLeafUnderTheHostsName)
+{
+	const auto outer = Outer("coll.zip", "doom.zip");
+	ASSERT_TRUE(Mount("D " + outer.string() + "/doom.zip").has_value());
+	auto drive = UnionAt('D');
+	ASSERT_TRUE(drive);
+	const auto leaf    = ArchiveDriveOf(drive)->Source().IdentityHash();
+	const auto as_file = ArchiveMount::ArchiveReader::Open(tmp / "doom.zip",
+	                                                       ArchiveMount::Limits{});
+	ASSERT_EQ(as_file.error, ArchiveMount::Error::None) << as_file.detail;
+	EXPECT_EQ(leaf, as_file.reader->IdentityHash());
+	EXPECT_EQ(drive->SidecarDirectory(),
+	          tmp / "saves" / ("coll-" + leaf.substr(0, 8)));
+	auto detail       = std::string();
+	const auto record = ArchiveMount::SidecarRecord::Load(
+	        drive->SidecarDirectory() / ArchiveMount::SidecarTomlName, &detail);
+	ASSERT_TRUE(record) << detail;
+	// The record names the chain, so --sidecar list can follow it.
+	EXPECT_EQ(record->archive_path, ArchiveMount::PathToUtf8(outer) + "/doom.zip");
+	EXPECT_EQ(record->identity_hash, leaf);
+	auto file = drive->FileCreate("NEW.TXT", {});
+	ASSERT_TRUE(file);
+	file->Close();
+	drive.reset();
+	UnmountHelper('D');
+	// The same inner zip under another collection shares the saves (N5).
+	const auto other = Built("other.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"notes.txt",                       "y"},
+	                                 { "doom.zip", ReadAll(tmp / "doom.zip")}
+        });
+	ASSERT_TRUE(Mount("E " + other.string() + "/doom.zip").has_value());
+	ASSERT_TRUE(UnionAt('E'));
+	EXPECT_TRUE(UnionAt('E')->FileExists("NEW.TXT"));
+}
+
+TEST_F(MountArchiveTest, ASpelledChainDriveReconnects)
+{
+	// As AnEnteredDriveReconnects: the window reads the host, a touched
+	// host is Changed, and only a drive out of Ready reconnects.
+	const auto outer = Outer("coll.zip", "doom.zip");
+	ASSERT_TRUE(Mount("D " + outer.string() + "/doom.zip").has_value());
+	auto drive = DriveAt('D');
+	ASSERT_TRUE(drive);
+	const auto before  = drive->Source().IdentityHash();
+	std::error_code ec = {};
+	std_fs::last_write_time(outer,
+	                        std_fs::last_write_time(outer, ec) +
+	                                std::chrono::minutes(1),
+	                        ec);
+	ASSERT_FALSE(ec) << ec.message();
+	EXPECT_FALSE(drive->FileOpen("DOOM.EXE", OPEN_READ));
+	ASSERT_EQ(drive->State(), ArchiveMountState::Changed);
+	auto detail = std::string();
+	EXPECT_TRUE(drive->Reconnect(&detail)) << detail;
+	EXPECT_EQ(drive->State(), ArchiveMountState::Ready);
+	EXPECT_EQ(drive->Source().IdentityHash(), before);
+	EXPECT_TRUE(drive->FileOpen("DOOM.EXE", OPEN_READ));
+}
+
+TEST_F(MountArchiveTest, AMissingLevelInASpelledChainIsRefusedAndHoldsNothing)
+{
+	const auto outer = Outer("coll.zip", "doom.zip");
+	EXPECT_FALSE(Mount("D " + outer.string() + "/none.zip").has_value());
+	EXPECT_FALSE(Drives.at(drive_index('D')));
+	ASSERT_FALSE(verdicts.empty());
+	EXPECT_EQ(verdicts.back().second.reason, DenyReason::ArchiveMemberNotFound);
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+	// An image leaf keeps the image route: the dispatch looks at the
+	// leaf's name, not at the chain.
+	const auto images = Outer("imgs.zip",
+	                          "game.zip",
+	                          Kind::ZipStored,
+	                          Kind::ZipStored,
+	                          Images());
+	const auto result = Mount("A " + images.string() + "/game.zip/disks/disk1.img");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::FloppyImage);
 }
 
 TEST_F(MountArchiveTest, AReconnectOfAnEnteredDriveReleasesTheOldHostsEntry)
@@ -1345,6 +1646,50 @@ TEST_F(MountArchiveTest, BootRefusesAMissingMemberAndHoldsNothing)
 	EXPECT_TRUE(seen);
 }
 
+TEST_F(MountArchiveTest, BootThroughAChainHoldsTheDiskUnderA)
+{
+	// 4.1: BOOT's member path walks a chain; the disk is the sidecar
+	// copy and the hold lives with BOOT (KeepForBoot), under A.
+	const auto inner = Built("game.zip", Kind::ZipDeflate, Images());
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"game.zip", ReadAll(inner)}
+        });
+	const auto args  = outer.string() + "/game.zip/disks/disk1.img";
+	auto boot        = std::make_unique<BOOT>();
+	delete boot->cmd;
+	boot->cmd      = new CommandLine("BOOT", args);
+	full_arguments = args;
+	boot->Run();
+	ASSERT_NE(imageDiskList.at(0), nullptr);
+	EXPECT_EQ(ArchiveImages::HeldCountForTests(0), 1u);
+	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
+	const bool denied = std::any_of(verdicts.begin(),
+	                                verdicts.end(),
+	                                [](const auto& v) {
+		                                return !v.second.allowed;
+	                                });
+	EXPECT_FALSE(denied);
+}
+
+TEST_F(MountArchiveTest, BootTakesATypedPathInCodePage437)
+{
+	// G13 for BOOT: the one-half sign typed as 0xAB, the folder in UTF-8.
+	const auto folder = tmp / std_fs::path(u8"3½dir");
+	std_fs::create_directories(folder);
+	const auto zip = Built("game.zip", Kind::ZipDeflate, Images());
+	std_fs::copy_file(zip, folder / "game.zip");
+	const auto args = (tmp / "3").string() + "\xAB" +
+	                  "dir/game.zip/disks/disk1.img";
+	auto boot = std::make_unique<BOOT>();
+	delete boot->cmd;
+	boot->cmd      = new CommandLine("BOOT", args);
+	full_arguments = args;
+	boot->Run();
+	EXPECT_NE(imageDiskList.at(0), nullptr);
+}
+
 // Plan 4b: a single-image container on the command line is its image.
 TEST_F(MountArchiveTest, AnImzMountsItsFloppyFromTheSidecar)
 {
@@ -1535,7 +1880,10 @@ TEST_F(MountArchiveTest, ScratchMemberMountCopiesAndSwapsInsideTheScratch)
 
 // ada-lm3d: naming an archive inside an archive as a disk refuses it
 // before anything lands in a sidecar.
-TEST_F(MountArchiveTest, AnInnerArchiveNamedAsADiskLeavesNoSidecar)
+// Nested design 4.1: an archive-named member is entered as the drive, so
+// junk under that name is "not an archive" (the image route said "not a
+// disk image"); no sidecar either way.
+TEST_F(MountArchiveTest, AnInnerArchiveThatIsNoArchiveIsRefusedAndLeavesNoSidecar)
 {
 	auto entries = Images();
 	entries.push_back({"inner.zip", std::string(5000, 'z')});
@@ -1545,7 +1893,7 @@ TEST_F(MountArchiveTest, AnInnerArchiveNamedAsADiskLeavesNoSidecar)
 	EXPECT_TRUE(!std_fs::exists(tmp / "saves", ec) ||
 	            std_fs::is_empty(tmp / "saves", ec));
 	ASSERT_FALSE(verdicts.empty());
-	EXPECT_EQ(verdicts.back().second.reason, DenyReason::NotADiskImage);
+	EXPECT_EQ(verdicts.back().second.reason, DenyReason::NotAnArchive);
 }
 
 TEST_F(MountArchiveTest, ScratchMemberMountThatFailsLeavesNoScratch)

@@ -4,10 +4,12 @@
 #include "dos/archive/chain_resolver.h"
 
 #include "augra/log.h"
+#include "dos/archive/archive_tree.h"
 #include "dos/archive/entry_names.h"
 #include "dos/archive/member_path.h"
 #include "utils/checks.h"
 
+#include <cstddef>
 #include <limits>
 
 CHECK_NARROWING();
@@ -64,12 +66,8 @@ ChainResult ResolveChain(const ChainedPath& chain, ArchiveHelperClient& host_cli
 {
 	ChainResult out   = {};
 	out.total_entries = static_cast<int64_t>(host_client.Entries().size());
-
-	if (chain.levels.empty()) {
-		out.leaf_client  = &host_client;
-		out.leaf_archive = host_archive;
-		return out;
-	}
+	out.chain         = chain;
+	auto& levels      = out.chain.levels;
 
 	auto* current_client = &host_client;
 	auto current_archive = host_archive;
@@ -84,8 +82,69 @@ ChainResult ResolveChain(const ChainedPath& chain, ArchiveHelperClient& host_cli
 		             std::to_string(level);
 	};
 
-	for (size_t level = 0; level < chain.levels.size(); ++level) {
-		const auto& member_name = chain.levels[level].archive_member;
+	// N4 at the host and at every level (G11, G16): the name the next step
+	// looks up, absent from a house archive's own listing, is looked for in
+	// its store; a drive enters a house archive it ends on (N3).
+	auto entered_store     = std::optional<size_t>();
+	const auto enter_store = [&](const std::vector<Entry>& listing,
+	                             const size_t at,
+	                             const std::string& next,
+	                             std::string leaf) {
+		if (next.empty() && !options.enter_house_leaf) {
+			return true;
+		}
+		if (!next.empty()) {
+			auto rejection = ArchiveNames::Rejection::None;
+			if (FindMember(listing, next, &rejection) ||
+			    rejection != ArchiveNames::Rejection::None) {
+				return true;
+			}
+		}
+		const auto* house = HouseArchiveMember(listing);
+		if (!house) {
+			return true;
+		}
+		if (static_cast<int>(levels.size()) >= MaxNestingDepth) {
+			out.error        = Error::EntryRejected;
+			out.failed_level = static_cast<int>(at);
+			out.detail = house->utf8_path + ": nesting depth exceeds " +
+			             std::to_string(MaxNestingDepth);
+			return false;
+		}
+		ChainLevel store     = {};
+		store.archive_member = house->utf8_path;
+		store.leaf_member    = std::move(leaf);
+		levels.insert(levels.begin() + static_cast<std::ptrdiff_t>(at),
+		              std::move(store));
+		if (out.house_member.empty()) {
+			out.house_member = house->utf8_path;
+		}
+		entered_store = at;
+		augra::log_info(LogComponent,
+		                "nested level %zu enters the store %s (N4)",
+		                at,
+		                house->utf8_path.c_str());
+		return true;
+	};
+
+	if (!chain.host.lone) {
+		const auto next = levels.empty() ? chain.host.member
+		                                 : levels.front().archive_member;
+		if (!enter_store(host_client.Entries(),
+		                 0,
+		                 next,
+		                 levels.empty() ? next : std::string())) {
+			return out;
+		}
+	}
+	if (levels.empty()) {
+		out.leaf_client  = &host_client;
+		out.leaf_archive = host_archive;
+		return out;
+	}
+
+	for (size_t level = 0; level < levels.size(); ++level) {
+		const auto member_name = levels[level].archive_member;
 
 		auto rejection    = ArchiveNames::Rejection::None;
 		const auto* entry = FindMember(current_client->Entries(),
@@ -206,13 +265,29 @@ ChainResult ResolveChain(const ChainedPath& chain, ArchiveHelperClient& host_cli
 
 		current_client = link.client.get();
 		out.links.push_back(std::move(link));
+
+		// A store the rule entered is not itself searched for another.
+		if (entered_store == level) {
+			continue;
+		}
+		const bool last = level + 1 == levels.size();
+		const auto next = last ? levels[level].leaf_member
+		                       : levels[level + 1].archive_member;
+		if (!enter_store(current_client->Entries(),
+		                 level + 1,
+		                 next,
+		                 last ? next : std::string())) {
+			return out;
+		}
+		if (last && entered_store == level + 1) {
+			levels[level].leaf_member.clear();
+		}
 	}
 
 	// The leaf's container is unpacked whole by Resolve: same rule.
 	if (!options.sequential_allowed &&
 	    current_client->GetAccess() == Access::Sequential) {
-		refuse_sequential(chain.levels.size(),
-		                  chain.levels.back().archive_member);
+		refuse_sequential(levels.size(), levels.back().archive_member);
 		return out;
 	}
 

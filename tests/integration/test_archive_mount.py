@@ -9,6 +9,7 @@ are unchanged afterwards.
 """
 
 import hashlib
+import io
 import shutil
 import time
 import zipfile
@@ -552,3 +553,78 @@ def test_a_scratch_mount_discards_the_installers_writes(dosbox_e2e, tmp_path):
         time.sleep(0.2)
     assert not written.exists(), screen(inst.client)
     assert not (tmp_path / "saves").exists()
+
+
+# ---------------------------------------------------------------------------
+# Nested archives Phase 4: the wrapped house archive, the spelled chain
+# ---------------------------------------------------------------------------
+
+
+def build_wrapped_house_zip(path: Path, programs: dict[str, bytes]) -> Path:
+    """augra-pack's outer zip: info.toml beside one stored inner zip named
+    after the outer with ".store" (augra-pack.md, "Create outer zip")."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w", compression=zipfile.ZIP_STORED) as z:
+        for name, data in {"README.TXT": b"hello\r\n", **programs}.items():
+            z.writestr(zipfile.ZipInfo(name, date_time=STAMP), data,
+                       compress_type=zipfile.ZIP_STORED)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zipfile.ZipInfo("info.toml", date_time=STAMP),
+                   b'[game]\r\ntitle = "Wrapped"\r\n',
+                   compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr(zipfile.ZipInfo(f"{path.stem}.store.zip", date_time=STAMP),
+                   inner.getvalue(), compress_type=zipfile.ZIP_STORED)
+    return path
+
+
+def build_collection_zip(path: Path, inner_name: str, programs: dict[str, bytes]) -> Path:
+    """A wild collection: a readme beside a stored inner zip, so only a
+    spelled chain reaches the inner archive (the house rule wants nothing
+    but info.toml beside it)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w", compression=zipfile.ZIP_STORED) as z:
+        for name, data in programs.items():
+            z.writestr(zipfile.ZipInfo(name, date_time=STAMP), data,
+                       compress_type=zipfile.ZIP_STORED)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as z:
+        z.writestr(zipfile.ZipInfo("readme.txt", date_time=STAMP), b"a collection\r\n")
+        z.writestr(zipfile.ZipInfo(inner_name, date_time=STAMP), inner.getvalue())
+    return path
+
+
+def test_a_wrapped_house_archive_on_the_command_line_runs_its_game(tmp_path):
+    """Plan 5's --run path through N3: the engine enters the inner zip,
+    finds the one program there, runs it, and the writes land in a
+    sidecar named after the outer file (N5)."""
+    zip_path = build_wrapped_house_zip(tmp_path / "wrapped.zip", {"GAME.BAT": DONE_BAT})
+    before = sha256(zip_path)
+    assert run_to_exit(tmp_path, [str(zip_path)]) == 0
+    assert sidecar_files(tmp_path) == ["DONE.TXT"]
+    saves = [p.name for p in (tmp_path / "saves").iterdir()]
+    assert len(saves) == 1 and saves[0].startswith("wrapped-"), saves
+    assert sha256(zip_path) == before
+
+
+def test_a_spelled_chain_mounts_the_inner_archive_as_the_drive(dosbox_e2e, tmp_path):
+    zip_path = build_collection_zip(tmp_path / "game" / "coll.zip", "game.zip",
+                                    {"GAME.BAT": DONE_BAT, "DATA.TXT": b"d\r\n"})
+    before = sha256(zip_path)
+    inst = dosbox_e2e(
+        autoexec_lines=[
+            f"mount c {zip_path}/game.zip",
+            "c:",
+            "dir /b",
+            "mount",
+        ],
+        conf_dir=tmp_path / "game",
+        settings=settings_for(tmp_path),
+    )
+    text = wait_text(inst.client, "Archive")
+    assert "coll.zip/game.zip" in text, text
+    assert sorted(listing_after(text, "C:\\>dir /b")) == ["DATA.TXT", "GAME.BAT"], text
+    assert "README" not in text, text
+    assert "Entering" not in text, text  # spelled, not the house rule
+    assert sha256(zip_path) == before
+    inst.shutdown()

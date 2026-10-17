@@ -42,6 +42,7 @@ target_sources(dosboxcommon PRIVATE
   drive_union.cpp
   drive_virtual.cpp
   drives.cpp
+  floppy_image.cpp
   archive/archive_helper_client.cpp
   archive/chain_resolver.cpp
   programs.cpp

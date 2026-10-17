@@ -29,6 +29,7 @@ enum class HeadKind {
 	Zstd,
 	Isz,
 	Lzma,
+	Iso9660,
 };
 
 struct HeadSniff {
@@ -44,6 +45,11 @@ HeadSniff SniffHead(std::span<const uint8_t> head);
 // Reads HeadBytes at offset 0 through a duplicate; the duplicate shares
 // the offset, so the caller's position moves. Unknown on any failure.
 HeadSniff SniffFile(int fd);
+
+// ECMA-119 8.4: a primary volume descriptor at sector 16 (type 1,
+// "CD001", version 1); the system area before it is blank, so the head
+// cannot see an ISO. Reads through a duplicate; false on any failure.
+bool ProbeIso9660(int fd);
 
 const char* HeadKindName(HeadKind kind);
 

@@ -68,6 +68,15 @@ protected:
 		auto isz = std::vector<uint8_t>{'I', 's', 'Z', '!'};
 		isz.resize(64, 0);
 		WriteBytes(tmp / "games" / "cd.isz", isz);
+		// N2: an ISO under its own name, and the same bytes under a zip
+		// name.
+		const auto iso = ArchiveFixtures::IsoWithFiles({
+		        {"GAMES/X.ZIP", std::string(100, 'z')}
+                });
+		WriteBytes(tmp / "games" / "disc.iso",
+		           std::vector<uint8_t>(iso.begin(), iso.end()));
+		WriteBytes(tmp / "games" / "isobytes.zip",
+		           std::vector<uint8_t>(iso.begin(), iso.end()));
 	}
 	void TearDown() override
 	{
@@ -103,6 +112,21 @@ TEST_F(MemberPathTest, SplitsAtTheArchive)
 	ASSERT_TRUE(split);
 	EXPECT_EQ(split->archive, fs::path(P("game.zip")));
 	EXPECT_EQ(split->member, "disk1.img");
+}
+
+TEST_F(MemberPathTest, AnIsoHostSplitsOnlyWhenAMemberFollows)
+{
+	const auto split = SplitMemberPath(P("disc.iso/GAMES/X.ZIP/disk1.img"));
+	ASSERT_TRUE(split);
+	EXPECT_EQ(split->archive, fs::path(P("disc.iso")));
+	EXPECT_EQ(split->member, "GAMES/X.ZIP/disk1.img");
+	// A bare ISO is a CD image for MOUNT, never an archive file.
+	EXPECT_FALSE(IsArchiveFile(P("disc.iso")));
+	EXPECT_TRUE(IsMemberHostFile(P("disc.iso")));
+	EXPECT_TRUE(IsMemberHostFile(P("game.zip")));
+	// D12: an ISO's bytes under a zip name are no host at all.
+	EXPECT_FALSE(IsMemberHostFile(P("isobytes.zip")));
+	EXPECT_FALSE(SplitMemberPath(P("isobytes.zip/GAMES/X.ZIP")));
 }
 
 TEST_F(MemberPathTest, KeepsTheMemberSeparatorsAsTyped)
@@ -280,6 +304,24 @@ TEST_F(MemberPathTest, IsArchiveFileDoesNotWaitOnAFifo)
 	EXPECT_FALSE(IsSingleImageContainer(lone_fifo));
 }
 #endif
+
+TEST_F(MemberPathTest, AChainIsJoinedToItsHostWithASlashOnEveryHost)
+{
+	const auto host = tmp / "games" / "coll.zip";
+	EXPECT_EQ(PathToUtf8(PathWithChain(host, "a.zip/b.zip")),
+	          PathToUtf8(host) + "/a.zip/b.zip");
+	EXPECT_EQ(PathWithChain(host, ""), host);
+}
+
+TEST_F(MemberPathTest, AJoinedChainSplitsBackIntoItsHostAndChain)
+{
+	const auto host  = tmp / "games" / "game.zip";
+	const auto split = SplitMemberPath(
+	        PathToUtf8(PathWithChain(host, "inner.zip/disk1.img")));
+	ASSERT_TRUE(split);
+	EXPECT_EQ(split->archive, host);
+	EXPECT_EQ(split->member, "inner.zip/disk1.img");
+}
 
 TEST(FindMember, MatchesTheUtf8PathWithEitherSeparator)
 {

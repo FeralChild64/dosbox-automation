@@ -3,11 +3,18 @@
 //
 #include "dos/archive/head_sniff.h"
 
+#include "archive_fixtures.h"
+#include "dos/archive/descriptor.h"
+#include "test_temp_dir.h"
+
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -116,6 +123,46 @@ TEST(HeadSniff, RecognisesIszByItsSignature)
 	EXPECT_STREQ(HeadKindName(HeadKind::Isz), "isz");
 	EXPECT_EQ(SniffHead(Bytes("IsZ?"s + std::string(60, '\0'))).kind,
 	          HeadKind::Unknown);
+}
+
+// ECMA-119 8.4: the volume descriptors start at sector 16 and the system
+// area before them is blank, so the head alone cannot see an ISO.
+TEST(HeadSniff, AnIsoIsProbedAtSectorSixteen)
+{
+	const auto tmp = TestTempDir::MakeUnique("head_sniff_iso_");
+	ASSERT_FALSE(tmp.empty());
+	const auto iso   = ArchiveFixtures::MinimalIso();
+	const auto write = [&](const char* name, const std::string& bytes) {
+		ArchiveFixtures::WriteBytes(tmp / name,
+		                            std::vector<uint8_t>(bytes.begin(),
+		                                                 bytes.end()));
+		return tmp / name;
+	};
+	auto zeros = iso;
+	std::fill(zeros.begin(), zeros.end(), '\0');
+	auto damaged           = iso;
+	damaged[16 * 2048 + 1] = 'X';
+	const auto sniff_of    = [](const std::filesystem::path& p) {
+                const int fd = OpenReadOnlyShared(p);
+                EXPECT_GE(fd, 0);
+                const auto s = SniffFile(fd);
+                CloseDescriptor(fd);
+                return s;
+	};
+	const auto iso_sniff = sniff_of(write("disc.iso", iso));
+	EXPECT_EQ(iso_sniff.kind, HeadKind::Iso9660);
+	ASSERT_TRUE(iso_sniff.access.has_value());
+	EXPECT_EQ(*iso_sniff.access, Access::PerMember);
+	EXPECT_EQ(sniff_of(write("zeros.bin", zeros)).kind, HeadKind::Unknown);
+	EXPECT_EQ(sniff_of(write("damaged.iso", damaged)).kind, HeadKind::Unknown);
+	// The head alone stays Unknown: the probe is the file's, not the head's.
+	EXPECT_EQ(SniffHead(std::span<const uint8_t>(
+	                            reinterpret_cast<const uint8_t*>(iso.data()), 512))
+	                  .kind,
+	          HeadKind::Unknown);
+	EXPECT_STREQ(HeadKindName(HeadKind::Iso9660), "ISO 9660");
+	std::error_code ec = {};
+	std::filesystem::remove_all(tmp, ec);
 }
 
 // libarchive's lzma_bidder_bid, case by case (archive_read_support_filter_xz.c).

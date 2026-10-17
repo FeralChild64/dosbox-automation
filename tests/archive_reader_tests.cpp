@@ -10,6 +10,7 @@
 #include <archive_entry.h>
 #include <zlib.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -171,6 +172,159 @@ TEST_F(ArchiveReaderTest, ClassifiesSevenZipAndTarAsSequential)
 		EXPECT_EQ(tar.reader->GetAccess(), Access::Sequential) << name;
 		EXPECT_EQ(tar.reader->Entries().size(), 4u) << name;
 	}
+}
+
+TEST_F(ArchiveReaderTest, OpensAnIsoAndListsItsFilesWithoutTheVersionSuffix)
+{
+	// A CD with a zip on it: the trap disc's shape (nested design N2).
+	const auto inner = Built("inner.zip", Kind::ZipDeflate, Game());
+	const auto iso   = ArchiveFixtures::IsoWithFiles({
+                {       "README.TXT",                       "read me"},
+                {"GAMES/THEXDER.ZIP", ArchiveFixtures::ReadAll(inner)},
+        });
+	auto opened      = ArchiveReader::Open(
+                Raw("disc.iso", std::vector<uint8_t>(iso.begin(), iso.end())), limits);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	EXPECT_EQ(opened.reader->GetFormat(), Format::Iso9660);
+	EXPECT_EQ(opened.reader->GetAccess(), Access::PerMember);
+	auto paths = std::vector<std::string>();
+	for (const auto& e : opened.reader->Entries()) {
+		paths.push_back(e.utf8_path);
+	}
+	// libarchive chops the ";1" (archive_read_support_format_iso9660.c:1951)
+	// and skips the root "."; the walk's extent order is not promised.
+	std::sort(paths.begin(), paths.end());
+	EXPECT_EQ(paths,
+	          (std::vector<std::string>{"GAMES", "GAMES/THEXDER.ZIP", "README.TXT"}));
+	const Entry* zip = nullptr;
+	for (const auto& e : opened.reader->Entries()) {
+		if (e.utf8_path == "GAMES/THEXDER.ZIP") {
+			zip = &e;
+		}
+	}
+	ASSERT_NE(zip, nullptr);
+	EXPECT_FALSE(zip->is_dir);
+	EXPECT_EQ(zip->size, static_cast<int64_t>(fs::file_size(inner)));
+	EXPECT_FALSE(zip->has_crc);
+	EXPECT_EQ(zip->stored_offset, -1);
+	std::vector<uint8_t> bytes = {};
+	auto detail                = std::string();
+	ASSERT_EQ(opened.reader->Materialize(zip->ordinal, bytes, &detail),
+	          Error::None)
+	        << detail;
+	EXPECT_EQ(std::string(bytes.begin(), bytes.end()),
+	          ArchiveFixtures::ReadAll(inner));
+}
+
+// G17: Joliet names past mkisofs' 103-character "-joliet-long" limit, as
+// a Windows authoring tool wrote them on the SJAANIBOX disc.
+static std::string NameOfLength(const size_t length)
+{
+	auto name = std::string("Game ");
+	while (name.size() + 4 < length) {
+		name += static_cast<char>('a' + name.size() % 26);
+	}
+	return name + ".zip";
+}
+
+static std::vector<std::string> JolietListing(const fs::path& dir,
+                                              const std::string& name,
+                                              const Limits& limits)
+{
+	const auto iso  = ArchiveFixtures::IsoWithJolietFile(name, "payload");
+	const auto path = dir / "joliet.iso";
+	ArchiveFixtures::WriteBytes(path,
+	                            std::vector<uint8_t>(iso.begin(), iso.end()));
+	auto opened = ArchiveReader::Open(path, limits);
+	EXPECT_EQ(opened.error, Error::None) << opened.detail;
+	auto paths = std::vector<std::string>();
+	if (opened.reader) {
+		for (const auto& e : opened.reader->Entries()) {
+			paths.push_back(e.utf8_path);
+		}
+	}
+	return paths;
+}
+
+TEST_F(ArchiveReaderTest, AJolietNameOf103CharactersIsReadWhole)
+{
+	const auto name = NameOfLength(103);
+	EXPECT_EQ(JolietListing(tmp_dir, name, limits),
+	          (std::vector<std::string>{name}));
+}
+
+TEST_F(ArchiveReaderTest, AJolietNamePast103CharactersIsReadWhole)
+{
+	const auto name = NameOfLength(110);
+	EXPECT_EQ(JolietListing(tmp_dir, name, limits),
+	          (std::vector<std::string>{name}));
+}
+
+TEST_F(ArchiveReaderTest, AJolietNamePast103CharactersLosesOnlyItsVersion)
+{
+	const auto name = NameOfLength(108);
+	EXPECT_EQ(JolietListing(tmp_dir, name + ";1", limits),
+	          (std::vector<std::string>{name}));
+}
+
+TEST_F(ArchiveReaderTest, AnIsoWithOnlyARootListsNothingAndIsStillAnIso)
+{
+	const auto iso = ArchiveFixtures::IsoWithFiles({});
+	auto opened    = ArchiveReader::Open(
+                Raw("empty.iso", std::vector<uint8_t>(iso.begin(), iso.end())),
+                limits);
+	ASSERT_EQ(opened.error, Error::None) << opened.detail;
+	EXPECT_EQ(opened.reader->GetFormat(), Format::Iso9660);
+	EXPECT_TRUE(opened.reader->Entries().empty());
+}
+
+TEST_F(ArchiveReaderTest, AnIsoShorterThanLibarchivesBidIsNotRecognized)
+{
+	// The 40 KiB MinimalIso mounts in isoDrive and sniffs as an ISO, but
+	// libarchive's bidder wants 48 KiB before it looks at sector 16, so
+	// such a volume cannot be a chain level. The refusal names that.
+	const auto iso = MinimalIso();
+	ASSERT_LT(iso.size(), 48u * 1024);
+	auto opened = ArchiveReader::Open(
+	        Raw("short.iso", std::vector<uint8_t>(iso.begin(), iso.end())),
+	        limits);
+	EXPECT_EQ(opened.error, Error::NotAnArchive);
+	EXPECT_NE(opened.detail.find("Unrecognized"), std::string::npos)
+	        << opened.detail;
+}
+
+TEST_F(ArchiveReaderTest, AnIsoIsNeverReadThroughAWindow)
+{
+	// N6: a window holds a zip and nothing else; the sector-16 probe
+	// does not run for a window, so an ISO's bytes there are "no zip
+	// signature". The member's range comes from the outer directory.
+	const auto iso   = ArchiveFixtures::IsoWithFiles({
+                {"A.TXT", "a"}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"disc.iso", iso}
+        });
+	const auto cd    = ZipCentralDirectory::Read(outer, 64);
+	ASSERT_EQ(cd.error, ZipCentralDirectory::Error::None);
+	ASSERT_EQ(cd.records.size(), 1u);
+	const auto bytes = ArchiveFixtures::ReadAll(outer);
+	const auto local = static_cast<size_t>(cd.records[0].local_header_offset);
+	const auto name_len = static_cast<uint8_t>(bytes[local + 26]) |
+	                      (static_cast<uint8_t>(bytes[local + 27]) << 8);
+	const auto extra_len = static_cast<uint8_t>(bytes[local + 28]) |
+	                       (static_cast<uint8_t>(bytes[local + 29]) << 8);
+	const auto window = ByteWindow{static_cast<int64_t>(local + 30 +
+	                                                    name_len + extra_len),
+	                               static_cast<int64_t>(iso.size())};
+	ASSERT_EQ(bytes.substr(static_cast<size_t>(window.offset), 7),
+	          std::string(7, '\0'));
+	const int fd = OpenReadOnlyShared(outer);
+	ASSERT_GE(fd, 0);
+	auto opened = ArchiveReader::Open(fd, outer / "disc.iso", limits, window);
+	CloseDescriptor(fd);
+	EXPECT_EQ(opened.error, Error::NotAnArchive) << opened.detail;
 }
 
 TEST_F(ArchiveReaderTest, AnLzmaStreamWithoutATarIsNotAnArchive)

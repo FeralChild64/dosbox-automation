@@ -200,8 +200,16 @@ SidecarPlace PlaceSidecar(const std::string& sidecar_path, const std_fs::path& a
 		return place;
 	}
 	const auto saves = SavesDirectory();
+	if (const auto problem = CachePathProblem(saves); !problem.empty()) {
+		augra::log_warn(LogComponent, "sidecar path: %s", problem.c_str());
+		place.refusal = Denied(DenyReason::SidecarUnavailable);
+		return place;
+	}
+	const auto existed = std_fs::is_directory(saves, ec);
 	std_fs::create_directories(saves, ec);
-	std_fs::permissions(saves, std_fs::perms::owner_all, ec);
+	if (!existed) {
+		std_fs::permissions(saves, std_fs::perms::owner_all, ec);
+	}
 	auto location = LocateSidecar(saves, archive, identity_hash, key_stem);
 	switch (location.kind) {
 	case SidecarLocation::Kind::ByPath:
@@ -265,30 +273,61 @@ ChainOptions ChainOptionsFor(const ArchiveSettings& settings, const Limits& limi
 	return out;
 }
 
-std::optional<Entered> EnterChain(ArchiveHelperClient& host,
-                                  const std_fs::path& host_path,
-                                  const std::vector<std::string>& members,
-                                  ArchiveCache& cache, const ChainOptions& options,
-                                  Error* error, std::string* detail)
+std::optional<DriveChain> ArchiveDriveChain(const MemberPath& split)
 {
-	assert(!members.empty());
-	const auto chain = ChainOfLevels(host_path, members);
-	auto result      = ResolveChain(chain, host, host_path, cache, options);
-	if (result.error != Error::None || result.links.empty()) {
-		if (error) {
-			*error = result.error == Error::None ? Error::OpenFailed
-			                                     : result.error;
-		}
-		if (detail) {
-			*detail = result.detail;
-		}
+	if (split.lone || split.member.empty()) {
 		return {};
 	}
-	Entered out = {};
-	out.chain   = ChainPrefix(chain);
-	out.window  = result.leaf_window;
-	out.leaf    = std::move(result.links.back().client);
-	out.links   = std::move(result.links);
+	const auto chain = SplitChain(split);
+	DriveChain out   = {};
+	if (!chain) {
+		out.too_deep = true;
+		return out;
+	}
+	const auto leaf      = chain->levels.empty() ? split.member
+	                                             : chain->levels.back().leaf_member;
+	const auto slash     = leaf.find_last_of("/\\");
+	const auto leaf_name = slash == std::string::npos ? leaf
+	                                                  : leaf.substr(slash + 1);
+	if (!IsArchiveName(leaf_name)) {
+		return {};
+	}
+	for (const auto& level : chain->levels) {
+		out.members.push_back(level.archive_member);
+	}
+	out.members.push_back(leaf);
+	out.too_deep = out.members.size() > static_cast<size_t>(MaxNestingDepth);
+	return out;
+}
+
+DriveEntry EnterForDrive(ArchiveHelperClient& host, const std_fs::path& host_path,
+                         const std::vector<std::string>& members,
+                         ArchiveCache& cache, const ChainOptions& options)
+{
+	DriveEntry out                 = {};
+	auto drive_options             = options;
+	drive_options.enter_house_leaf = true;
+	auto result = ResolveChain(ChainOfLevels(host_path, members),
+	                           host,
+	                           host_path,
+	                           cache,
+	                           drive_options);
+	if (result.error != Error::None) {
+		out.failed = true;
+		out.error  = result.error;
+		out.detail = result.detail;
+		return out;
+	}
+	if (result.links.empty()) {
+		return out;
+	}
+	out.house_member = result.house_member;
+	Entered entered  = {};
+	entered.chain    = ChainPrefix(result.chain);
+	entered.window   = result.leaf_window;
+	entered.leaf     = std::move(result.links.back().client);
+	entered.links    = std::move(result.links);
+	out.entered      = std::move(entered);
 	return out;
 }
 
@@ -359,12 +398,18 @@ struct ResolvedSidecar {
 };
 
 // Design D2 in MOUNT's hands: the place, then the lock, the key and the record.
+// archive is what the record names (the host, or host/chain for a spelled
+// chain); the sidecar's name is the host's stem either way (N5).
 std::optional<ResolvedSidecar> ResolveSidecar(const MountParameters& params,
                                               const std_fs::path& archive,
+                                              const std_fs::path& stem,
                                               const ArchiveSource& source,
                                               const std_fs::path& raw_archive)
 {
-	auto place = PlaceSidecar(params.sidecar_path, archive, source.IdentityHash());
+	auto place = PlaceSidecar(params.sidecar_path,
+	                          archive,
+	                          source.IdentityHash(),
+	                          PathToUtf8(stem));
 	if (place.refusal.reason != DenyReason::None) {
 		if (place.refusal.reason == DenyReason::SidecarUnavailable) {
 			ReportSidecarDenied(raw_archive,
@@ -466,8 +511,47 @@ bool MOUNT::MountArchive(MountParameters& params)
 	if (params.paths.empty()) {
 		return false;
 	}
+	// G12: a swap list of archives is not a thing yet; a second path was
+	// dropped without a word.
+	if (params.paths.size() > 1) {
+		const auto denied = Denied(DenyReason::ArchiveOnePerDrive);
+		if (MountPolicy::verdict_hook) {
+			MountPolicy::verdict_hook(std_fs::path(params.paths[1]),
+			                          denied);
+		}
+		ReportMountDenied(params.paths[1],
+		                  denied,
+		                  "mount the others on drives of their own");
+		return false;
+	}
 	const auto settings = ReadArchiveSettings();
-	const auto raw      = std_fs::path(params.paths[0]);
+	// 4.1: a member path whose leaf is an archive mounts that archive.
+	auto members   = std::vector<std::string>();
+	auto host_path = std_fs::path(params.paths[0]);
+	if (const auto split = SplitMemberPath(params.paths[0])) {
+		const auto chain  = ArchiveDriveChain(*split);
+		const auto refuse = [&](const DenyReason reason,
+		                        const std::string& why) {
+			const auto denied = Denied(reason);
+			if (MountPolicy::verdict_hook) {
+				MountPolicy::verdict_hook(split->archive, denied);
+			}
+			ReportMountDenied(params.paths[0], denied, why);
+			return false;
+		};
+		if (!chain) {
+			return refuse(DenyReason::NotAnArchive,
+			              "the member is not an archive");
+		}
+		if (chain->too_deep) {
+			return refuse(DenyReason::ArchiveEntryRejected,
+			              "nesting depth exceeds " +
+			                      std::to_string(MaxNestingDepth));
+		}
+		members   = chain->members;
+		host_path = split->archive;
+	}
+	const auto raw = host_path;
 	const auto verdict =
 	        MountPolicy::ValidateArchivePath(raw,
 	                                         MountOrigin::GuestCommand,
@@ -486,6 +570,13 @@ bool MOUNT::MountArchive(MountParameters& params)
 		ReportSidecarDenied(raw,
 		                    DenyReason::NotAnArchive,
 		                    "a single image: mount it as the image");
+		return false;
+	}
+	// N2: an ISO is a chain level or a CD leaf, never a drive of files.
+	if (verdict.sniff.kind == HeadKind::Iso9660 && members.empty()) {
+		ReportSidecarDenied(raw,
+		                    DenyReason::NotAnArchive,
+		                    "a CD image: mount it as the image");
 		return false;
 	}
 	params.paths[0] = resolved.string();
@@ -532,42 +623,48 @@ bool MOUNT::MountArchive(MountParameters& params)
 		return false;
 	}
 
-	// N3: a house archive is entered into its one member; the leaf
-	// client is the drive's source, the chain's links ride with the drive.
+	// The spelled chain, then N3 on what it reaches: the leaf client is
+	// the drive's source, every link rides with the drive.
 	auto held                             = std::make_shared<ChainHold>();
 	std::unique_ptr<ArchiveSource> source = {};
 	auto source_path                      = resolved;
-	auto house_member                     = std::string();
-	if (const auto* house = HouseArchiveMember(opened.client->Entries())) {
-		house_member = house->utf8_path;
-		auto error   = Error::None;
-		auto entered = EnterChain(*opened.client,
-		                          resolved,
-		                          {house_member},
-		                          *cache,
-		                          ChainOptionsFor(settings, limits, options),
-		                          &error,
-		                          &detail);
-		if (!entered) {
-			drop_scratch();
-			const auto denied = Denied(
-			        MountPolicy::DenyReasonForArchiveError(error));
-			if (MountPolicy::verdict_hook) {
-				MountPolicy::verdict_hook(raw, denied);
-			}
-			ReportMountDenied(params.paths[0], denied, detail);
-			return false;
+	auto record_path         = resolved; // what the sidecar record names
+	const auto chain_options = ChainOptionsFor(settings, limits, options);
+	auto entry = EnterForDrive(*opened.client, resolved, members, *cache, chain_options);
+	if (entry.failed) {
+		drop_scratch();
+		// A level that is not there is a missing member, not damage.
+		const auto reason = entry.error == Error::NotFound
+		                          ? DenyReason::ArchiveMemberNotFound
+		                          : MountPolicy::DenyReasonForArchiveError(
+		                                    entry.error);
+		const auto denied = Denied(reason);
+		if (MountPolicy::verdict_hook) {
+			MountPolicy::verdict_hook(raw, denied);
 		}
-		WriteOut(MSG_Get("PROGRAM_MOUNT_ARCHIVE_ENTERED"),
-		         house_member.c_str());
+		ReportMountDenied(params.paths[0], denied, entry.detail);
+		return false;
+	}
+	if (!members.empty()) {
+		record_path = PathWithChain(resolved,
+		                            ChainPrefix(ChainOfLevels(resolved,
+		                                                      members)));
+	}
+	const auto house_member = entry.house_member;
+	if (entry.entered) {
+		if (!house_member.empty()) {
+			WriteOut(MSG_Get("PROGRAM_MOUNT_ARCHIVE_ENTERED"),
+			         house_member.c_str());
+		}
 		augra::log_info(LogComponent,
-		                "%s: entered %s (N3, %s)",
+		                "%s: entered %s (%s)",
 		                PathToUtf8(resolved).c_str(),
-		                house_member.c_str(),
-		                entered->window ? "read in place" : "from the cache");
-		source      = std::move(entered->leaf);
-		held->links = std::move(entered->links);
-		source_path = resolved / std_fs::path(house_member);
+		                entry.entered->chain.c_str(),
+		                entry.entered->window ? "read in place"
+		                                      : "from the cache");
+		source      = std::move(entry.entered->leaf);
+		held->links = std::move(entry.entered->links);
+		source_path = PathWithChain(resolved, entry.entered->chain);
 		opened.client->Close();
 		opened.client.reset();
 	} else {
@@ -607,7 +704,7 @@ bool MOUNT::MountArchive(MountParameters& params)
 	drive_options.held                  = held;
 	drive_options.reconnect             = ArchiveDrive::ReconnectSpec{};
 	drive_options.reconnect->reopen =
-	        [resolved, limits, options, settings, house_member](
+	        [resolved, limits, options, settings, members, house_member](
 	                std::string* why) -> ArchiveDrive::Reopened {
 		auto again = ArchiveHelperClient::Open(resolved, limits, options);
 		if (again.error != Error::None) {
@@ -617,19 +714,12 @@ bool MOUNT::MountArchive(MountParameters& params)
 			}
 			return {};
 		}
-		if (house_member.empty()) {
+		if (members.empty() && house_member.empty()) {
 			return {std::move(again.client), {}};
 		}
-		// An entered drive re-enters; the drive compares identities and
-		// takes the fresh links in place of the old (a changed host has
-		// a new cache entry).
-		const auto* house = HouseArchiveMember(again.client->Entries());
-		if (!house || house->utf8_path != house_member) {
-			if (why) {
-				*why = "the archive no longer enters " + house_member;
-			}
-			return {};
-		}
+		// A drive that entered re-enters; the drive compares identities
+		// and takes the fresh links in place of the old (a changed host
+		// has a new cache entry).
 		auto store_why = std::string();
 		auto* store    = OpenStore(settings, &store_why);
 		if (!store) {
@@ -638,20 +728,26 @@ bool MOUNT::MountArchive(MountParameters& params)
 			}
 			return {};
 		}
-		auto error   = Error::None;
-		auto entered = EnterChain(*again.client,
-		                          resolved,
-		                          {house_member},
-		                          *store,
-		                          ChainOptionsFor(settings, limits, options),
-		                          &error,
-		                          why);
-		if (!entered) {
+		auto entry = EnterForDrive(*again.client,
+		                           resolved,
+		                           members,
+		                           *store,
+		                           ChainOptionsFor(settings, limits, options));
+		if (entry.failed) {
+			if (why) {
+				*why = entry.detail;
+			}
+			return {};
+		}
+		if (!entry.entered || entry.house_member != house_member) {
+			if (why) {
+				*why = "the archive no longer enters " + house_member;
+			}
 			return {};
 		}
 		auto fresh_held   = std::make_shared<ChainHold>();
-		fresh_held->links = std::move(entered->links);
-		return {std::move(entered->leaf), std::move(fresh_held)};
+		fresh_held->links = std::move(entry.entered->links);
+		return {std::move(entry.entered->leaf), std::move(fresh_held)};
 	};
 
 	auto made = ArchiveDrive::Create(std::move(source),
@@ -685,7 +781,7 @@ bool MOUNT::MountArchive(MountParameters& params)
 
 	std::shared_ptr<DOS_Drive> to_register = made.drive;
 	SidecarRecord identity                 = {};
-	identity.archive_path                  = PathToUtf8(resolved);
+	identity.archive_path                  = PathToUtf8(record_path);
 	identity.identity_hash = made.drive->Source().IdentityHash();
 	identity.entry_count   = static_cast<int64_t>(
                 made.drive->Source().Entries().size());
@@ -716,7 +812,11 @@ bool MOUNT::MountArchive(MountParameters& params)
 		params.scratch_made.reset();
 		to_register = unioned;
 	} else if (!params.no_sidecar && !params.roflag) {
-		auto sidecar = ResolveSidecar(params, resolved, made.drive->Source(), raw);
+		auto sidecar = ResolveSidecar(params,
+		                              record_path,
+		                              resolved.stem(),
+		                              made.drive->Source(),
+		                              raw);
 		if (!sidecar) {
 			return false; // reported inside
 		}

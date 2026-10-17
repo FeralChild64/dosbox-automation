@@ -269,7 +269,28 @@ struct ArchiveDrive::Impl {
 
 	const TreeNode* Find(const char* dos_path) const
 	{
-		return tree->Find(dos_path ? dos_path : "");
+		return tree->Find(WithoutEmptyExtensions(dos_path ? dos_path : ""));
+	}
+
+	// DOS_MakeName keeps an empty extension ("SKIEGA."), and DOS reads
+	// "NAME." as NAME; the tree is keyed by the plain 8.3 names (G8/G9).
+	static std::string WithoutEmptyExtensions(const std::string_view dos_path)
+	{
+		auto out   = std::string();
+		size_t pos = 0;
+		for (;;) {
+			const auto end = dos_path.find('\\', pos);
+			auto part      = dos_path.substr(pos, end - pos);
+			if (part.size() > 1 && part.find('.') == part.size() - 1) {
+				part.remove_suffix(1);
+			}
+			out.append(part);
+			if (end == std::string_view::npos) {
+				return out;
+			}
+			out.push_back('\\');
+			pos = end + 1;
+		}
 	}
 
 	bool Matches(const TreeNode& node, const char* pattern,

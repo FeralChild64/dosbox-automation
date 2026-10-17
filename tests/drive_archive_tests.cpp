@@ -222,6 +222,29 @@ TEST_F(ArchiveDriveTest, OpensReadsAndSeeksAMemberInMemory)
 	EXPECT_EQ(drive->RetainedMemoryBytes(), 5);
 }
 
+TEST_F(ArchiveDriveTest, AnEmptyExtensionNamesTheNameWithoutOne)
+{
+	// G8/G9: Ski or Die's runtime opens "skiega." for SKIEGA; DOS keeps the
+	// bare dot through its name canonicalization, and "NAME." is NAME.
+	auto drive = Drive(Built("ski.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {         "SKIEGA",   "ega"},
+	                                 {"GAME/README.TXT", "hello"},
+        }));
+	ASSERT_TRUE(drive);
+	auto file = drive->FileOpen("SKIEGA.", OPEN_READ);
+	ASSERT_TRUE(file);
+	EXPECT_EQ(ReadAll(*file), "ega");
+	EXPECT_TRUE(drive->FileExists("SKIEGA."));
+	FatAttributeFlags attr = {};
+	EXPECT_TRUE(drive->GetFileAttr("SKIEGA.", &attr));
+	EXPECT_TRUE(drive->FileOpen("GAME.\\README.TXT", OPEN_READ));
+	// A real extension still has to match, and a lone dot stays no name.
+	EXPECT_FALSE(drive->FileOpen("SKIEGA.X", OPEN_READ));
+	EXPECT_FALSE(drive->FileOpen("SKIEGA..", OPEN_READ));
+}
+
 TEST_F(ArchiveDriveTest, OpenForWriteAndEveryWriteEntryPointAreAccessDenied)
 {
 	auto drive = Drive(Built("doom.zip", Kind::ZipStored, Game()));

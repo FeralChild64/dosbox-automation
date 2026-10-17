@@ -82,7 +82,8 @@ class DosboxClient:
             [{"type": "key", "key": key, "pressed": pressed}]
         )
 
-    def type_string(self, text: str, delay_ms: float = 80) -> requests.Response:
+    def type_string(self, text: str, delay_ms: float = 80,
+                    strict: bool = False) -> requests.Response:
         key_map = {c: f"KBD_{c}" for c in "abcdefghijklmnopqrstuvwxyz0123456789"}
         key_map[" "] = "KBD_space"
         key_map["\n"] = "KBD_enter"
@@ -93,6 +94,11 @@ class DosboxClient:
         key_map["-"] = "KBD_minus"
         key_map["="] = "KBD_equals"
         key_map["/"] = "KBD_slash"
+        key_map["'"] = "KBD_quote"
+        key_map[";"] = "KBD_semicolon"
+        key_map["["] = "KBD_leftbracket"
+        key_map["]"] = "KBD_rightbracket"
+        key_map["`"] = "KBD_grave"
 
         shifted = {
             ":": "KBD_semicolon",
@@ -111,7 +117,18 @@ class DosboxClient:
             "?": "KBD_slash",
             "<": "KBD_comma",
             ">": "KBD_period",
+            '"': "KBD_quote",
+            "~": "KBD_grave",
+            "{": "KBD_leftbracket",
+            "}": "KBD_rightbracket",
+            "|": "KBD_backslash",
         }
+
+        if strict:
+            missing = sorted({ch for ch in text
+                              if ch not in shifted and ch.lower() not in key_map})
+            if missing:
+                raise ValueError(f"no key for {''.join(missing)!r}")
 
         events = []
         t = 0.0

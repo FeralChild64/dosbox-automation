@@ -34,7 +34,9 @@ DOSBOX_BIN = os.environ.get(
     str(Path(__file__).resolve().parents[2] / "build" / "debug-linux" / "dosbox-automation"),
 )
 DISKS_DIR = Path(__file__).resolve().parents[1] / "files" / "disks"
-WORKSPACE = Path(__file__).resolve().parents[2] / ".workspace" / "test-runs"
+_HOUSE_WORKSPACE = (Path(__file__).resolve().parents[3] / ".workspace"
+                    / "augrudottir-dosbox-automation")
+WORKSPACE = Path(os.environ.get("DA_WORKSPACE", str(_HOUSE_WORKSPACE))) / "test-runs"
 
 
 def find_free_port():

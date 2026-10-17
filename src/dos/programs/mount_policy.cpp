@@ -53,6 +53,7 @@
 #include "dos/dos_names.h"
 #include "dosbox.h"
 #include "misc/support.h"
+#include "misc/unicode.h"
 
 #include <algorithm>
 #include <array>
@@ -772,6 +773,13 @@ ArchiveVerdict ValidateArchivePath(
 			if (out.sniff.kind == ArchiveMount::HeadKind::Unknown) {
 				out.verdict.allowed = false;
 				out.verdict.reason  = DenyReason::NotAnArchive;
+			} else if (out.sniff.kind == ArchiveMount::HeadKind::Iso9660 &&
+			           !ArchiveMount::IsIsoName(ArchiveMount::PathToUtf8(
+			                   raw_path.filename()))) {
+				// D12: the name and the bytes agree, for an ISO
+				// too.
+				out.verdict.allowed = false;
+				out.verdict.reason  = DenyReason::NotAnArchive;
 			} else if (!sequential_allowed && out.sniff.access &&
 			           *out.sniff.access == ArchiveMount::Access::Sequential &&
 			           // Plan 4b: one compressed image is one pass
@@ -850,6 +858,8 @@ const char* DenyReasonText(const DenyReason reason)
 		return "no such member in the archive";
 	case DenyReason::ArchiveCueRejected:
 		return "the cue sheet cannot be served from the archive";
+	case DenyReason::ArchiveOnePerDrive:
+		return "an archive drive takes one archive";
 	}
 	return "";
 }
@@ -889,9 +899,15 @@ const char* DenyMessageId(const DenyReason reason)
 	case DenyReason::ArchiveHelperFailed:
 	case DenyReason::ArchiveMemberNotFound:
 	case DenyReason::ArchiveCueRejected:
+	case DenyReason::ArchiveOnePerDrive:
 		return "PROGRAM_MOUNT_ARCHIVE_REFUSED";
 	}
 	return "";
+}
+
+std::string HostPathFromDos(const std::string& dos_path)
+{
+	return dos_to_utf8(dos_path, DosStringConvertMode::NoSpecialCharacters);
 }
 
 } // namespace MountPolicy

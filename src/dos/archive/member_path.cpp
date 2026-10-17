@@ -147,6 +147,34 @@ bool IsArchiveName(const std::string_view file_name)
 	return HasArchiveSuffix(lower_ascii(file_name));
 }
 
+bool IsIsoName(const std::string_view file_name)
+{
+	const auto lower = lower_ascii(file_name);
+	return lower.size() > 4 && lower.ends_with(".iso");
+}
+
+bool IsChainLevelName(const std::string_view file_name)
+{
+	return IsArchiveName(file_name) || IsIsoName(file_name);
+}
+
+bool IsMemberHostFile(const std::filesystem::path& host_path)
+{
+	if (IsArchiveFile(host_path)) {
+		return true;
+	}
+	if (!IsIsoName(lower_file_name(host_path))) {
+		return false;
+	}
+	const int fd = OpenReadOnlyShared(host_path);
+	if (fd < 0) {
+		return false;
+	}
+	const auto sniff = SniffFile(fd);
+	CloseDescriptor(fd);
+	return sniff.kind == HeadKind::Iso9660;
+}
+
 bool IsArchiveFile(const std::filesystem::path& host_path)
 {
 	const auto lower  = lower_file_name(host_path);
@@ -160,7 +188,8 @@ bool IsArchiveFile(const std::filesystem::path& host_path)
 	}
 	const auto sniff = SniffFile(fd);
 	CloseDescriptor(fd);
-	return sniff.kind != HeadKind::Unknown;
+	// An ISO's bytes make no archive file under any name (D12, N2).
+	return sniff.kind != HeadKind::Unknown && sniff.kind != HeadKind::Iso9660;
 }
 
 namespace {
@@ -269,7 +298,7 @@ std::optional<MemberPath> SplitMemberPath(const std::string& raw)
 			continue;
 		}
 		if (!std::filesystem::is_regular_file(status) ||
-		    !IsArchiveFile(prefix)) {
+		    !IsMemberHostFile(prefix)) {
 			return {};
 		}
 		auto member = raw.substr(i + 1);
@@ -279,6 +308,21 @@ std::optional<MemberPath> SplitMemberPath(const std::string& raw)
 		return MemberPath{prefix, std::move(member)};
 	}
 	return {};
+}
+
+std::filesystem::path PathWithChain(const std::filesystem::path& host,
+                                    const std::string& chain)
+{
+	if (chain.empty()) {
+		return host;
+	}
+	auto tail = PathFromUtf8("/" + chain);
+	if (!tail) {
+		return host;
+	}
+	auto joined = host;
+	joined += *tail;
+	return joined;
 }
 
 const Entry* FindMember(const std::vector<Entry>& entries,
@@ -358,7 +402,7 @@ std::optional<ChainedPath> SplitChain(const MemberPath& host_split)
 		}
 		accumulated += components[i];
 		const bool is_last = i + 1 == components.size();
-		if (!is_last && IsArchiveName(components[i])) {
+		if (!is_last && IsChainLevelName(components[i])) {
 			if (++depth > MaxNestingDepth) {
 				return {};
 			}

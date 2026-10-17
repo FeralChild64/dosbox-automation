@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <clocale>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -306,11 +307,31 @@ Error allocate_and_touch(const uint32_t megabytes)
 	return Error::None;
 }
 
+// libarchive converts UTF-16 names (Joliet, 7z, RAR4) to the locale's charset,
+// NULL for non-ASCII in "C". UTF-8 is "C.UTF-8" on glibc and FreeBSD,
+// "UTF-8" on macOS, ".UTF-8" on the Windows UCRT.
+bool use_utf8_ctype()
+{
+	for (const char* name :
+	     {"C.UTF-8", "C.utf8", "UTF-8", ".UTF-8", "en_US.UTF-8"}) {
+		if (std::setlocale(LC_CTYPE, name)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
 	const auto options = parse(argc, argv);
+	if (!use_utf8_ctype()) {
+		std::fputs(
+		        "archive helper: no UTF-8 locale, names outside ASCII "
+		        "are refused\n",
+		        stderr);
+	}
 	if (options.bad) {
 		std::fputs(
 		        "usage: dosbox-automation-archive-helper "

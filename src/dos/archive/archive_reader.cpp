@@ -339,6 +339,9 @@ HandleStatus open_handle(const int fd, const HeadKind kind, const bool cd_found,
 		break;
 	// The ISZ reader is ours; libarchive reads no ISZ.
 	case HeadKind::Isz: break;
+	case HeadKind::Iso9660:
+		archive_read_support_format_iso9660(handle.a);
+		break;
 	case HeadKind::Unknown:
 		archive_read_support_format_zip_seekable(handle.a);
 		if (!cd_found) {
@@ -451,6 +454,7 @@ std::optional<Format> format_of(struct archive* a)
 	case ARCHIVE_FORMAT_RAW: return Format::Raw;
 	case ARCHIVE_FORMAT_7ZIP: return Format::SevenZip;
 	case ARCHIVE_FORMAT_TAR: return Format::Tar;
+	case ARCHIVE_FORMAT_ISO9660: return Format::Iso9660;
 	default: return {};
 	}
 }
@@ -461,7 +465,8 @@ Access access_of(const Format format)
 	case Format::Zip:
 	case Format::Rar:
 	case Format::Raw:
-	case Format::Isz: return Access::PerMember;
+	case Format::Isz:
+	case Format::Iso9660: return Access::PerMember;
 	case Format::Rar5:
 	case Format::SevenZip:
 	case Format::Tar: return Access::Sequential;
@@ -566,7 +571,8 @@ int64_t identity_time_of(const Format format, const int64_t mtime,
 	case Format::SevenZip:
 	case Format::Tar:
 	case Format::Raw:
-	case Format::Isz: return mtime;
+	case Format::Isz:
+	case Format::Iso9660: return mtime;
 	}
 	return mtime;
 }
@@ -906,7 +912,8 @@ std::vector<HeadKind> FiltersForHead(const HeadKind head)
 	case HeadKind::Xz:
 	case HeadKind::Lzma:
 	case HeadKind::Zstd: return {head};
-	case HeadKind::Isz: return {};
+	case HeadKind::Isz:
+	case HeadKind::Iso9660: return {};
 	default:
 		return {HeadKind::Gzip, HeadKind::Bzip2, HeadKind::Xz, HeadKind::Zstd};
 	}
@@ -1028,6 +1035,10 @@ OpenResult ArchiveReader::Open(const int fd, const std::filesystem::path& name,
 
 	const auto head = read_head(impl.file.fd, window ? window->offset : 0);
 	impl.kind       = SniffHead(head.view()).kind;
+	// An ISO's head is blank (ECMA-119 8.4); never through a window (N6).
+	if (!window && impl.kind == HeadKind::Unknown && ProbeIso9660(impl.file.fd)) {
+		impl.kind = HeadKind::Iso9660;
+	}
 	if (window && impl.kind != HeadKind::Zip) {
 		if (impl.kind == HeadKind::Unknown) {
 			return fail(Error::NotAnArchive,

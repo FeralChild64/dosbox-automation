@@ -46,6 +46,32 @@ bool IsComponent(const std::string_view component)
 	       std::all_of(ext.begin(), ext.end(), IsNameByte);
 }
 
+// "NAME." is the same file as "NAME" in DOS; strip the empty extension
+// from each component so the record keys by the canonical form only.
+std::string CanonicalDosPath(const std::string_view path)
+{
+	std::string out;
+	out.reserve(path.size());
+	size_t start = 0;
+	while (start <= path.size()) {
+		const auto end = path.find('\\', start);
+		auto part      = path.substr(start,
+		                             end == std::string_view::npos
+		                                     ? std::string_view::npos
+		                                     : end - start);
+		if (part.size() > 1 && part.back() == '.') {
+			part.remove_suffix(1);
+		}
+		out.append(part);
+		if (end == std::string_view::npos) {
+			break;
+		}
+		out.push_back('\\');
+		start = end + 1;
+	}
+	return out;
+}
+
 } // namespace
 
 bool IsSidecarDosPath(const std::string_view path)
@@ -122,24 +148,26 @@ bool SidecarRecord::Fits(const SidecarChange& change) const
 
 bool SidecarRecord::HasRoomForDelete(const std::string_view dos_path) const
 {
-	return IsHidden(dos_path) ||
-	       Fits({SidecarChange::Op::Delete, std::string(dos_path), {}});
+	const auto key = CanonicalDosPath(dos_path);
+	return IsHidden(key) ||
+	       Fits({SidecarChange::Op::Delete, key, {}});
 }
 
 bool SidecarRecord::HasRoomForRename(const std::string_view from,
                                      const std::string_view to) const
 {
-	return Fits({SidecarChange::Op::Rename, std::string(from), std::string(to)});
+	return Fits({SidecarChange::Op::Rename,
+	             CanonicalDosPath(from),
+	             CanonicalDosPath(to)});
 }
 
 bool SidecarRecord::AddDelete(const std::string_view dos_path)
 {
-	if (IsHidden(dos_path)) {
+	const auto key = CanonicalDosPath(dos_path);
+	if (IsHidden(key)) {
 		return true;
 	}
-	const SidecarChange change = {SidecarChange::Op::Delete,
-	                              std::string(dos_path),
-	                              {}};
+	const SidecarChange change = {SidecarChange::Op::Delete, key, {}};
 	if (!Fits(change)) {
 		return false;
 	}
@@ -147,21 +175,21 @@ bool SidecarRecord::AddDelete(const std::string_view dos_path)
 	const auto size = ChangeSize(change);
 	change_bytes += size.bytes;
 	change_lines += size.lines;
-	hidden.emplace(dos_path);
+	hidden.emplace(key);
 	return true;
 }
 
 bool SidecarRecord::AddRename(const std::string_view from, const std::string_view to)
 {
+	const auto key_from = CanonicalDosPath(from);
+	const auto key_to   = CanonicalDosPath(to);
 	for (const auto& c : changes) {
-		if (c.op == SidecarChange::Op::Rename && c.path == from &&
-		    c.to == to) {
+		if (c.op == SidecarChange::Op::Rename && c.path == key_from &&
+		    c.to == key_to) {
 			return true;
 		}
 	}
-	const SidecarChange change = {SidecarChange::Op::Rename,
-	                              std::string(from),
-	                              std::string(to)};
+	const SidecarChange change = {SidecarChange::Op::Rename, key_from, key_to};
 	if (!Fits(change)) {
 		return false;
 	}
@@ -169,15 +197,16 @@ bool SidecarRecord::AddRename(const std::string_view from, const std::string_vie
 	const auto size = ChangeSize(change);
 	change_bytes += size.bytes;
 	change_lines += size.lines;
-	hidden.emplace(from);
+	hidden.emplace(key_from);
 	return true;
 }
 
 bool SidecarRecord::Unhide(const std::string_view dos_path)
 {
+	const auto key    = CanonicalDosPath(dos_path);
 	const auto before = changes.size();
 	std::erase_if(changes,
-	              [&](const SidecarChange& c) { return c.path == dos_path; });
+	              [&](const SidecarChange& c) { return c.path == key; });
 	if (changes.size() == before) {
 		return false;
 	}
@@ -190,7 +219,7 @@ bool SidecarRecord::IsHidden(const std::string_view dos_path) const
 	if (dos_path.empty()) {
 		return false;
 	}
-	auto probe = std::string(dos_path);
+	auto probe = CanonicalDosPath(dos_path);
 	for (;;) {
 		if (hidden.contains(probe)) {
 			return true;

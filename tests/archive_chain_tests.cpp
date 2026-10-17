@@ -235,15 +235,37 @@ TEST(SplitChain, TarGzInTheMiddle)
 	EXPECT_EQ(chain->levels[0].leaf_member, "README.TXT");
 }
 
-TEST(SplitChain, IsoIsNotAnArchiveLevel)
+TEST(SplitChain, AnIsoInTheMiddleIsALevelAndAtTheEndALeaf)
 {
+	// N2: the trap disc inside a bundle. The ISO is a level by name; a
+	// trailing ISO is a CD image, today's leaf.
 	MemberPath host  = {};
-	host.archive     = "/tmp/outer.zip";
-	host.member      = "disc.iso/GAME/FILE.DAT";
+	host.archive     = "/tmp/bundle.zip";
+	host.member      = "disc.iso/GAMES/THEXDER.ZIP/disk1.img";
 	const auto chain = SplitChain(host);
 	ASSERT_TRUE(chain);
-	EXPECT_TRUE(chain->levels.empty());
-	EXPECT_EQ(chain->host.member, "disc.iso/GAME/FILE.DAT");
+	ASSERT_EQ(chain->levels.size(), 2u);
+	EXPECT_EQ(chain->levels[0].archive_member, "disc.iso");
+	EXPECT_EQ(chain->levels[1].archive_member, "GAMES/THEXDER.ZIP");
+	EXPECT_EQ(chain->levels[1].leaf_member, "disk1.img");
+	host.member     = "cd/disc.iso";
+	const auto leaf = SplitChain(host);
+	ASSERT_TRUE(leaf);
+	EXPECT_TRUE(leaf->levels.empty());
+}
+
+TEST(IsChainLevelName, ArchivesAndIsosStartALevel)
+{
+	EXPECT_TRUE(IsChainLevelName("game.zip"));
+	EXPECT_TRUE(IsChainLevelName("disc.iso"));
+	EXPECT_TRUE(IsChainLevelName("DISC.ISO"));
+	EXPECT_FALSE(IsChainLevelName("disk1.img"));
+	EXPECT_FALSE(IsChainLevelName("track.bin"));
+	EXPECT_FALSE(IsChainLevelName("game.cue"));
+	EXPECT_FALSE(IsChainLevelName("cd.isz"));
+	EXPECT_FALSE(IsChainLevelName("disk.img.xz"));
+	EXPECT_FALSE(IsChainLevelName(".iso"));
+	EXPECT_FALSE(IsArchiveName("disc.iso"));
 }
 
 TEST(SplitChain, TwoLevelsWithSubdirectories)
@@ -489,6 +511,73 @@ TEST_F(ChainResolveTest, TwoLevelsDeepResolvesThroughBothCaches)
 
 // N8: a sequential archive in the middle of the chain is extracted from
 // whole; the setting decides whether that is allowed.
+TEST_F(ChainResolveTest, AZipInsideAnIsoInsideAZipResolvesThroughTheCache)
+{
+	// N2 and N6: the ISO level is served from the cache (no window for
+	// an ISO), the zip inside it from the ISO's cached copy.
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipDeflate,
+	                         {
+	                                 {"hello.txt", "hello from inside"}
+        });
+	const auto iso   = ArchiveFixtures::IsoWithFiles({
+                {"GAMES/INNER.ZIP", Slurp(inner)}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"disc.iso", iso}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto result = ResolveChain(Chain(outer, "disc.iso/GAMES/INNER.ZIP/hello.txt"),
+	                                 *host,
+	                                 outer,
+	                                 *cache,
+	                                 Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.links.size(), 2u);
+	EXPECT_FALSE(result.links[0].window);
+	EXPECT_TRUE(result.links[0].lease);
+	EXPECT_EQ(result.links[0].client->GetFormat(), Format::Iso9660);
+	EXPECT_FALSE(result.links[1].window);
+	EXPECT_EQ(result.leaf_client->GetFormat(), Format::Zip);
+	const auto* leaf = Leaf(result, "hello.txt");
+	ASSERT_NE(leaf, nullptr);
+	EXPECT_EQ(Read(*result.leaf_client, leaf->ordinal), "hello from inside");
+}
+
+TEST_F(ChainResolveTest, AnIsoAsTheHostOfAChain)
+{
+	// The trap disc itself as the host file: disc.iso/GAMES/THEXDER.ZIP/...
+	const auto inner = Built("inner.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"disk1.img", std::string(4096, 'd')}
+        });
+	const auto iso   = ArchiveFixtures::IsoWithFiles({
+                {"GAMES/THEXDER.ZIP", Slurp(inner)}
+        });
+	const auto disc  = tmp_dir / "disc.iso";
+	ArchiveFixtures::WriteBytes(disc,
+	                            std::vector<uint8_t>(iso.begin(), iso.end()));
+	auto host = OpenOk(disc);
+	ASSERT_TRUE(host);
+	EXPECT_EQ(host->GetFormat(), Format::Iso9660);
+	const auto result = ResolveChain(Chain(disc, "GAMES/THEXDER.ZIP/disk1.img"),
+	                                 *host,
+	                                 disc,
+	                                 *cache,
+	                                 Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.links.size(), 1u);
+	// An ISO is not a zip, so its stored zip has no window: the cache.
+	EXPECT_FALSE(result.links[0].window);
+	EXPECT_TRUE(result.links[0].lease);
+	EXPECT_EQ(result.leaf_client->Entries().size(), 1u);
+	EXPECT_NE(Leaf(result, "disk1.img"), nullptr);
+}
+
 TEST_F(ChainResolveTest, ASequentialMiddleLevelNeedsTheSetting)
 {
 	const auto inner  = Built("inner.zip",
@@ -723,6 +812,179 @@ TEST_F(ChainResolveTest, TheTotalEntryCapCountsEveryLevel)
 	const auto result = ResolveChain(chain, *host, outer, *cache, capped);
 	EXPECT_EQ(result.error, Error::None) << result.detail;
 	EXPECT_EQ(result.total_entries, 60);
+}
+
+// The house rule in the walk (N4, G11, G16): a store holds the game, the
+// house archive beside it only info.toml.
+static std::vector<FileEntry> Payload(const int files)
+{
+	auto out = std::vector<FileEntry>{};
+	for (int i = 0; i < files; ++i) {
+		out.push_back({"f" + std::to_string(i) + ".txt", "x"});
+	}
+	return out;
+}
+
+TEST_F(ChainResolveTest, TheHostsStoreIsEnteredForAPlainMember)
+{
+	const auto store = Built("store.zip", Kind::ZipStored, Payload(2));
+	const auto house = Built("house.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",   "[game]\n"},
+	                                 {"game.store.zip", Slurp(store)}
+        });
+	auto host        = OpenOk(house);
+	ASSERT_TRUE(host);
+	const auto result = ResolveChain(
+	        Chain(house, "f1.txt"), *host, house, *cache, Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.chain.levels.size(), 1u);
+	EXPECT_EQ(result.chain.levels[0].archive_member, "game.store.zip");
+	EXPECT_EQ(result.chain.levels[0].leaf_member, "f1.txt");
+	EXPECT_EQ(result.house_member, "game.store.zip");
+	EXPECT_NE(Leaf(result, "f1.txt"), nullptr);
+}
+
+TEST_F(ChainResolveTest, AStoreInsideAChainTakesTheLeaf)
+{
+	const auto store = Built("store.zip", Kind::ZipStored, Payload(2));
+	const auto house = Built("house.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",   "[game]\n"},
+	                                 {"game.store.zip", Slurp(store)}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"notes.txt",       "wild"},
+	                                 {"house.zip", Slurp(house)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto result = ResolveChain(
+	        Chain(outer, "house.zip/f1.txt"), *host, outer, *cache, Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.chain.levels.size(), 2u);
+	EXPECT_EQ(result.chain.levels[0].leaf_member, "");
+	EXPECT_EQ(result.chain.levels[1].archive_member, "game.store.zip");
+	EXPECT_EQ(result.chain.levels[1].leaf_member, "f1.txt");
+	EXPECT_EQ(ChainPrefix(result.chain), "house.zip/game.store.zip");
+}
+
+TEST_F(ChainResolveTest, AStoreIsNotSearchedForASecondStore)
+{
+	const auto deep  = Built("deep.zip", Kind::ZipStored, Payload(2));
+	const auto store = Built("store.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",  "[game]\n"},
+	                                 {"deep.store.zip", Slurp(deep)}
+        });
+	const auto house = Built("house.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",   "[game]\n"},
+	                                 {"game.store.zip", Slurp(store)}
+        });
+	auto host        = OpenOk(house);
+	ASSERT_TRUE(host);
+	const auto result = ResolveChain(
+	        Chain(house, "f1.txt"), *host, house, *cache, Options());
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	ASSERT_EQ(result.chain.levels.size(), 1u);
+	EXPECT_EQ(Leaf(result, "f1.txt"), nullptr);
+}
+
+TEST_F(ChainResolveTest, AStoreThatWouldBeAFourthLevelIsRefused)
+{
+	const auto store = Built("store.zip", Kind::ZipStored, Payload(1));
+	const auto house = Built("house.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",   "[game]\n"},
+	                                 {"game.store.zip", Slurp(store)}
+        });
+	const auto b     = Built("b.zip",
+                             Kind::ZipStored,
+	                         {
+                                     {"house.zip", Slurp(house)}
+        });
+	const auto a     = Built("a.zip",
+                             Kind::ZipStored,
+	                         {
+                                     {"b.zip", Slurp(b)}
+        });
+	const auto outer = Built("outer.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {"a.zip", Slurp(a)}
+        });
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	const auto result = ResolveChain(Chain(outer, "a.zip/b.zip/house.zip/f0.txt"),
+	                                 *host,
+	                                 outer,
+	                                 *cache,
+	                                 Options());
+	EXPECT_EQ(result.error, Error::EntryRejected);
+	EXPECT_EQ(result.failed_level, 3);
+	EXPECT_NE(result.detail.find("nesting depth"), std::string::npos)
+	        << result.detail;
+}
+
+TEST_F(ChainResolveTest, ADriveCountsTheStoreItEndsOnInOneTotal)
+{
+	// 31 entries in the outer, 2 in the house archive, 30 in its store.
+	const auto store   = Built("store.zip", Kind::ZipStored, Payload(30));
+	const auto house   = Built("game.zip",
+                                 Kind::ZipStored,
+	                           {
+                                         {     "info.toml",   "[game]\n"},
+                                         {"game.store.zip", Slurp(store)}
+        });
+	auto outer_entries = Payload(30);
+	outer_entries.push_back({"game.zip", Slurp(house)});
+	const auto outer = Built("outer.zip", Kind::ZipStored, outer_entries);
+	auto host        = OpenOk(outer);
+	ASSERT_TRUE(host);
+	auto drive              = Options();
+	drive.enter_house_leaf  = true;
+	drive.max_total_entries = 62;
+	const auto refused      = ResolveChain(
+                ChainOfLevels(outer, {"game.zip"}), *host, outer, *cache, drive);
+	EXPECT_EQ(refused.error, Error::TooManyEntries);
+	drive.max_total_entries = 63;
+	const auto result       = ResolveChain(
+                ChainOfLevels(outer, {"game.zip"}), *host, outer, *cache, drive);
+	ASSERT_EQ(result.error, Error::None) << result.detail;
+	EXPECT_EQ(result.total_entries, 63);
+	EXPECT_EQ(ChainPrefix(result.chain), "game.zip/game.store.zip");
+	EXPECT_EQ(result.house_member, "game.store.zip");
+}
+
+TEST_F(ChainResolveTest, OnlyADriveEntersTheHouseArchiveItEndsOn)
+{
+	const auto store = Built("store.zip", Kind::ZipStored, Payload(1));
+	const auto house = Built("house.zip",
+	                         Kind::ZipStored,
+	                         {
+	                                 {     "info.toml",   "[game]\n"},
+	                                 {"game.store.zip", Slurp(store)}
+        });
+	auto host        = OpenOk(house);
+	ASSERT_TRUE(host);
+	const auto plain = ResolveChain(
+	        ChainOfLevels(house, {}), *host, house, *cache, Options());
+	ASSERT_EQ(plain.error, Error::None) << plain.detail;
+	EXPECT_TRUE(plain.chain.levels.empty());
+	auto drive             = Options();
+	drive.enter_house_leaf = true;
+	const auto entered     = ResolveChain(
+                ChainOfLevels(house, {}), *host, house, *cache, drive);
+	ASSERT_EQ(entered.error, Error::None) << entered.detail;
+	EXPECT_EQ(ChainPrefix(entered.chain), "game.store.zip");
 }
 
 TEST_F(ChainResolveTest, TheSameInnerArchiveTwiceSharesOneCacheEntry)

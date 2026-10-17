@@ -9,6 +9,7 @@
 #include "dos/archive/member_path.h"
 #include "dos/dos.h"
 #include "dos/drives.h"
+#include "dos/floppy_image.h"
 #include "dos/programs/append.h"
 #include "dos/programs/archive_images.h"
 #include "dos/programs/mount_policy.h"
@@ -160,13 +161,7 @@ Result Swap(char drive_letter, const std::filesystem::path& image_path,
 		return result;
 	}
 	const auto file_size_kb = static_cast<uint32_t>(size_bytes / 1024);
-	bool is_floppy          = false;
-	for (const auto& geom : BIOS_GetDiskGeometryList()) {
-		if (geom.ksize == file_size_kb) {
-			is_floppy = true;
-			break;
-		}
-	}
+	const bool is_floppy    = FloppyImage::IsFloppy(resolved_path);
 
 	// A booted or '-fs none' floppy has no DOS drive, only the BIOS disk;
 	// swap that disk the way BOOT loads images (ada-plh7)

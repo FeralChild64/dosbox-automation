@@ -170,8 +170,39 @@ HeadSniff SniffFile(const int fd)
 	if (got <= 0) {
 		return {};
 	}
-	return SniffHead(std::span<const uint8_t>(bytes.data(),
-	                                          static_cast<size_t>(got)));
+	auto sniff = SniffHead(
+	        std::span<const uint8_t>(bytes.data(), static_cast<size_t>(got)));
+	if (sniff.kind == HeadKind::Unknown && ProbeIso9660(fd)) {
+		sniff.kind   = HeadKind::Iso9660;
+		sniff.access = Access::PerMember;
+	}
+	return sniff;
+}
+
+bool ProbeIso9660(const int fd)
+{
+	if (fd < 0) {
+		return false;
+	}
+	const auto dup_fd = DuplicateNoInherit(fd);
+	if (dup_fd < 0) {
+		return false;
+	}
+	constexpr int64_t PvdOffset = 16 * 2048;
+	constexpr char PvdHead[]    = {1, 'C', 'D', '0', '0', '1', 1};
+	std::array<char, sizeof(PvdHead)> bytes = {};
+#if defined(WIN32)
+	_lseeki64(dup_fd, PvdOffset, SEEK_SET);
+	const auto got = _read(dup_fd,
+	                       bytes.data(),
+	                       static_cast<unsigned int>(bytes.size()));
+#else
+	lseek(dup_fd, PvdOffset, SEEK_SET);
+	const auto got = read(dup_fd, bytes.data(), bytes.size());
+#endif
+	CloseDescriptor(dup_fd);
+	return got > 0 && static_cast<size_t>(got) == bytes.size() &&
+	       std::equal(bytes.begin(), bytes.end(), PvdHead);
 }
 
 const char* HeadKindName(const HeadKind kind)
@@ -189,6 +220,7 @@ const char* HeadKindName(const HeadKind kind)
 	case HeadKind::Zstd: return "zstd";
 	case HeadKind::Isz: return "isz";
 	case HeadKind::Lzma: return "lzma";
+	case HeadKind::Iso9660: return "ISO 9660";
 	}
 	return "unknown";
 }

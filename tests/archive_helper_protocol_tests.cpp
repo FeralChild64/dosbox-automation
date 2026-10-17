@@ -240,14 +240,14 @@ TEST(HelperProtocol, TheFormatByteEndsAtTheLastFormat)
 {
 	auto in     = IndexReply{};
 	in.identity = std::string(64, 'c');
-	for (const auto format : {Format::Raw, Format::Isz}) {
+	for (const auto format : {Format::Raw, Format::Isz, Format::Iso9660}) {
 		in.format = format;
 		auto out  = IndexReply{};
 		ASSERT_TRUE(DecodeIndexReply(EncodeIndexReply(in), out));
 		EXPECT_EQ(out.format, format);
 	}
 	auto bytes = EncodeIndexReply(in);
-	bytes[0] = static_cast<uint8_t>(static_cast<uint8_t>(Format::Isz) + 1);
+	bytes[0] = static_cast<uint8_t>(static_cast<uint8_t>(Format::Iso9660) + 1);
 	auto out = IndexReply{};
 	EXPECT_FALSE(DecodeIndexReply(bytes, out));
 }
