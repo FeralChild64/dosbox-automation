@@ -844,6 +844,8 @@ TEST_F(ChainResolveTest, TheHostsStoreIsEnteredForAPlainMember)
 	EXPECT_EQ(result.chain.levels[0].leaf_member, "f1.txt");
 	EXPECT_EQ(result.house_member, "game.store.zip");
 	EXPECT_NE(Leaf(result, "f1.txt"), nullptr);
+	// The host's member is the first level, as ChainOfLevels builds it.
+	EXPECT_EQ(result.chain.host.member, "game.store.zip");
 }
 
 TEST_F(ChainResolveTest, AStoreInsideAChainTakesTheLeaf)

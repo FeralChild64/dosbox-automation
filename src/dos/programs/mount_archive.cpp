@@ -89,20 +89,33 @@ CacheOptions CacheOptionsFor(const ArchiveSettings& s)
 	return options;
 }
 
+// The directory may not exist yet; the system-path rule judges the
+// canonical place, so a link is judged by where it points.
+std::string SystemPathProblem(const std_fs::path& path)
+{
+	std::error_code ec = {};
+	const auto probe   = std_fs::weakly_canonical(path, ec);
+	if (ec) {
+		return PathToUtf8(path) + " cannot be resolved (" + ec.message() + ")";
+	}
+	if (MountPolicy::IsUnderSystemPath(probe)) {
+		return PathToUtf8(path) +
+		       (probe == path ? std::string()
+		                      : " resolves to " + PathToUtf8(probe) + ",") +
+		       " a system path";
+	}
+	return {};
+}
+
 std::string CachePathProblem(const std_fs::path& path)
 {
-	// The directory may not exist yet. Links above it belong to the host's
-	// layout (/home on Silverblue or FreeBSD); the leaf may not be one, and
-	// the system-path rule judges the canonical place.
+	// Links above it belong to the host's layout (/home on Silverblue or
+	// FreeBSD); the leaf may not be one, since a trim deletes inside it.
 	std::error_code ec = {};
 	if (std_fs::is_symlink(std_fs::symlink_status(path, ec))) {
 		return PathToUtf8(path) + " is a link";
 	}
-	const auto probe = std_fs::weakly_canonical(path, ec);
-	if (!ec && MountPolicy::IsUnderSystemPath(probe)) {
-		return PathToUtf8(path) + " is a system path";
-	}
-	return {};
+	return SystemPathProblem(path);
 }
 
 ArchiveSettings ReadArchiveSettings()
@@ -199,8 +212,10 @@ SidecarPlace PlaceSidecar(const std::string& sidecar_path, const std_fs::path& a
 		place.how       = "given";
 		return place;
 	}
+	// A saves directory linked to another disk is followed (the --sidecar
+	// lister does the same).
 	const auto saves = SavesDirectory();
-	if (const auto problem = CachePathProblem(saves); !problem.empty()) {
+	if (const auto problem = SystemPathProblem(saves); !problem.empty()) {
 		augra::log_warn(LogComponent, "sidecar path: %s", problem.c_str());
 		place.refusal = Denied(DenyReason::SidecarUnavailable);
 		return place;

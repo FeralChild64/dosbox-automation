@@ -16,6 +16,7 @@
 #include <ctime>
 #include <limits>
 #include <map>
+#include <memory>
 #include <regex>
 #include <stack>
 #include <string>
@@ -29,6 +30,7 @@
 #include "dos/drives.h"
 #include "dos/programs/append.h"
 #include "dos/programs/more_output.h"
+#include "dos/programs/mount.h"
 #include "hardware/pic.h"
 #include "hardware/timer.h"
 #include "ints/bios.h"
@@ -2168,29 +2170,18 @@ void DOS_Shell::CMD_SUBST(char* args)
 		if (Drives.at(drive_idx)) {
 			throw 0; // targetdrive in use
 		}
-		strcat(mountstring, temp_str);
-		strcat(mountstring, " ");
 
-		uint8_t drive;
-		char fulldir[DOS_PATHLENGTH];
-		if (!DOS_MakeName(arg.c_str(), fulldir, &drive)) {
+		// The typed path through its local drive, as MOUNT reads one: the
+		// raw bytes, then the code page (ada-jyw6); never half of each.
+		const auto newname = MOUNT::HostPathOfDosPath(arg);
+		if (newname.empty()) {
 			throw 0;
 		}
-
-		const auto ldp = std::dynamic_pointer_cast<localDrive>(
-		        Drives.at(drive));
-		if (!ldp) {
-			throw 0;
-		}
-		char newname[CROSS_LEN];
-		safe_strcpy(newname, ldp->GetBasedir());
-		strcat(newname, fulldir);
-		CROSS_FILENAME(newname);
-		ldp->dirCache.ExpandNameAndNormaliseCase(newname);
-		strcat(mountstring, "\"");
-		strcat(mountstring, newname);
-		strcat(mountstring, "\"");
-		this->ParseLine(mountstring);
+		MOUNT mount;
+		mount.RunLine(std::make_unique<CommandLine>("Z:\\MOUNT.COM",
+		                                            std::string(temp_str) + " \"" +
+		                                                    newname + "\""),
+		              PathText::Host);
 	} catch (int a) {
 		if (a == 0) {
 			WriteOut(MSG_Get("SHELL_CMD_SUBST_FAILURE"));

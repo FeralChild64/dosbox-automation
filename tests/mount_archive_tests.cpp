@@ -15,8 +15,10 @@
 #include "dos/drives.h"
 #include "dos/programs/archive_images.h"
 #include "dos/programs/boot.h"
+#include "dos/programs/mount_archive_internal.h"
 #include "dos/programs/mount_common.h"
 #include "dos/programs/mount_policy.h"
+#include "dos/programs/mount_policy_system_paths.h"
 #include "dosbox_test_fixture.h"
 #include "hardware/dma.h"
 #include "ints/bios_disk.h"
@@ -1128,6 +1130,128 @@ TEST_F(MountArchiveTest, AMountGetsASidecarUnderSavesAndWritesLandThere)
 	EXPECT_TRUE(UnionAt('E')->FileExists("NEW.TXT"));
 }
 
+// E6 (gate 2026-10-17): a saves directory the path check refuses stops the
+// mount; an empty directory would put the sidecar in the working directory.
+class RefusedSavesTest : public MountArchiveTest {
+protected:
+	void SetUp() override
+	{
+		MountArchiveTest::SetUp();
+		for (const auto& entry : MountPolicy::SystemPaths()) {
+			if (entry.has_relative_path()) {
+				Set("archive_sidecar_path",
+				    (entry / "da-saves-test").string());
+				break;
+			}
+		}
+		previous_cwd = std_fs::current_path();
+		std_fs::create_directories(tmp / "cwd");
+		std_fs::current_path(tmp / "cwd");
+	}
+	void TearDown() override
+	{
+		std_fs::current_path(previous_cwd);
+		MountArchiveTest::TearDown();
+	}
+	bool CwdIsEmpty() const
+	{
+		return std_fs::is_empty(tmp / "cwd");
+	}
+	std_fs::path previous_cwd = {};
+};
+
+TEST_F(RefusedSavesTest, TheDriveMountIsRefusedAndWritesNothing)
+{
+	const auto zip = Built("doom.zip", Kind::ZipStored);
+	EXPECT_FALSE(Mount("D " + zip.string()).has_value());
+	EXPECT_EQ(Drives.at(drive_index('D')), nullptr);
+	EXPECT_TRUE(CwdIsEmpty());
+}
+
+TEST_F(RefusedSavesTest, TheImageMountIsRefusedAndWritesNothing)
+{
+	const auto zip = Built("images.zip", Kind::ZipDeflate, Images());
+	EXPECT_FALSE(Mount("A " + (zip / "disks" / "disk1.img").string()).has_value());
+	EXPECT_EQ(Drives.at(0), nullptr);
+	EXPECT_TRUE(CwdIsEmpty());
+}
+
+// The design follows a saves directory linked elsewhere (another disk), as
+// the --sidecar lister does; the system-path rule judges where it points.
+TEST_F(MountArchiveTest, ALinkedSavesDirectoryIsFollowed)
+{
+	std_fs::create_directories(tmp / "elsewhere");
+	std_fs::create_directory_symlink(tmp / "elsewhere", tmp / "linked");
+	Set("archive_sidecar_path", (tmp / "linked").string());
+	const auto zip = Built("doom.zip", Kind::ZipStored);
+	ASSERT_TRUE(Mount("D " + zip.string()).has_value());
+	auto drive = UnionAt('D');
+	ASSERT_TRUE(drive);
+	EXPECT_TRUE(std_fs::is_regular_file(tmp / "elsewhere" /
+	                                    drive->SidecarDirectory().filename() /
+	                                    ArchiveMount::SidecarTomlName));
+}
+
+TEST_F(MountArchiveTest, ASavesLinkIntoASystemPathIsRefused)
+{
+	auto system_dir = std_fs::path();
+	for (const auto& entry : MountPolicy::SystemPaths()) {
+		if (entry.has_relative_path() && std_fs::is_directory(entry)) {
+			system_dir = entry;
+			break;
+		}
+	}
+	ASSERT_FALSE(system_dir.empty());
+	std_fs::create_directory_symlink(system_dir, tmp / "linked");
+	Set("archive_sidecar_path", (tmp / "linked").string());
+	const auto zip = Built("doom.zip", Kind::ZipStored);
+	EXPECT_FALSE(Mount("D " + zip.string()).has_value());
+}
+
+// A place the check cannot resolve is not a place it has cleared.
+TEST_F(MountArchiveTest, ASavesLinkThatCannotBeResolvedIsRefused)
+{
+	std_fs::create_directory_symlink(tmp / "b", tmp / "a");
+	std_fs::create_directory_symlink(tmp / "a", tmp / "b");
+	const auto problem = MountArchiveInternal::SystemPathProblem(tmp / "a" /
+	                                                             "saves");
+	EXPECT_NE(problem.find("cannot be resolved"), std::string::npos) << problem;
+}
+
+TEST_F(MountArchiveTest, ARefusedSavesLinkNamesWhereItLeads)
+{
+	auto system_dir = std_fs::path();
+	for (const auto& entry : MountPolicy::SystemPaths()) {
+		if (entry.has_relative_path() && std_fs::is_directory(entry)) {
+			system_dir = entry;
+			break;
+		}
+	}
+	ASSERT_FALSE(system_dir.empty());
+	std_fs::create_directory_symlink(system_dir, tmp / "linked");
+	const auto problem = MountArchiveInternal::SystemPathProblem(tmp / "linked");
+	EXPECT_NE(problem.find(std_fs::canonical(system_dir).string()),
+	          std::string::npos)
+	        << problem;
+}
+
+#if !defined(WIN32)
+TEST_F(MountArchiveTest, AnExistingSavesDirectoryKeepsItsMode)
+{
+	const auto saves = tmp / "saves";
+	std_fs::create_directories(saves);
+	std_fs::permissions(saves,
+	                    std_fs::perms::owner_all | std_fs::perms::group_read |
+	                            std_fs::perms::group_exec |
+	                            std_fs::perms::others_read |
+	                            std_fs::perms::others_exec);
+	const auto before = std_fs::status(saves).permissions();
+	const auto zip    = Built("doom.zip", Kind::ZipStored);
+	ASSERT_TRUE(Mount("D " + zip.string()).has_value());
+	EXPECT_EQ(std_fs::status(saves).permissions(), before);
+}
+#endif
+
 TEST_F(MountArchiveTest, NoSidecarMountsTheArchiveDriveAlone)
 {
 	const auto zip = Built("doom.zip", Kind::ZipStored);
@@ -1682,6 +1806,54 @@ TEST_F(MountArchiveTest, BootTakesATypedPathInCodePage437)
 	std_fs::copy_file(zip, folder / "game.zip");
 	const auto args = (tmp / "3").string() + "\xAB" +
 	                  "dir/game.zip/disks/disk1.img";
+	auto boot = std::make_unique<BOOT>();
+	delete boot->cmd;
+	boot->cmd      = new CommandLine("BOOT", args);
+	full_arguments = args;
+	boot->Run();
+	EXPECT_NE(imageDiskList.at(0), nullptr);
+}
+
+TEST_F(MountArchiveTest, BootTakesATypedHostImageInCodePage437)
+{
+	// G13 for a plain image: converted once where it is typed, never again.
+	const auto folder = tmp / std_fs::path(u8"3\u00BDdir");
+	std_fs::create_directories(folder);
+	std::ofstream(folder / "disk1.img", std::ios::binary) << FloppyBytes("BOOTDISK");
+	const auto args = (tmp / "3").string() + "\xAB" + "dir/disk1.img";
+	auto boot = std::make_unique<BOOT>();
+	delete boot->cmd;
+	boot->cmd      = new CommandLine("BOOT", args);
+	full_arguments = args;
+	boot->Run();
+	EXPECT_NE(imageDiskList.at(0), nullptr);
+}
+
+// ada-adyo: a booter image named through a mounted drive, the policy judging
+// the host file the drive maps it to.
+TEST_F(MountArchiveTest, BootTakesAnAsciiNameThroughALocalDrive)
+{
+	const auto folder = tmp / "c" / "plain";
+	std_fs::create_directories(folder);
+	std::ofstream(folder / "disk1.img", std::ios::binary) << FloppyBytes("BOOTDISK");
+	ASSERT_TRUE(Mount("C " + (tmp / "c").string()).has_value());
+	const std::string args = "C:\\PLAIN\\DISK1.IMG";
+	auto boot = std::make_unique<BOOT>();
+	delete boot->cmd;
+	boot->cmd      = new CommandLine("BOOT", args);
+	full_arguments = args;
+	boot->Run();
+	EXPECT_NE(imageDiskList.at(0), nullptr);
+}
+
+TEST_F(MountArchiveTest, BootTakesACodePageNameThroughALocalDrive)
+{
+	// u-umlaut typed as 0x81 through C:, the host folder's name in UTF-8.
+	const auto folder = tmp / "c" / std_fs::path(u8"f\u00FCr");
+	std_fs::create_directories(folder);
+	std::ofstream(folder / "disk1.img", std::ios::binary) << FloppyBytes("BOOTDISK");
+	ASSERT_TRUE(Mount("C " + (tmp / "c").string()).has_value());
+	const std::string args = "C:\\F\x81R\\DISK1.IMG";
 	auto boot = std::make_unique<BOOT>();
 	delete boot->cmd;
 	boot->cmd      = new CommandLine("BOOT", args);

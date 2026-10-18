@@ -84,6 +84,10 @@ struct MountParameters {
 	bool run_exit                  = false;
 };
 
+// What a path argument is written in: the guest's code page, or a host
+// path the emulator has already mapped (SUBST, ada-jyw6).
+enum class PathText { Dos, Host };
+
 class MOUNT final : public Program {
 public:
 	MOUNT()
@@ -96,7 +100,16 @@ public:
 	}
 	void Run() override;
 
-	std::optional<MountParameters> ProcessArguments(CommandLine* cmd);
+	// A mount line built inside the emulator (SUBST), with Run()'s guard.
+	void RunLine(std::unique_ptr<CommandLine> line, PathText path_text);
+
+	// The host path a DOS path on a local drive names: its raw bytes as the
+	// drive lists them first, then G13's code page reading; "" when neither
+	// exists.
+	static std::string HostPathOfDosPath(const std::string& dos_path);
+
+	std::optional<MountParameters> ProcessArguments(
+	        CommandLine* cmd, PathText path_text = PathText::Dos);
 
 	// Archive mounts (archive mount design, Phase 2c)
 	bool HandleReconnect();
@@ -168,7 +181,9 @@ private:
 	std::string ApplyRelativePath(const std::string& path,
 	                              bool is_relative_to_last_config) const;
 
-	std::string GetDosMappedHostPath(const std::string& dos_path) const;
+	static std::string GetDosMappedHostPath(const std::string& dos_path);
+
+	std::string HostText(const std::string& arg) const;
 
 	std::string ResolveHostPath(const std::string& arg,
 	                            bool relative_to_last_config) const;
@@ -191,6 +206,8 @@ private:
 	void WriteMountStatus(const std::string& image_type,
 	                      const std::vector<std::string>& images,
 	                      char drive_letter, bool readonly);
+
+	PathText path_text = PathText::Dos;
 };
 
 #endif // DOSBOX_PROGRAM_MOUNT_H

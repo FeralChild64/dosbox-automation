@@ -290,6 +290,29 @@ TEST_F(MountTest, ATypedPathThroughADosDriveKeepsItsCodePageBytes)
 	EXPECT_EQ(result->type, MountType::Directory);
 }
 
+TEST_F(MountTest, ADosNameAsTheLocalDriveListsItReachesItsFolder)
+{
+	// A local drive lists a UTF-8 host name as its raw bytes ("F\xC3\xBCR"
+	// for f\u00FCr), so the guest can type it back the way DIR shows it.
+	std_fs::create_directories(test_file_path / std_fs::path(u8"f\u00FCr"));
+	ASSERT_TRUE(Mount("C " + test_file_path.string()).has_value());
+	const auto result = Mount("D C:\\F\xC3\xBCR");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::Directory);
+}
+
+TEST_F(MountTest, AnImageAsTheLocalDriveListsItIsMounted)
+{
+	// The image loop maps a DOS path's raw bytes first, as a directory does.
+	const auto folder = test_file_path / std_fs::path(u8"f\u00FCr");
+	std_fs::create_directories(folder);
+	write_iso_image(folder / "game.iso");
+	ASSERT_TRUE(Mount("C " + test_file_path.string()).has_value());
+	const auto result = Mount("D C:\\F\xC3\xBCR\\GAME.ISO -t iso");
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(result->type, MountType::CdRomImage);
+}
+
 TEST_F(MountTest, AnAsciiPathIsUnchangedByTheConversion)
 {
 	const auto result = Mount("C " + P("plain_dir"));

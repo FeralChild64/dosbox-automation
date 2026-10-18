@@ -5,6 +5,7 @@
 
 #include "augra/log.h"
 #include "dos/dos.h"
+#include "dos/dos_names.h"
 #include "dos/dos_system.h"
 #include "dos/drive_search_slots.h"
 #include "dos/programs/mount_policy.h"
@@ -269,28 +270,10 @@ struct ArchiveDrive::Impl {
 
 	const TreeNode* Find(const char* dos_path) const
 	{
-		return tree->Find(WithoutEmptyExtensions(dos_path ? dos_path : ""));
-	}
-
-	// DOS_MakeName keeps an empty extension ("SKIEGA."), and DOS reads
-	// "NAME." as NAME; the tree is keyed by the plain 8.3 names (G8/G9).
-	static std::string WithoutEmptyExtensions(const std::string_view dos_path)
-	{
-		auto out   = std::string();
-		size_t pos = 0;
-		for (;;) {
-			const auto end = dos_path.find('\\', pos);
-			auto part      = dos_path.substr(pos, end - pos);
-			if (part.size() > 1 && part.find('.') == part.size() - 1) {
-				part.remove_suffix(1);
-			}
-			out.append(part);
-			if (end == std::string_view::npos) {
-				return out;
-			}
-			out.push_back('\\');
-			pos = end + 1;
-		}
+		// DOS_MakeName keeps an empty extension ("SKIEGA."); the tree
+		// is keyed by the plain 8.3 names (G8/G9).
+		return tree->Find(
+		        DosNames::WithoutEmptyExtensions(dos_path ? dos_path : ""));
 	}
 
 	bool Matches(const TreeNode& node, const char* pattern,

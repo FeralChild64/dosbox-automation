@@ -25,6 +25,7 @@
 #include "more_output.h"
 #include "dos/archive/member_path.h"
 #include "dos/programs/archive_images.h"
+#include "dos/programs/mount.h"
 #include "mount_policy.h"
 #include "utils/fs_utils.h"
 #include "utils/string_utils.h"
@@ -97,8 +98,8 @@ FILE* BOOT::getFSFile(const char* filename, uint32_t* ksize, uint32_t* bsize,
 		return tmpfile;
 	}
 	// File not found on mounted filesystem. Try regular filesystem
-	const auto filename_s =
-	        resolve_home(MountPolicy::HostPathFromDos(filename)).string();
+	// A host path already: the image's comes from the policy's verdict.
+	const auto filename_s = resolve_home(filename).string();
 	tmpfile               = fopen(filename_s.c_str(), "rb+");
 
 	// Used for logging in check_fseek()
@@ -268,9 +269,17 @@ void BOOT::Run(void)
 				return;
 			}
 
-			const auto boot_path = resolve_home(MountPolicy::HostPathFromDos(
-			                                            temp_line))
-			                               .string();
+			auto boot_path = resolve_home(MountPolicy::HostPathFromDos(
+			                                      temp_line))
+			                         .string();
+			// A guest path through a mounted drive is judged as the host
+			// file it maps to (ada-adyo), as MOUNT reads one.
+			if (!local_drive_path_exists(boot_path.c_str())) {
+				const auto mapped = MOUNT::HostPathOfDosPath(temp_line);
+				if (!mapped.empty()) {
+					boot_path = mapped;
+				}
+			}
 			auto resolved        = std::string();
 			const auto member    = local_drive_path_exists(boot_path.c_str())
 			                             ? ArchiveMount::LoneImageMember(boot_path)

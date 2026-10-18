@@ -76,6 +76,7 @@ add_executable(dosbox_tests
     cd_companion_tests.cpp
     child_process_tests.cpp
     cmd_move_tests.cpp
+    dos_names_tests.cpp
     drive_archive_tests.cpp
     drive_search_slots_tests.cpp
     drive_union_tests.cpp

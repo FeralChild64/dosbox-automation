@@ -44,6 +44,7 @@ ArchiveSettings ReadArchiveSettings();
 std::filesystem::path EffectiveCachePath(const ArchiveSettings& s);
 std::filesystem::path SavesDirectory();
 ArchiveMount::CacheOptions CacheOptionsFor(const ArchiveSettings& s);
+std::string SystemPathProblem(const std::filesystem::path& path);
 std::string CachePathProblem(const std::filesystem::path& path);
 
 // The engine's one store (design D14), opened or reopened for the settings.

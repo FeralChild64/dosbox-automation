@@ -168,6 +168,8 @@ std::vector<std::string> LinesFor(const char drive,
 	if (!folder_path.empty()) {
 		lines.push_back("CD " + folder_path);
 	}
+	// The full path: the shell would take a bare TYPE.EXE's stem for its
+	// TYPE command.
 	const auto full_path = std::string(1, drive) + ":" + folder_path +
 	                       "\\" + program;
 	const auto is_batch = program.ends_with(".BAT");

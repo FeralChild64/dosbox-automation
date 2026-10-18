@@ -18,6 +18,8 @@
 #include "shell/shell_cmds.cpp"
 #include "dos/dos.h"
 #include "dos/drives.h"
+#include "dos/programs/mount.h"
+#include "dos/programs/mount_policy.h"
 #include "dosbox_test_fixture.h"
 #include "test_temp_dir.h"
 #include "utils/string_utils.h"
@@ -500,6 +502,89 @@ TEST_F(PendingCommandsCallTest, ACalledBatchFinishesBeforeTheNextQueuedLine)
 	             });
 	EXPECT_THAT(order, ElementsAre("INSIDE", "EXIT"))
 	        << ::testing::PrintToString(seen);
+}
+
+// ada-jyw6: the host path SUBST builds from a local drive's basedir is
+// host text, not code page text for MOUNT to convert.
+class SubstTest : public DOSBoxTestFixture {
+protected:
+	void SetUp() override
+	{
+		DOSBoxTestFixture::SetUp();
+		init_config_dir();
+		MountPolicy::InitPolicyConfig({});
+		tmp = TestTempDir::MakeUnique("subst_test_");
+		ASSERT_FALSE(tmp.empty());
+	}
+	void TearDown() override
+	{
+		Drives.at(drive_index(BaseLetter))  = nullptr;
+		Drives.at(drive_index(SubstLetter)) = nullptr;
+		std::error_code ec = {};
+		std_fs::remove_all(tmp, ec);
+		DOSBoxTestFixture::TearDown();
+	}
+
+	bool MountBase(const std::string& typed_path)
+	{
+		const auto line = std::string(1, BaseLetter) + " \"" + typed_path + "\"";
+		auto mount = std::make_unique<MOUNT>();
+		return mount->ProcessArguments(new CommandLine("Z:\\MOUNT.COM", line))
+		        .has_value();
+	}
+
+	// Where X: points after the SUBST, or nowhere.
+	std_fs::path Subst(const std::string& dos_dir)
+	{
+		auto args = std::string(1, SubstLetter) + ": " + dos_dir;
+		DOS_Shell shell;
+		shell.CMD_SUBST(args.data());
+		const auto local = std::dynamic_pointer_cast<localDrive>(
+		        Drives.at(drive_index(SubstLetter)));
+		return local ? std_fs::path(local->GetBasedir()) : std_fs::path();
+	}
+	static bool Same(const std_fs::path& a, const std_fs::path& b)
+	{
+		std::error_code ec = {};
+		return !a.empty() && std_fs::equivalent(a, b, ec);
+	}
+
+	static constexpr char BaseLetter  = 'L';
+	static constexpr char SubstLetter = 'X';
+	std_fs::path tmp                  = {};
+};
+
+TEST_F(SubstTest, AnAsciiBasedirIsSubstituted)
+{
+	std_fs::create_directories(tmp / "plain" / "GAMES");
+	ASSERT_TRUE(MountBase((tmp / "plain").string()));
+	EXPECT_TRUE(Same(Subst("L:\\GAMES"), tmp / "plain" / "GAMES"));
+}
+
+TEST_F(SubstTest, ACodePageNameOnAnAsciiBasedirIsSubstituted)
+{
+	// A-umlaut typed as 0x8E names the UTF-8 folder, as MOUNT reads it.
+	const auto folder = tmp / "plain" / std_fs::path(u8"\u00C4RGER");
+	std_fs::create_directories(folder);
+	ASSERT_TRUE(MountBase((tmp / "plain").string()));
+	EXPECT_TRUE(Same(Subst("L:\\\x8ERGER"), folder));
+}
+
+TEST_F(SubstTest, ANonAsciiBasedirIsSubstituted)
+{
+	std_fs::create_directories(tmp / std_fs::path(u8"f\u00FCr") / "GAMES");
+	// u-umlaut is 0x81 in code page 437.
+	ASSERT_TRUE(MountBase((tmp / "f").string() + "\x81r"));
+	EXPECT_TRUE(Same(Subst("L:\\GAMES"),
+	                 tmp / std_fs::path(u8"f\u00FCr") / "GAMES"));
+}
+
+TEST_F(SubstTest, SecureModeRefusesTheSubstitution)
+{
+	std_fs::create_directories(tmp / "plain" / "GAMES");
+	ASSERT_TRUE(MountBase((tmp / "plain").string()));
+	control->SwitchToSecureMode();
+	EXPECT_TRUE(Subst("L:\\GAMES").empty());
 }
 
 } // namespace

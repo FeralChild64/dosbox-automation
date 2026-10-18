@@ -45,8 +45,6 @@ public:
 	// The chain as the request spelled it, which leaves out any store the
 	// house rule entered (N4), so a swap back by the same path finds this.
 	std::string spelled_chain = {};
-	// N4: the first store the house rule entered ("" when none).
-	std::string house_member = {};
 
 	// The member this hold serves, so its drive can be handed it again,
 	// and the listing it was picked from, so a swap back to it needs no

@@ -40,6 +40,8 @@ webserver an attack surface by design. The short version:
 - Every MOUNT, BOOT, and drive-swap path is validated before a drive is
   constructed: paths must resolve, symlink components are rejected, system
   directories are blocked, and disk images must pass structural validation.
+  A path the guest names through a mounted drive (MOUNT, SUBST, BOOT) is
+  mapped to the host file the drive holds and judged as that file.
   The files a CD image names itself, a cue sheet's FILE lines and an
   mds's mdf, must sit directly beside the image: a name with a directory
   or drive in it counts only by its last component, matched without
@@ -76,8 +78,10 @@ webserver an attack surface by design. The short version:
   land in a sidecar directory under the saves directory (XDG data home,
   `%LOCALAPPDATA%` or `~/Library/Application Support`). A new saves
   directory is created with owner-only permissions; an existing one keeps
-  its own. The saves directory is checked for symlinks and system paths
-  the same way the archive cache is. A custom path through `-sidecar` is
+  its own. A saves directory that is a link (to another disk, say) is
+  followed, and the place it resolves to must not be a system path; the
+  archive cache, which a trim deletes in, refuses a link outright. A
+  custom path through `-sidecar` is
   validated like any directory mount; a sidecar found beside the archive
   is adopted
   only when that directory passes the directory whitelist for the mount's

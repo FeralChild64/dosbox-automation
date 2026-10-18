@@ -986,13 +986,13 @@ TEST_F(ArchiveImagesTest, AShortMemberPathEntersAHouseArchive)
 	EXPECT_EQ(result.resolved->member_name, "disks/disk1.img");
 	EXPECT_EQ(Slurp(result.resolved->host_file), FloppyBytes());
 	EXPECT_EQ(result.resolved->hold->chain, "game.store.zip");
-	EXPECT_EQ(result.resolved->hold->house_member, "game.store.zip");
+	EXPECT_EQ(result.resolved->hold->spelled_chain, "");
 	// The full form names the same thing and shares the chain.
 	auto full = ArchiveImages::Resolve(
 	        RequestFor("game.store.zip/disks/disk2.img", false, tmp / "house.zip"));
 	ASSERT_TRUE(full.resolved) << full.detail;
 	EXPECT_EQ(full.resolved->hold->chain, "game.store.zip");
-	EXPECT_TRUE(full.resolved->hold->house_member.empty());
+	EXPECT_EQ(full.resolved->hold->spelled_chain, "game.store.zip");
 }
 
 TEST_F(ArchiveImagesTest, AShortPathIntoAWildArchiveIsStillNotFound)
@@ -1070,7 +1070,7 @@ TEST_F(ArchiveImagesTest, AShortPathThroughAFurtherArchiveEntersTheHouse)
 	ASSERT_TRUE(result.resolved) << result.detail;
 	EXPECT_EQ(Slurp(result.resolved->host_file), FloppyBytes());
 	EXPECT_EQ(result.resolved->hold->chain, "game.store.zip/tdc.zip");
-	EXPECT_EQ(result.resolved->hold->house_member, "game.store.zip");
+	EXPECT_EQ(result.resolved->hold->spelled_chain, "tdc.zip");
 }
 
 TEST_F(ArchiveImagesTest, ASwapBackThroughAShortChainFindsItsHold)
@@ -1156,7 +1156,7 @@ TEST_F(ArchiveImagesTest, AHouseArchiveOnADiscEntersItsStore)
 	EXPECT_EQ(result.resolved->member_name, "disks/disk1.img");
 	EXPECT_EQ(Slurp(result.resolved->host_file), FloppyBytes());
 	EXPECT_EQ(result.resolved->hold->chain, "GAMES/HOUSE.ZIP/game.store.zip");
-	EXPECT_EQ(result.resolved->hold->house_member, "game.store.zip");
+	EXPECT_EQ(result.resolved->hold->spelled_chain, "GAMES/HOUSE.ZIP");
 	EXPECT_EQ(ArchiveMount::ArchiveHelperClient::LiveHelpers(), 0);
 }
 

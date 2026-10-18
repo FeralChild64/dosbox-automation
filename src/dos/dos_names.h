@@ -34,6 +34,10 @@ namespace DosNames {
 
 bool IsWindowsReservedDeviceName(const std::string& path_component);
 
+// DOS reads "NAME." as NAME: the empty extension of each component of a
+// backslash path goes, a dot elsewhere stays (G8/G9, E4).
+std::string WithoutEmptyExtensions(std::string_view dos_path);
+
 } // namespace DosNames
 
 #endif // DOSBOX_DOS_NAMES_H

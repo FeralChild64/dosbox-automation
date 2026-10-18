@@ -1088,7 +1088,7 @@ std::string MOUNT::ApplyRelativePath(const std::string& path,
 
 // Translates a DOS path to a host path if the DOS path is currently mapped as a
 // drive. Returns an empty string if it cannot be translated.
-std::string MOUNT::GetDosMappedHostPath(const std::string& dos_path) const
+std::string MOUNT::GetDosMappedHostPath(const std::string& dos_path)
 {
 	// DOS_MakeName requires a writable buffer
 	auto fullname_buf = std::array<char, CROSS_LEN>{};
@@ -1111,15 +1111,19 @@ std::string MOUNT::GetDosMappedHostPath(const std::string& dos_path) const
 	return "";
 }
 
+std::string MOUNT::HostText(const std::string& arg) const
+{
+	return path_text == PathText::Host ? arg : MountPolicy::HostPathFromDos(arg);
+}
+
 // The host path a path argument names: ~ expanded, -pr applied, and a
 // mounted DOS path taken as the host path it maps to (ada-ep2a).
 
 std::string MOUNT::ResolveHostPath(const std::string& arg,
                                    const bool relative_to_last_config) const
 {
-	auto path = ApplyRelativePath(
-	        resolve_home(MountPolicy::HostPathFromDos(arg)).string(),
-	        relative_to_last_config);
+	auto path = ApplyRelativePath(resolve_home(HostText(arg)).string(),
+	                              relative_to_last_config);
 #if defined(WIN32)
 	// Removing trailing backslash if not root dir so stat will succeed
 	if (path.size() > 3 && path.back() == '\\') {
@@ -1127,13 +1131,24 @@ std::string MOUNT::ResolveHostPath(const std::string& arg,
 	}
 #endif
 	struct stat test = {};
-	if (stat(path.c_str(), &test) != 0) {
-		const auto mapped = GetDosMappedHostPath(path);
-		if (!mapped.empty() && stat(mapped.c_str(), &test) == 0) {
+	if (path_text == PathText::Dos && stat(path.c_str(), &test) != 0) {
+		if (const auto mapped = HostPathOfDosPath(arg); !mapped.empty()) {
 			return mapped;
 		}
 	}
 	return path;
+}
+
+std::string MOUNT::HostPathOfDosPath(const std::string& dos_path)
+{
+	for (const auto& reading : {dos_path, MountPolicy::HostPathFromDos(dos_path)}) {
+		const auto mapped = GetDosMappedHostPath(reading);
+		struct stat test  = {};
+		if (!mapped.empty() && stat(mapped.c_str(), &test) == 0) {
+			return mapped;
+		}
+	}
+	return {};
 }
 
 DirMountPolicy MOUNT::CurrentDirPolicy()
@@ -1357,11 +1372,11 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 		std::string cur_arg = "";
 
 		while (cmd->FindCommand(arg_idx++, cur_arg)) {
+			const auto typed = cur_arg;
 
 			// Expand ~, then apply relative path logic
 			cur_arg = ApplyRelativePath(
-			        resolve_home(MountPolicy::HostPathFromDos(cur_arg))
-			                .string(),
+			        resolve_home(HostText(cur_arg)).string(),
 			        path_relative_to_last_config);
 
 			if (const auto lone = ArchiveMount::LoneImageMember(cur_arg)) {
@@ -1421,8 +1436,7 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 				// Try Virtual DOS Drive mapping
 				auto found_on_virtual = false;
 
-				const auto fallback_mapped = GetDosMappedHostPath(
-				        cur_arg);
+				const auto fallback_mapped = HostPathOfDosPath(typed);
 
 				if (!fallback_mapped.empty() &&
 				    local_drive_path_exists(fallback_mapped.c_str())) {
@@ -1857,8 +1871,23 @@ void MOUNT::Run(void)
 	ProcessArguments(cmd);
 }
 
-std::optional<MountParameters> MOUNT::ProcessArguments(CommandLine* cmd)
+void MOUNT::RunLine(std::unique_ptr<CommandLine> line, const PathText path_text)
 {
+	assert(line);
+	if (control->SecureMode()) {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      "PROGRAM_CONFIG_SECURE_DISALLOW");
+		return;
+	}
+	ProcessArguments(line.release(), path_text);
+}
+
+std::optional<MountParameters> MOUNT::ProcessArguments(CommandLine* cmd,
+                                                       const PathText path_text)
+{
+	this->path_text = path_text;
+
 	// To make it easier injecting arbitrary command lines in the unit tests
 	if (this->cmd != cmd) {
 		delete this->cmd;

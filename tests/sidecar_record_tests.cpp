@@ -249,6 +249,16 @@ TEST(SidecarRecordTest, UnhideByTrailingDotFormRemovesTheCanonicalEntry)
 	EXPECT_EQ(r.changes.size(), 0u);
 }
 
+// The archive drive looks "A.B." up as itself; the record must not hide
+// A.B for it (one rule with the drive, gate 2026-10-17).
+TEST(SidecarRecordTest, OnlyAnEmptyExtensionIsStripped)
+{
+	SidecarRecord r = {};
+	EXPECT_TRUE(r.AddDelete("A.B."));
+	EXPECT_FALSE(r.IsHidden("A.B"));
+	EXPECT_TRUE(r.IsHidden("A.B."));
+}
+
 TEST(SidecarRecordTest, TrailingDotInSubpathIsCanonicalizedPerComponent)
 {
 	SidecarRecord r = {};

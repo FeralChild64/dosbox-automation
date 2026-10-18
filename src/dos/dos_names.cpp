@@ -257,4 +257,23 @@ bool IsWindowsReservedDeviceName(const std::string& path_component)
 	return false;
 }
 
+std::string WithoutEmptyExtensions(const std::string_view dos_path)
+{
+	auto out   = std::string();
+	size_t pos = 0;
+	for (;;) {
+		const auto end = dos_path.find('\\', pos);
+		auto part      = dos_path.substr(pos, end - pos);
+		if (part.size() > 1 && part.find('.') == part.size() - 1) {
+			part.remove_suffix(1);
+		}
+		out.append(part);
+		if (end == std::string_view::npos) {
+			return out;
+		}
+		out.push_back('\\');
+		pos = end + 1;
+	}
+}
+
 } // namespace DosNames

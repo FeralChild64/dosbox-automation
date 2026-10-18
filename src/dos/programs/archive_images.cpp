@@ -492,7 +492,6 @@ Result Resolve(const Request& given)
 		hold->chain_links   = std::move(chain_result.links);
 		hold->chain         = ChainPrefix(effective);
 		hold->spelled_chain = ChainPrefix(*chained);
-		hold->house_member  = chain_result.house_member;
 		augra::log_info(LogComponent,
 		                "%s: nested chain %s, %zu level(s), leaf %s",
 		                PathToUtf8(archive).c_str(),

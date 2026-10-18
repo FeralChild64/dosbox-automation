@@ -116,6 +116,9 @@ ChainResult ResolveChain(const ChainedPath& chain, ArchiveHelperClient& host_cli
 		store.leaf_member    = std::move(leaf);
 		levels.insert(levels.begin() + static_cast<std::ptrdiff_t>(at),
 		              std::move(store));
+		if (at == 0) {
+			out.chain.host.member = levels.front().archive_member;
+		}
 		if (out.house_member.empty()) {
 			out.house_member = house->utf8_path;
 		}
