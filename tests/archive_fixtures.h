@@ -376,7 +376,7 @@ inline std::string IsoWithJolietFile(const std::string& joliet_name,
 		ucs2 += c;
 	}
 	const auto file_size = static_cast<uint32_t>(data.size());
-	for (const auto [root, name] : {
+	for (const auto& [root, name] : {
 	             std::pair{   RootIso, std::string("LONG.ZIP;1")},
 	             std::pair{RootJoliet,                      ucs2}
         }) {
@@ -395,7 +395,7 @@ inline std::string IsoWithJolietFile(const std::string& joliet_name,
 	}
 	iso.replace(FileExtent * Sector, data.size(), data);
 	// Each tree's path tables hold its root alone (ECMA-119 9.4).
-	for (const auto [table_l, root] : {
+	for (const auto& [table_l, root] : {
 	             std::pair{size_t{19},    RootIso},
 	             std::pair{size_t{21}, RootJoliet}
         }) {
@@ -409,7 +409,7 @@ inline std::string IsoWithJolietFile(const std::string& joliet_name,
 			iso[at + 6 + (big ? 1 : 0)] = 1;
 		}
 	}
-	for (const auto [vd, table_l, root] : {
+	for (const auto& [vd, table_l, root] : {
 	             std::tuple{Pvd, size_t{19},    RootIso},
 	             std::tuple{Svd, size_t{21}, RootJoliet}
         }) {
