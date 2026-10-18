@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
 // SPDX-FileCopyrightText:  2002-2021 The DOSBox Team
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 dosbox-automation contributors
 
 #include "dosbox.h"
 
@@ -1169,10 +1170,14 @@ private:
 	CALLBACK_HandlerObject callback_ipxint = {};
 	RealPt old_73_vector = 0;
 	static uint16_t dospage;
-	SectionProp& section;
+
+	// What this instance installed, not what the setting says now: a
+	// runtime change has already rewritten the setting by the time the
+	// old instance is torn down.
+	bool is_installed = false;
 
 public:
-	IPX(SectionProp& _section) : section(_section)
+	IPX(SectionProp& section)
 	{
 		ECBList = nullptr;
 		ESRList = nullptr;
@@ -1235,12 +1240,13 @@ public:
 		IO_WriteB(0xa1,IO_ReadB(0xa1)&(~8));			// enable IRQ11
 
 		PROGRAMS_MakeFile("IPXNET.COM",ProgramCreate<IPXNET>);
+		is_installed = true;
 	}
 
 	~IPX()
 	{
 		PIC_RemoveEvents(IPX_AES_EventHandler);
-		if (!section.GetBool("ipx")) {
+		if (!is_installed) {
 			return;
 		}
 
@@ -1280,6 +1286,9 @@ void IPX_Destroy()
 void notify_ipx_setting_updated(SectionProp& section,
                                 [[maybe_unused]] const std::string& prop_name)
 {
+	// The old install goes first: both instances use the same INT 73h
+	// vector, multiplex handler and IPXNET.COM.
+	ipx = {};
 	ipx = std::make_unique<IPX>(section);
 }
 

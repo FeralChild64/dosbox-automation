@@ -98,6 +98,7 @@ add_executable(dosbox_tests
     fs_utf8_shortname_tests.cpp
     i8042_wide_read_tests.cpp
     int10_modes_tests.cpp
+    ipx_setting_tests.cpp
     joystick_reinit_tests.cpp
     language_territory_tests.cpp
     math_utils_tests.cpp
