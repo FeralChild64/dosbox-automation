@@ -36,13 +36,13 @@ Two strategies, picked by preset:
   `VCPKG_ROOT` to your vcpkg checkout before configuring.
 
 The vcpkg builds take libarchive from an overlay port in
-`vcpkg/ports/libarchive`: version 3.8.9 with the ISO 9660 reader of
-3.8.10 and one local change, which keeps Joliet file names longer than
-103 characters whole. Builds against a system libarchive (the Linux
-system build, Homebrew, FreeBSD) cut such names at 103 characters, as
-every libarchive release does. A member with a longer name on a disc then
-shows up under its cut name, and an archive among them cannot be entered.
-Compilation discs authored on Windows sometimes carry names that long.
+`vcpkg/ports/libarchive`: version 3.8.10 with one local change, which
+keeps Joliet file names longer than 103 characters whole. Builds against
+a system libarchive (the Linux system build, Homebrew, FreeBSD) cut such
+names at 103 characters, as every libarchive release does. A member with
+a longer name on a disc then shows up under its cut name, and an archive
+among them cannot be entered. Compilation discs authored on Windows
+sometimes carry names that long.
 
 A C++23 compiler is required on every platform.
 

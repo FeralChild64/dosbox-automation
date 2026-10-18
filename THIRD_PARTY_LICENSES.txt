@@ -25,7 +25,7 @@ Used by: base64, clap, enet, httplib (cpp-httplib), imgui (Dear ImGui),
   base64         Base64 encoder/decoder
                  Copyright (c) 2019 Tobias Locker
 
-  clap           Command-line argument parser headers
+  clap           CLAP audio plugin interface headers
                  Copyright (c) 2021 Alexandre BIQUE
 
   enet           Reliable UDP networking
@@ -2549,7 +2549,7 @@ source tree.
                  License: BSD-3-Clause
 
   Lua            Scripting language for automation engine
-                 Copyright (c) 1994-2025 Lua.org, PUC-Rio
+                 Copyright (c) 1994-2026 Lua.org, PUC-Rio
                  https://www.lua.org/
                  License: MIT
 
@@ -2579,8 +2579,8 @@ source tree.
                  Seven RAR test fixtures under tests/files/archives/ are
                  taken from its test suite (see the README there)
                  vcpkg builds use the overlay port vcpkg/ports/libarchive:
-                 3.8.9 with the 3.8.10 ISO 9660 reader and a local change
-                 that keeps Joliet names past 103 characters
+                 3.8.10 with a local change that keeps Joliet names past
+                 103 characters
 
 --------------------------------------------------------------------------------
 Boost Software License 1.0

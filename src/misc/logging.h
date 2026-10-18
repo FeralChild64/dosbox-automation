@@ -31,41 +31,6 @@ enum LOG_SEVERITIES {
 	LOG_ERROR
 };
 
-#if C_DEBUGGER
-class LOG 
-{ 
-	LOG_TYPES       d_type;
-	LOG_SEVERITIES  d_severity;
-public:
-
-	LOG (LOG_TYPES type , LOG_SEVERITIES severity):
-		d_type(type),
-		d_severity(severity)
-		{}
-	        void operator()(const char* buf, ...)
-	                GCC_ATTRIBUTE(__format__(__printf__, 2, 3)); //../src/debug/debug_gui.cpp
-};
-
-void DEBUG_ShowMsg(const char* format, ...)
-        GCC_ATTRIBUTE(__format__(__printf__, 1, 2));
-#define LOG_MSG DEBUG_ShowMsg
-
-#define LOG_INFO(...)    LOG(LOG_ALL, LOG_NORMAL)(__VA_ARGS__)
-#define LOG_WARNING(...) LOG(LOG_ALL, LOG_WARN)(__VA_ARGS__)
-#define LOG_ERR(...)     LOG(LOG_ALL, LOG_ERROR)(__VA_ARGS__)
-
-#else // C_DEBUGGER
-
-struct LOG
-{
-	inline LOG(LOG_TYPES, LOG_SEVERITIES){ }
-	inline void operator()(const char*, ...) const {}
-}; //add missing operators to here
-
-	//try to avoid anything smaller than bit32...
-void GFX_ShowMsg(const char* format, ...)
-        GCC_ATTRIBUTE(__format__(__printf__, 1, 2));
-
 #include "augra/log.h"
 #include <cstdarg>
 
@@ -129,6 +94,41 @@ inline void log_trace(const char* component, const char* fmt, ...)
 }
 
 } // namespace augra_compat
+
+#if C_DEBUGGER
+class LOG 
+{ 
+	LOG_TYPES       d_type;
+	LOG_SEVERITIES  d_severity;
+public:
+
+	LOG (LOG_TYPES type , LOG_SEVERITIES severity):
+		d_type(type),
+		d_severity(severity)
+		{}
+	        void operator()(const char* buf, ...)
+	                GCC_ATTRIBUTE(__format__(__printf__, 2, 3)); //../src/debug/debug_gui.cpp
+};
+
+void DEBUG_ShowMsg(const char* format, ...)
+        GCC_ATTRIBUTE(__format__(__printf__, 1, 2));
+#define LOG_MSG DEBUG_ShowMsg
+
+#define LOG_INFO(...)    LOG(LOG_ALL, LOG_NORMAL)(__VA_ARGS__)
+#define LOG_WARNING(...) LOG(LOG_ALL, LOG_WARN)(__VA_ARGS__)
+#define LOG_ERR(...)     LOG(LOG_ALL, LOG_ERROR)(__VA_ARGS__)
+
+#else // C_DEBUGGER
+
+struct LOG
+{
+	inline LOG(LOG_TYPES, LOG_SEVERITIES){ }
+	inline void operator()(const char*, ...) const {}
+}; //add missing operators to here
+
+	//try to avoid anything smaller than bit32...
+void GFX_ShowMsg(const char* format, ...)
+        GCC_ATTRIBUTE(__format__(__printf__, 1, 2));
 
 #define LOG_MSG(...)	augra_compat::log_info("dosbox", __VA_ARGS__)
 
